@@ -1,6 +1,23 @@
 
 
 
+
+# RDF4RiskAssessment Toolkit: A Toolkit for Converting Tabular Research Data to FAIR RDF for Risk Assessment and Life Sciences
+
+Risk assessment is crucial for consumer health protection and food safety within the Risk Analysis framework. Performing risk assessments requires the integration and analysis of data from diverse scientific disciplines, as highlighted by initiatives such as One Health. Currently, the lack of interoperable research data often results in data silos, limiting efficient knowledge exchange and the reuse of datasets by risk assessment agencies. Therefore, improving the interoperability of research data and cross-disciplinary knowledge exchange is essential to overcome these challenges. Technologies such as Knowledge Graphs and Linked Data offer solutions by applying the FAIR principles (Findability, Accessibility, Interoperability, and Reusability) and utilizing ontologies and standards to enhance data integration and reuse. However, the practical implementation of these technologies in risk assessment and regular research faces several technical and methodological challenges. To address these challenges, we developed the RDF4RiskAssessment Toolkit within the national research project "KI- & Daten-Akzelerator (KIDA).” This toolkit includes a framework designed to transform tabular research data into Linked Data, enabling better interoperability between different scientific datasets. The toolkit enhances data accessibility, fosters cross-disciplinary collaboration, and creates a foundation for advanced data-driven applications in scientific repositories and artificial intelligence-powered decision-making systems. To demonstrate the capabilities of the toolkit, we developed the KIDA Research Data Hub, which serves as a platform for hosting, accessing, and reusing Linked Data generated with the toolkit.
+
+## Data Model
+![DataModel](./img/DataModel_fig1.png )
+**Figure 1** Data model showing the four-layer architecture which is exported by the RDF4RiskAssessment Toolkit with metadata (DCAT\_Metadata\_Dataset), vocabulary (SKOS\_Vocabulary), literature (Reference), and research data (RDF\_converted\_Dataset) layers organized in named graphs.
+
+## Workflow
+
+![Workflow](./img/Workflow_fig2.png )
+**Figure2** This flowchart illustrates the modular architecture of the RDF4RiskAssessment Toolkit, designed to facilitate the transformation of scientific datasets into RDF.
+
+
+
+
 # Quick Setup Guide
 
 This guide explains how to set up a **Python environment** and **run the Streamlit apps**.
