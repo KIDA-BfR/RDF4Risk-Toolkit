@@ -1,0 +1,14 @@
+streamlit
+pandas
+rdflib
+xlsxwriter
+PyYAML
+python-Levenshtein
+torch
+transformers
+accelerate
+sentence-transformers
+requests
+SPARQLWrapper
+openpyxl
+levenshtein
