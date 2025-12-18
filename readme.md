@@ -128,6 +128,6 @@ pip install -r requirements.txt
 streamlit run Home.py
 ```
 
-Author and Developer: 
-Michael Zarske 
+Developers: 
+Michael Zarske, 
 Taras Günther 
