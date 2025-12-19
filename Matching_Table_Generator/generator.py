@@ -44,9 +44,6 @@ def render_matching_table_generator_page():
         'transformations_prepared': False, # Tracks if any rules are currently prepared
         'preprocessing_applied_in_last_run': False, # Tracks if preprocessing was applied in the *last* matching table generation
         'omitted_columns_selection': [], # For user to select columns to omit values from
-        'numeric_columns_added_to_omission': False, # To disable the button after click
-        'date_columns_added_to_omission': False, # To disable the button after click
-        'id_columns_added_to_omission': False, # To disable the button after click
         'selected_sheet': None, # For Excel files: tracks the selected sheet name
         'available_sheets': [] # For Excel files: list of available sheet names
     }
@@ -476,9 +473,6 @@ def render_matching_table_generator_page():
             st.session_state['transformations_prepared'] = False
             st.session_state['preprocessing_applied_in_last_run'] = False
             st.session_state['omitted_columns_selection'] = []
-            st.session_state['numeric_columns_added_to_omission'] = False
-            st.session_state['date_columns_added_to_omission'] = False
-            st.session_state['id_columns_added_to_omission'] = False
             # Clear Levenshtein state
             if 'similar_term_groups' in st.session_state: st.session_state.similar_term_groups = []
             if 'user_choices_for_similar_terms' in st.session_state: st.session_state.user_choices_for_similar_terms = {}
@@ -513,9 +507,6 @@ def render_matching_table_generator_page():
             st.session_state['transformations_prepared'] = False
             st.session_state['preprocessing_applied_in_last_run'] = False
             st.session_state['omitted_columns_selection'] = []
-            st.session_state['numeric_columns_added_to_omission'] = False
-            st.session_state['date_columns_added_to_omission'] = False
-            st.session_state['id_columns_added_to_omission'] = False
             st.session_state['current_start_row'] = 1 # Reset start row state to default
             # Clear Levenshtein state
             if 'similar_term_groups' in st.session_state: st.session_state.similar_term_groups = []
@@ -638,7 +629,7 @@ def render_matching_table_generator_page():
             help="Cell data from these columns will be ignored for 'object' terms. Headers will still be included as 'predicate' terms."
         )
 
-        if st.button("➕ Add Numeric Columns to Omission List", key="add_numeric_to_omit_button", disabled=st.session_state.get('numeric_columns_added_to_omission', False)):
+        if st.button("➕ Add Numeric Columns to Omission List", key="add_numeric_to_omit_button"):
             if df_initial_preview is not None:
                 numeric_cols_to_add = []
                 for col_name in df_initial_preview.columns:
@@ -664,7 +655,6 @@ def render_matching_table_generator_page():
                     current_omitted = set(st.session_state.get('omitted_columns_selection', []))
                     current_omitted.update(numeric_cols_to_add)
                     st.session_state.omitted_columns_selection = sorted(list(current_omitted))
-                    st.session_state.numeric_columns_added_to_omission = True
                     logging.info(f"Added numeric columns to omission list: {numeric_cols_to_add}. New list: {st.session_state.omitted_columns_selection}")
                     st.rerun() # Rerun to update the multiselect widget
                 else:
@@ -672,7 +662,7 @@ def render_matching_table_generator_page():
             else:
                 st.warning("Please load data first to identify numeric columns.")
 
-        if st.button("➕ Add Date Columns to Omission List", key="add_date_to_omit_button", disabled=st.session_state.get('date_columns_added_to_omission', False)):
+        if st.button("➕ Add Date Columns to Omission List", key="add_date_to_omit_button"):
             if df_initial_preview is not None:
                 date_cols_to_add = []
                 for col_name in df_initial_preview.columns:
@@ -698,7 +688,6 @@ def render_matching_table_generator_page():
                     current_omitted = set(st.session_state.get('omitted_columns_selection', []))
                     current_omitted.update(date_cols_to_add)
                     st.session_state.omitted_columns_selection = sorted(list(current_omitted))
-                    st.session_state.date_columns_added_to_omission = True
                     logging.info(f"Added date columns to omission list: {date_cols_to_add}. New list: {st.session_state.omitted_columns_selection}")
                     st.rerun() # Rerun to update the multiselect widget
                 else:
@@ -706,7 +695,7 @@ def render_matching_table_generator_page():
             else:
                 st.warning("Please load data first to identify date columns.")
 
-        if st.button("➕ Add ID Columns to Omission List", key="add_id_to_omit_button", disabled=st.session_state.get('id_columns_added_to_omission', False)):
+        if st.button("➕ Add ID Columns to Omission List", key="add_id_to_omit_button"):
             if df_initial_preview is not None:
                 id_cols_to_add = []
                 for col_name in df_initial_preview.columns:
@@ -721,7 +710,6 @@ def render_matching_table_generator_page():
                     current_omitted = set(st.session_state.get('omitted_columns_selection', []))
                     current_omitted.update(id_cols_to_add)
                     st.session_state.omitted_columns_selection = sorted(list(current_omitted))
-                    st.session_state.id_columns_added_to_omission = True
                     logging.info(f"Added ID columns to omission list: {id_cols_to_add}. New list: {st.session_state.omitted_columns_selection}")
                     st.rerun() # Rerun to update the multiselect widget
                 else:

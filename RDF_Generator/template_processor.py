@@ -43,7 +43,7 @@ def apply_template_properties(
         
         pred_uri = URIRef(pred_uri_str)
         
-        is_defined = any(pred_uri == p_uri for p_uri in defined_predicates.values())
+        is_defined = any((d.get('local_uri') if isinstance(d, dict) else d) == pred_uri for d in defined_predicates.values())
         if not is_defined:
             graph_target.add((pred_uri, RDF.type, RDF.Property))
             label_text = extract_label(pred_uri_str)
@@ -54,7 +54,8 @@ def apply_template_properties(
                     label_text = safe_value(match_row.iloc[0][string_column])
 
             graph_target.add((pred_uri, RDFS.label, Literal(label_text, datatype=XSD.string)))
-            defined_predicates[pred_uri_str] = pred_uri
+            # Store as dict for consistency (Requirement 1)
+            defined_predicates[pred_uri_str] = {'local_uri': pred_uri}
 
         obj_node = None
         if map_type == "Column Value (Literal)" or map_type == "Column Value (URI)":

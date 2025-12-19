@@ -48,8 +48,7 @@ This tool is essential for transforming your structured information into a Linke
 
 st.subheader("4. RDF to Table Service")
 st.markdown("""
-Convert RDF data (from Turtle, N-Quads, RDF/XML, or JSON-LD files) back into a conventional tabular format. 
-This can be useful for analysis, review, or when you need to make RDF data accessible for spreadsheet applications or relational databases.
+Explore and export RDF data from TriG files in a tabular format. This tool allows you to view TriG data, extract metadata, and download it in various formats like Excel (with clickable hyperlinks), CSV, and Markdown. It's particularly useful for analyzing linked data, reviewing RDF datasets, and generating human-readable documentation.
 *Access this tool via the 'RDF to Table Page' link in the sidebar.*
 """)
 

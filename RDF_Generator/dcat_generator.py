@@ -10,11 +10,19 @@ DCATDE = Namespace("http://dcat-ap.de/def/dcatde/")
 VCARD = Namespace("http://www.w3.org/2006/vcard/ns#")
 
 THEMES = {
-    "Bevölkerung": "http://publications.europa.eu/resource/authority/data-theme/POP",
-    "Gesundheit": "http://publications.europa.eu/resource/authority/data-theme/HEAL",
-    "Landwirtschaft, Fischerei, Forstwirtschaft und Nahrungsmittel": "http://publications.europa.eu/resource/authority/data-theme/AGRI",
-    "Umwelt": "http://publications.europa.eu/resource/authority/data-theme/ENVI",
-    "Wirtschaft und Finanzen": "http://publications.europa.eu/resource/authority/data-theme/ECON"
+    "AGRI – Agriculture, fisheries, forestry and food": "http://publications.europa.eu/resource/authority/data-theme/AGRI",
+    "ECON – Economy and finance": "http://publications.europa.eu/resource/authority/data-theme/ECON",
+    "EDUC – Education, culture and sport": "http://publications.europa.eu/resource/authority/data-theme/EDUC",
+    "ENER – Energy": "http://publications.europa.eu/resource/authority/data-theme/ENER",
+    "ENVI – Environment": "http://publications.europa.eu/resource/authority/data-theme/ENVI",
+    "GOVE – Government and public sector": "http://publications.europa.eu/resource/authority/data-theme/GOVE",
+    "HEAL – Health": "http://publications.europa.eu/resource/authority/data-theme/HEAL",
+    "INTR – International issues": "http://publications.europa.eu/resource/authority/data-theme/INTR",
+    "JUST – Justice, legal system and public safety": "http://publications.europa.eu/resource/authority/data-theme/JUST",
+    "REGI – Regions and cities": "http://publications.europa.eu/resource/authority/data-theme/REGI",
+    "SOCI – Population and society": "http://publications.europa.eu/resource/authority/data-theme/SOCI",
+    "TECH – Science and technology": "http://publications.europa.eu/resource/authority/data-theme/TECH",
+    "TRAN – Transport": "http://publications.europa.eu/resource/authority/data-theme/TRAN"
 }
 
 LICENSES = {
@@ -50,6 +58,8 @@ def display_dcat_builder():
 
         st.text_input("Dataset Title", key="dcat_title", value="My Dataset")
         st.text_area("Dataset Description", key="dcat_description", value="An example dataset.")
+        st.selectbox("Access Rights", options=["PUBLIC", "RESTRICTED", "NON_PUBLIC"], key="dcat_access_rights")
+        st.text_input("Contact Point (Email or URI)", key="dcat_contact_point", placeholder="e.g. mailto:contact@example.org")
         st.text_input("Publisher Name", key="dcat_publisher_name", value="My Organization")
         st.text_input("Publisher URI", key="dcat_publisher_uri", value=default_publisher_uri)
         st.multiselect("Themes", options=list(THEMES.keys()), key="dcat_themes")
@@ -76,9 +86,41 @@ def display_dcat_builder():
 
         submitted = st.form_submit_button("Generate DCAT Catalog")
         if submitted:
+            # Extract basic metadata
+            title = st.session_state.dcat_title
+            description = st.session_state.dcat_description
+            identifier = ""
+            keywords = []
+            creator = []
+
+            # If publication reference exists, try to pull metadata from it
+            if reference_data:
+                if reference_method_val := reference_data.get('method'):
+                    if reference_method_val == 'DOI':
+                        identifier = reference_data.get('doi', "")
+                    
+                    # Try to extract title, keywords, and authors from the graph if possible
+                    # (Simplified for now, using reference data directly if available)
+                    if 'metadata' in reference_data:
+                        ref_meta = reference_data['metadata']
+                        # Use publication title if dataset title is default? 
+                        # Or just stick to what's provided for dataset.
+                        
+                        # DOI is already set above
+                        
+                        # Extract Authors
+                        if 'author' in ref_meta:
+                            for auth in ref_meta['author']:
+                                creator.append(f"{auth.get('family', '')}, {auth.get('given', '')}")
+
             metadata_config = {
-                "title": st.session_state.dcat_title,
-                "description": st.session_state.dcat_description,
+                "title": title,
+                "description": description,
+                "keywords": keywords,
+                "identifier": identifier,
+                "creator": creator,
+                "access_rights": st.session_state.dcat_access_rights,
+                "contact_point": st.session_state.dcat_contact_point.strip(),
                 "publisher_name": st.session_state.dcat_publisher_name,
                 "publisher_uri": st.session_state.dcat_publisher_uri,
                 "themes": st.session_state.dcat_themes,
@@ -211,8 +253,33 @@ def create_dcat_catalog(
     meta_graph.add((dataset_uri, DCTERMS.license, URIRef(LICENSES[metadata_config["license"]])))
     meta_graph.add((dataset_uri, DCAT.distribution, distribution_uri))
 
+    # Keywords
+    for kw in metadata_config.get("keywords", []):
+        meta_graph.add((dataset_uri, DCAT.keyword, Literal(kw, lang="en")))
+
+    # Identifier
+    if metadata_config.get("identifier"):
+        meta_graph.add((dataset_uri, DCTERMS.identifier, Literal(metadata_config["identifier"])))
+
+    # Creator
+    for author in metadata_config.get("creator", []):
+        meta_graph.add((dataset_uri, DCTERMS.creator, Literal(author)))
+
+    # Access Rights
+    access_rights_uri = f"http://publications.europa.eu/resource/authority/access-right/{metadata_config['access_rights']}"
+    meta_graph.add((dataset_uri, DCTERMS.accessRights, URIRef(access_rights_uri)))
+
     # Contact Point
-    # Contact functionality removed as per user request
+    if metadata_config.get("contact_point"):
+        contact_val = metadata_config["contact_point"]
+        if contact_val.startswith("http") or contact_val.startswith("mailto:"):
+            meta_graph.add((dataset_uri, DCAT.contactPoint, URIRef(contact_val)))
+        else:
+            # Create a simple vCard BNode if it's just text/email without mailto
+            contact_bnode = BNode()
+            meta_graph.add((contact_bnode, RDF.type, VCARD.Individual))
+            meta_graph.add((contact_bnode, VCARD.hasEmail, Literal(contact_val)))
+            meta_graph.add((dataset_uri, DCAT.contactPoint, contact_bnode))
 
     # Themes
     for theme_name in metadata_config.get("themes", []):

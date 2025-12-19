@@ -149,7 +149,7 @@ def get_property_counts(converter: TriGConverter) -> dict:
 
 def main():
     """Main function to run the TriG Data Viewer app."""
-    st.title("🔗 TriG Data Viewer")
+    st.title("TriG Data Viewer")
     st.markdown("View and export TriG/RDF data with linked metadata")
 
     # Sidebar info
@@ -168,49 +168,108 @@ def main():
     - Property catalogs with usage statistics
         """)
 
-    # File uploader
-    uploaded_file = st.file_uploader(
-        "Upload TriG file",
-        type=['trig'],
-        help="Upload a TriG (RDF) file to view and export"
-    )
+    # Initialize session state for persistence
+    if 'trig_converter' not in st.session_state:
+        st.session_state.trig_converter = None
+    if 'trig_file_name' not in st.session_state:
+        st.session_state.trig_file_name = None
 
+    # File uploader and direct loading
+    col_u1, col_u2 = st.columns([2, 1])
+    with col_u1:
+        uploaded_file = st.file_uploader(
+            "Upload TriG file",
+            type=['trig'],
+            help="Upload a TriG (RDF) file to view and export"
+        )
+    
+    with col_u2:
+        st.write("") # Spacer
+        st.write("") # Spacer
+        catalog_data = st.session_state.get('dcat_catalog_data')
+        load_from_session = False
+        if catalog_data:
+            if st.button("Load Catalog from Generator", use_container_width=True):
+                load_from_session = True
+        else:
+            st.info("No catalog found in session. Generate one in the RDF Generator first.")
+
+    # Determine if we have a new file or use existing state
+    process_new_file = False
     if uploaded_file:
+        if st.session_state.trig_file_name != uploaded_file.name:
+            process_new_file = True
+    elif load_from_session:
+        process_new_file = True
+    
+    # Logic to process file or use cached state
+    converter = None
+    
+    if process_new_file:
         try:
-            with st.spinner("Processing TriG file..."):
-                # Save to temp file
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.trig') as tmp:
-                    tmp.write(uploaded_file.getvalue())
-                    tmp_path = tmp.name
+            with st.spinner("Processing TriG data..."):
+                if uploaded_file:
+                    # Save to temp file
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.trig') as tmp:
+                        tmp.write(uploaded_file.getvalue())
+                        tmp_path = tmp.name
 
-                # Initialize converter
-                converter = TriGConverter(Path(tmp_path))
+                    # Initialize converter from file
+                    new_converter = TriGConverter(input_file=Path(tmp_path))
+                    file_name = uploaded_file.name
+                else:
+                    # Initialize converter from session state data
+                    new_converter = TriGConverter(data=catalog_data)
+                    file_name = "generated_catalog.trig"
+                    tmp_path = None
 
                 # Parse with progress
                 progress = st.progress(0, text="Parsing TriG...")
-                if not converter.parse_trig():
+                if not new_converter.parse_trig():
                     st.error("Failed to parse TriG file. Please check the file format.")
-                    os.unlink(tmp_path)
+                    if tmp_path:
+                        os.unlink(tmp_path)
                     st.stop()
 
                 progress.progress(50, text="Extracting data...")
-                converter.extract_all_data()
+                new_converter.extract_all_data()
 
                 progress.progress(80, text="Expanding multi-valued properties...")
-                converter.expand_list_values()
+                new_converter.expand_list_values()
 
                 progress.progress(100, text="Complete!")
                 progress.empty()
 
-                # Clean up temp file
-                os.unlink(tmp_path)
+                # Clean up temp file if one was created
+                if tmp_path:
+                    os.unlink(tmp_path)
+                
+                # Update session state
+                st.session_state.trig_converter = new_converter
+                st.session_state.trig_file_name = file_name
+                converter = new_converter
+        except Exception as e:
+            st.error(f"Error processing file: {e}")
+            with st.expander("Error Details"):
+                st.code(str(e))
+                import traceback
+                st.code(traceback.format_exc())
+            st.stop()
+            
+    elif st.session_state.trig_converter:
+        converter = st.session_state.trig_converter
+        if not uploaded_file:
+            st.info(f"Using previously loaded file: **{st.session_state.trig_file_name}**")
 
+    # Display content if converter is available
+    if converter:
+        try:
             # Create tabs for different views
             tab1, tab2, tab3, tab4 = st.tabs([
-                "📊 Data Preview",
-                "📋 Metadata",
-                "📈 Statistics",
-                "⬇️ Downloads"
+                "Data Preview",
+                "Metadata",
+                "Statistics",
+                "Downloads"
             ])
 
             # --- Tab 1: Data Preview ---
@@ -229,7 +288,7 @@ def main():
                     )
 
                     st.caption(f"Showing {len(df_preview):,} rows × {len(df_preview.columns)} columns")
-                    st.info("💡 Click on any blue link to open the resource in a new tab")
+                    st.info("Click on any blue link to open the resource in a new tab")
                 else:
                     st.warning("No subject data found in the TriG file")
 
@@ -240,7 +299,7 @@ def main():
                 # DCAT Metadata section
                 dcat_graph = 'https://fskx-graphdb.risk-ai-cloud.com/graph/dcat-metadata'
                 if dcat_graph in converter.named_graphs_data:
-                    st.markdown("### 📋 DCAT Metadata")
+                    st.markdown("### DCAT Metadata")
                     dcat_data = converter.named_graphs_data[dcat_graph]
                     display_named_graph(dcat_data, converter)
                 else:
@@ -251,7 +310,7 @@ def main():
                 # Publication References section
                 pub_graph = 'https://fskx-graphdb.risk-ai-cloud.com/graph/publication-reference'
                 if pub_graph in converter.named_graphs_data:
-                    st.markdown("### 📚 Publication References")
+                    st.markdown("### Publication References")
                     pub_data = converter.named_graphs_data[pub_graph]
                     display_named_graph(pub_data, converter)
                 else:
@@ -265,7 +324,7 @@ def main():
 
                 if other_graphs:
                     st.markdown("---")
-                    st.markdown("### 📦 Other Named Graphs")
+                    st.markdown("### Other Named Graphs")
                     for graph_uri in other_graphs:
                         with st.expander(f"Graph: {graph_uri}"):
                             display_named_graph(converter.named_graphs_data[graph_uri], converter)
@@ -303,8 +362,8 @@ def main():
                             "Property URI": f"[{uri}]({uri})",
                             "Label": label,
                             "Usage Count": property_counts.get(label, 0),
-                            "External Match": "✓" if (uri in converter.uri_to_exact_match or
-                                                     uri in converter.uri_to_close_match) else "✗"
+                            "External Match": "Yes" if (uri in converter.uri_to_exact_match or
+                                                     uri in converter.uri_to_close_match) else "No"
                         }
                         for uri, label in sorted(
                             converter.property_labels.items(),
@@ -336,27 +395,30 @@ def main():
                 st.markdown("Choose your preferred format to download the processed data:")
 
                 col1, col2, col3 = st.columns(3)
+                
+                # Determine filename base
+                file_name_base = st.session_state.trig_file_name if st.session_state.trig_file_name else "data.trig"
 
                 with col1:
-                    st.markdown("#### 📊 Excel")
+                    st.markdown("#### Excel")
                     st.markdown("Excel workbook with HYPERLINK formulas")
 
                     # Generate Excel file
                     try:
-                        excel_path = Path(tempfile.gettempdir()) / f"{uploaded_file.name.replace('.trig', '')}_output.xlsx"
+                        excel_path = Path(tempfile.gettempdir()) / f"{file_name_base.replace('.trig', '')}_output.xlsx"
                         converter.export_to_excel(excel_path)
 
                         with open(excel_path, 'rb') as f:
                             excel_data = f.read()
 
                         st.download_button(
-                            "📊 Download Excel",
+                            "Download Excel",
                             data=excel_data,
-                            file_name=f"{uploaded_file.name.replace('.trig', '')}_output.xlsx",
+                            file_name=f"{file_name_base.replace('.trig', '')}_output.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True
                         )
-                        st.caption("✓ Includes Property Mappings sheet\n✓ HYPERLINK formulas (no 65k limit)")
+                        st.caption("Includes Property Mappings sheet. HYPERLINK formulas (no 65k limit)")
 
                         # Clean up
                         os.unlink(excel_path)
@@ -364,7 +426,7 @@ def main():
                         st.error(f"Failed to generate Excel: {e}")
 
                 with col2:
-                    st.markdown("#### 📄 CSV")
+                    st.markdown("#### CSV")
                     st.markdown("Comma-separated values format")
 
                     # Generate CSV
@@ -373,36 +435,36 @@ def main():
                         csv_data = df_output.to_csv(index=False).encode('utf-8')
 
                         st.download_button(
-                            "📄 Download CSV",
+                            "Download CSV",
                             data=csv_data,
-                            file_name=f"{uploaded_file.name.replace('.trig', '')}_output.csv",
+                            file_name=f"{file_name_base.replace('.trig', '')}_output.csv",
                             mime="text/csv",
                             use_container_width=True
                         )
-                        st.caption("✓ Simple CSV format\n✓ Compatible with any tool")
+                        st.caption("Simple CSV format. Compatible with any tool")
                     except Exception as e:
                         st.error(f"Failed to generate CSV: {e}")
 
                 with col3:
-                    st.markdown("#### 📝 Markdown")
+                    st.markdown("#### Markdown")
                     st.markdown("Metadata documentation")
 
                     # Generate Markdown
                     try:
-                        md_path = Path(tempfile.gettempdir()) / f"{uploaded_file.name.replace('.trig', '')}_metadata.md"
+                        md_path = Path(tempfile.gettempdir()) / f"{file_name_base.replace('.trig', '')}_metadata.md"
                         converter.export_to_markdown(md_path)
 
                         with open(md_path, 'rb') as f:
                             md_data = f.read()
 
                         st.download_button(
-                            "📝 Download Markdown",
+                            "Download Markdown",
                             data=md_data,
-                            file_name=f"{uploaded_file.name.replace('.trig', '')}_metadata.md",
+                            file_name=f"{file_name_base.replace('.trig', '')}_metadata.md",
                             mime="text/markdown",
                             use_container_width=True
                         )
-                        st.caption("✓ Metadata documentation\n✓ Human-readable format")
+                        st.caption("Metadata documentation. Human-readable format")
 
                         # Clean up
                         os.unlink(md_path)
@@ -410,18 +472,18 @@ def main():
                         st.error(f"Failed to generate Markdown: {e}")
 
                 st.markdown("---")
-                st.info("💡 **Tip**: Excel format includes clickable HYPERLINK formulas that bypass Excel's native 65,536 hyperlink limit.")
+                st.info("Tip: Excel format includes clickable HYPERLINK formulas that bypass Excel's native 65,536 hyperlink limit.")
 
         except Exception as e:
-            st.error(f"Error processing file: {e}")
+            st.error(f"Error displaying data: {e}")
             with st.expander("Error Details"):
                 st.code(str(e))
                 import traceback
                 st.code(traceback.format_exc())
 
     else:
-        # Show welcome message when no file is uploaded
-        st.info("👆 Upload a TriG file to get started")
+        # Show welcome message when no file is uploaded and no state
+        st.info("Upload a TriG file to get started")
 
         st.markdown("---")
         st.markdown("### What is TriG?")
