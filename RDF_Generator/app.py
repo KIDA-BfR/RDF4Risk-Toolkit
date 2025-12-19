@@ -23,7 +23,7 @@ from .uri_utils import process_iris_async, load_api_specs
 if __name__ == "__main__":
     st.set_page_config(page_title="RDF Generator", layout="wide")
 
-st.title("📊 Excel/CSV to RDF Converter")
+st.title("Excel/CSV to RDF Converter")
 # Configure logging (adjust level as needed for debugging)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 st.markdown("Upload your (potentially preprocessed) data table and the corresponding matching table to generate RDF.")
@@ -620,7 +620,7 @@ def main():
         st.subheader("4. Define Schema Mapping Templates (Optional)")
 
         # --- Help/Guidance Expander (Moved outside the main template management expander) ---
-        with st.expander("ℹ️ How to Use Schema Mapping Templates (Examples & Guidance)", expanded=False):
+        with st.expander("How to Use Schema Mapping Templates (Examples & Guidance)", expanded=False):
             help_text = """
             Schema Mapping Templates allow you to define explicit rules for transforming your tabular data into
             more complex RDF structures, especially when dealing with specific ontologies and nested information.
@@ -952,7 +952,7 @@ def main():
                 
                 **Example:** If you have columns for `Measurement Value` and `Measurement Unit`, you can group them under a `hasAnalysisResult` predicate. This creates a separate node that contains both the value and the unit, making your RDF semantically richer and more compliant with ontologies like SOSA or QUDT.
             """)
-            st.markdown("Group columns (z. B. `plasmid_circular`) into Blank Nodes. Requires 'Connecting Predicate' URI.")
+            st.markdown("Group columns (e.g. `plasmid_circular`) into Blank Nodes. Requires 'Connecting Predicate' URI.")
             group_active = st.checkbox("Enable column grouping?", key="group_active")
             group_config = {}
             grouping_valid = True
@@ -973,13 +973,13 @@ def main():
                                 conn_pred = st.text_input(
                                     f"Connecting Predicate URI for '{display_name}'",
                                     key=f"group_pred_{group_key}",
-                                    placeholder="z. B. http://example.org/hasAnalysisResult",
+                                    placeholder="e.g. http://example.org/hasAnalysisResult",
                                     help="REQUIRED: Full URI."
                                 )
                                 group_type = st.text_input(
                                     f"RDF Type URI for '{display_name}' Group (Opt.)",
                                     key=f"group_type_{group_key}",
-                                    placeholder="z. B. http://example.org/AnalysisResult",
+                                    placeholder="e.g. http://example.org/AnalysisResult",
                                     help="Optional: Full `rdf:type` URI."
                                 )
                                 if not conn_pred or not is_valid_uri_simple(conn_pred.strip()):
@@ -1008,10 +1008,10 @@ def main():
         if reference_is_loaded:
             ref_info = st.session_state['reference_data']
             if ref_info['method'] == 'DOI':
-                st.success(f"✅ Publication reference loaded for DOI: **{ref_info['doi']}**")
+                st.success(f"Publication reference loaded for DOI: **{ref_info['doi']}**")
             else:
                 title_val = ref_info['metadata'].get('title', ['Unknown'])[0]
-                st.success(f"✅ Publication reference loaded: **{title_val}**")
+                st.success(f"Publication reference loaded: **{title_val}**")
 
         with st.expander("Add/Update Publication Reference to Dataset", expanded=not reference_is_loaded):
             st.markdown("""

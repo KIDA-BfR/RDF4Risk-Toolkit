@@ -14,7 +14,7 @@ import Levenshtein
 # --- Configuration ---
 def render_matching_table_generator_page():
     st.set_page_config(page_title="Matching & Preprocessing App", layout="wide")
-    st.title("📊🔗 Data Preprocessing & Matching Table Creator")
+    st.title("Data Preprocessing & Matching Table Creator")
     # Configure logging
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -629,7 +629,7 @@ def render_matching_table_generator_page():
             help="Cell data from these columns will be ignored for 'object' terms. Headers will still be included as 'predicate' terms."
         )
 
-        if st.button("➕ Add Numeric Columns to Omission List", key="add_numeric_to_omit_button"):
+        if st.button("Add Numeric Columns to Omission List", key="add_numeric_to_omit_button"):
             if df_initial_preview is not None:
                 numeric_cols_to_add = []
                 for col_name in df_initial_preview.columns:
@@ -662,7 +662,7 @@ def render_matching_table_generator_page():
             else:
                 st.warning("Please load data first to identify numeric columns.")
 
-        if st.button("➕ Add Date Columns to Omission List", key="add_date_to_omit_button"):
+        if st.button("Add Date Columns to Omission List", key="add_date_to_omit_button"):
             if df_initial_preview is not None:
                 date_cols_to_add = []
                 for col_name in df_initial_preview.columns:
@@ -695,7 +695,7 @@ def render_matching_table_generator_page():
             else:
                 st.warning("Please load data first to identify date columns.")
 
-        if st.button("➕ Add ID Columns to Omission List", key="add_id_to_omit_button"):
+        if st.button("Add ID Columns to Omission List", key="add_id_to_omit_button"):
             if df_initial_preview is not None:
                 id_cols_to_add = []
                 for col_name in df_initial_preview.columns:
@@ -1102,7 +1102,7 @@ def render_matching_table_generator_page():
 
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            if st.button("💾 Prepare Transformations", key="prepare_transform_button", disabled=disable_prepare, use_container_width=True, help="Save the configured transformation rules. Apply them by clicking 'Generate / Refresh Matching Table'."):
+            if st.button("Prepare Transformations", key="prepare_transform_button", disabled=disable_prepare, use_container_width=True, help="Save the configured transformation rules. Apply them by clicking 'Generate / Refresh Matching Table'."):
                 # Store the validated UI configurations into session state
                 st.session_state['prepared_split_config'] = split_config_ui if split_enabled else {}
                 st.session_state['prepared_expand_config'] = expand_config_ui if expand_enabled else {}
@@ -1123,7 +1123,7 @@ def render_matching_table_generator_page():
         with col_btn2:
             # Show clear button only if rules are actually prepared
             if st.session_state.get('transformations_prepared'):
-                if st.button("❌ Clear Prepared Transformation Rules", key="clear_prep_rules", use_container_width=True, help="Remove all saved transformation rules. The original data will be used."):
+                if st.button("Clear Prepared Transformation Rules", key="clear_prep_rules", use_container_width=True, help="Remove all saved transformation rules. The original data will be used."):
                     st.session_state['prepared_split_config'] = {}
                     st.session_state['prepared_expand_config'] = {}
                     st.session_state['transformations_prepared'] = False
@@ -1169,7 +1169,7 @@ def render_matching_table_generator_page():
 
             col_lev1, col_lev2 = st.columns(2)
             with col_lev1:
-                if st.button("🔍 Find Similar Terms for Consolidation", key="find_similar_terms_button", use_container_width=True):
+                if st.button("Find Similar Terms for Consolidation", key="find_similar_terms_button", use_container_width=True):
                     st.session_state.similar_term_groups = [] # Reset previous findings
                     st.session_state.user_choices_for_similar_terms = {} # Reset choices
                     st.session_state.consolidations_staged_for_generation = False # Reset staging flag
@@ -1291,7 +1291,7 @@ def render_matching_table_generator_page():
 
             with col_lev2:
                 if st.session_state.get('similar_term_groups') and st.session_state.get('show_consolidation_review_ui', False): 
-                    if st.button("✅ Apply & Stage Consolidations", key="stage_consolidations_button", use_container_width=True, help="Confirm and stage your choices for consolidation. These will be applied when you generate the main matching table."):
+                    if st.button("Apply & Stage Consolidations", key="stage_consolidations_button", use_container_width=True, help="Confirm and stage your choices for consolidation. These will be applied when you generate the main matching table."):
                         st.session_state.consolidations_staged_for_generation = True
                         st.session_state.show_consolidation_review_ui = False # Collapse UI after staging
                         st.success(f"{len(st.session_state.similar_term_groups)} consolidation groups with your choices are staged. They will be applied when you click 'Generate / Refresh Matching Table' in Section 5.")
@@ -1341,7 +1341,7 @@ def render_matching_table_generator_page():
         st.markdown("Click the button below to apply any *prepared* transformations (from Step 3), consider term consolidations (from Step 4 if applied), and generate/regenerate the `matching_table.csv` based on the resulting data (also considering omissions from Step 2).")
 
         # Button to trigger the process
-        if st.button("🚀 Generate / Refresh Matching Table", key="generate_match_button", help="Applies prepared transformations, consolidations, considers omissions, and extracts terms."):
+        if st.button("Generate / Refresh Matching Table", key="generate_match_button", help="Applies prepared transformations, consolidations, considers omissions, and extracts terms."):
 
             # Determine the DataFrame to use for this run
             # Always start from the original data for each generation run
@@ -1674,13 +1674,13 @@ def render_matching_table_generator_page():
             # The old content of 4.5 is moved into the expander above.
             # The "Review and Download Matching Table" section follows this.
 
-            st.markdown("---"); st.subheader("6. Review and Download Matching Table"); st.info("Manually edit 'URI' and 'Match Type' columns in the downloaded CSV file. Use URIs from standard vocabularies (like schema.org, SIO, OBO) or create your own.", icon="✏️")
+            st.markdown("---"); st.subheader("6. Review and Download Matching Table"); st.info("Manually edit 'URI' and 'Match Type' columns in the downloaded CSV file. Use URIs from standard vocabularies (like schema.org, SIO, OBO) or create your own.")
             st.dataframe(st.session_state['matching_df'], use_container_width=True, height=300) # Add height limit for large tables
             try:
                 # Ensure consistent encoding, use utf-8-sig for better Excel compatibility
                 output_csv = st.session_state['matching_df'].to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                 st.download_button(
-                    label="💾 Download Matching Table (CSV)",
+                    label="Download Matching Table (CSV)",
                     data=output_csv,
                     file_name="matching_table.csv",
                     mime="text/csv",
@@ -1711,7 +1711,7 @@ def render_matching_table_generator_page():
                 try:
                     output_csv_data = df_to_download.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                     st.download_button(
-                        label=f"💾 Download Preprocessed Data as CSV",
+                        label=f"Download Preprocessed Data as CSV",
                         data=output_csv_data,
                         file_name=f"{output_filename_base}.csv",
                         mime="text/csv",
@@ -1729,7 +1729,7 @@ def render_matching_table_generator_page():
                     # writer.save() # Not needed with context manager
                     output_excel_data = output_buffer.getvalue()
                     st.download_button(
-                        label=f"💾 Download Preprocessed Data as Excel (XLSX)",
+                        label=f"Download Preprocessed Data as Excel (XLSX)",
                         data=output_excel_data,
                         file_name=f"{output_filename_base}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

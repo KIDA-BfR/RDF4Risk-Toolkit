@@ -5,13 +5,13 @@ import streamlit as st
 # Set the page configuration for the landing page
 st.set_page_config(
     page_title="Linked Data Toolkit",
-    page_icon="🔗",  # Updated icon
+    page_icon="link",
     layout="wide",   # Optional: "wide" or "centered"
     initial_sidebar_state="expanded" # Optional: "auto", "expanded", "collapsed"
 )
 
 # --- Page Content ---
-st.title("Welcome to the Linked Data Toolkit! 🔗")
+st.title("Welcome to the Linked Data Toolkit!")
 
 st.markdown("""
 This application provides a suite of tools designed to assist you in the Linked Data generation workflow. 
@@ -54,4 +54,4 @@ Explore and export RDF data from TriG files in a tabular format. This tool allow
 
 
 st.markdown("---")
-st.info("👈 Select a tool from the sidebar to get started!")
+st.info("Select a tool from the sidebar to get started!")
