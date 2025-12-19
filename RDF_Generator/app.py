@@ -23,7 +23,7 @@ from .uri_utils import process_iris_async, load_api_specs
 if __name__ == "__main__":
     st.set_page_config(page_title="RDF Generator", layout="wide")
 
-st.title("📊 Excel/CSV to RDF Converter")
+st.title("Excel/CSV to RDF Converter")
 # Configure logging (adjust level as needed for debugging)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 st.markdown("Upload your (potentially preprocessed) data table and the corresponding matching table to generate RDF.")
@@ -268,8 +268,16 @@ def main():
     col1_data, col2_data = st.columns([2,1])
     with col1_data:
         uploaded_file = st.file_uploader("Upload data (Excel/CSV)", type=["xlsx", "csv"], key=f"main_uploader_{st.session_state.main_uploader_key}")
-        header_row_main = st.number_input("Header row (1-based)", min_value=1, value=1,
-                                          key="main_header", help="Row number containing the column names.")
+        
+        # Persist header row
+        if 'rdf_gen_header_row_main' not in st.session_state:
+            st.session_state['rdf_gen_header_row_main'] = 1
+            
+        header_row_main = st.number_input("Header row (1-based)", min_value=1, 
+                                          value=st.session_state['rdf_gen_header_row_main'],
+                                          key="main_header_input", 
+                                          help="Row number containing the column names.")
+        st.session_state['rdf_gen_header_row_main'] = header_row_main
 
         # Excel sheet selection (only show for Excel files)
         sheet_name_main = None
@@ -338,8 +346,15 @@ def main():
     col1_map, col2_map = st.columns([2,1])
     with col1_map:
         mapping_file = st.file_uploader("Upload mapping table (Excel/CSV)", type=["xlsx", "csv"], key=f"map_uploader_{st.session_state.map_uploader_key}")
-        header_row_mapping = st.number_input("Header row (1-based)", min_value=1, value=1,
-                                             key="map_header", help="Header row of the mapping file.")
+        
+        # Persist mapping header row
+        if 'rdf_gen_header_row_mapping' not in st.session_state:
+            st.session_state['rdf_gen_header_row_mapping'] = 1
+            
+        header_row_mapping = st.number_input("Header row (1-based)", min_value=1, 
+                                             value=st.session_state['rdf_gen_header_row_mapping'],
+                                             key="map_header_input", help="Header row of the mapping file.")
+        st.session_state['rdf_gen_header_row_mapping'] = header_row_mapping
 
         # Excel sheet selection for mapping table (only show for Excel files)
         sheet_name_mapping = None
@@ -523,6 +538,17 @@ def main():
         # --- 3. Enrich URIs (Optional) ---
         st.subheader("3. Enrich URIs (Optional)")
         with st.expander("Find labels and clickable links for external URIs"):
+            st.info("""
+                **Enrich URIs** allows you to automatically fetch additional details for the external URIs in your mapping table.
+                
+                **What happens here?**
+                *   The system connects to external services like **BioPortal, OLS (Ontology Lookup Service), and Ontobee**.
+                *   For each URI, it retrieves the **human-readable label** (e.g., "Campylobacter") and the **acronym** of its source ontology.
+                *   It also generates **clickable links** that take you directly to the term's page in the original ontology.
+                
+                **Why use this?**
+                It transforms abstract URIs into meaningful information, making it much easier to review your mappings and understand the semantic context of your data.
+            """)
             enrich_uris = st.checkbox("Enable URI Enrichment?", key="enrich_uris_cb", help="Looks up external URIs in services like BioPortal to fetch labels and create clickable links.")
             if enrich_uris:
                 st.info("This process can take some time depending on the number of URIs and the speed of external APIs.")
@@ -594,7 +620,7 @@ def main():
         st.subheader("4. Define Schema Mapping Templates (Optional)")
 
         # --- Help/Guidance Expander (Moved outside the main template management expander) ---
-        with st.expander("ℹ️ How to Use Schema Mapping Templates (Examples & Guidance)", expanded=False):
+        with st.expander("How to Use Schema Mapping Templates (Examples & Guidance)", expanded=False):
             help_text = """
             Schema Mapping Templates allow you to define explicit rules for transforming your tabular data into
             more complex RDF structures, especially when dealing with specific ontologies and nested information.
@@ -915,8 +941,238 @@ def main():
                             st.rerun()
         st.markdown("---") # End of expander for schema templates
 
-        # 5. RDF Configuration Section (was 3)
-        st.subheader("5. RDF Generation Configuration")
+        # --- 5. Grouping Configuration ---
+        st.markdown("---")
+        st.subheader("5. Configure Grouping (Optional)")
+        with st.expander("Group Related Columns into Substructures"):
+            st.info("""
+                **Grouping** allows you to bundle multiple related columns into a **structured sub-entity** (Blank Node) instead of attaching them all directly to the main subject.
+                
+                **Benefit:** This is useful for modeling complex properties that belong together.
+                
+                **Example:** If you have columns for `Measurement Value` and `Measurement Unit`, you can group them under a `hasAnalysisResult` predicate. This creates a separate node that contains both the value and the unit, making your RDF semantically richer and more compliant with ontologies like SOSA or QUDT.
+            """)
+            st.markdown("Group columns (e.g. `plasmid_circular`) into Blank Nodes. Requires 'Connecting Predicate' URI.")
+            group_active = st.checkbox("Enable column grouping?", key="group_active")
+            group_config = {}
+            grouping_valid = True
+            if group_active:
+                try:
+                    suggested_groups_dict = suggest_groups(df.columns)
+                    if suggested_groups_dict:
+                        st.markdown("**Detected Potential Groups:**")
+                        for group_key, group_data in suggested_groups_dict.items():
+                            display_name = group_data['display']
+                            columns = group_data['columns']
+                            activate_group = st.checkbox(
+                                f"Group columns related to '{display_name}'?",
+                                key=f"group_cb_{group_key}",
+                                help=f"Columns: {', '.join(columns)}"
+                            )
+                            if activate_group:
+                                conn_pred = st.text_input(
+                                    f"Connecting Predicate URI for '{display_name}'",
+                                    key=f"group_pred_{group_key}",
+                                    placeholder="e.g. http://example.org/hasAnalysisResult",
+                                    help="REQUIRED: Full URI."
+                                )
+                                group_type = st.text_input(
+                                    f"RDF Type URI for '{display_name}' Group (Opt.)",
+                                    key=f"group_type_{group_key}",
+                                    placeholder="e.g. http://example.org/AnalysisResult",
+                                    help="Optional: Full `rdf:type` URI."
+                                )
+                                if not conn_pred or not is_valid_uri_simple(conn_pred.strip()):
+                                    st.warning(f"Valid Connecting URI needed for '{display_name}'.")
+                                    grouping_valid = False
+                                else:
+                                    group_type_uri_final = group_type.strip() if group_type and is_valid_uri_simple(group_type.strip()) else None
+                                    if group_type and not group_type_uri_final:
+                                        st.warning(f"Group Type URI for '{display_name}' invalid, ignoring.")
+                                    group_config[display_name] = {
+                                        'columns': columns,
+                                        'connecting_predicate': conn_pred.strip(),
+                                        'group_type': group_type_uri_final
+                                    }
+                    else:
+                        st.info("No obvious groups found based on column names.")
+                except Exception as e:
+                    st.error(f"Error suggesting groups: {e}")
+
+        st.markdown("---")
+        # --- 6. Reference Handling (Optional) ---
+        st.subheader("6. Publication Reference Handling (Optional)")
+        
+        # Check if reference is already loaded to provide visual feedback
+        reference_is_loaded = st.session_state.get('reference_data') is not None
+        if reference_is_loaded:
+            ref_info = st.session_state['reference_data']
+            if ref_info['method'] == 'DOI':
+                st.success(f"Publication reference loaded for DOI: **{ref_info['doi']}**")
+            else:
+                title_val = ref_info['metadata'].get('title', ['Unknown'])[0]
+                st.success(f"Publication reference loaded: **{title_val}**")
+
+        with st.expander("Add/Update Publication Reference to Dataset", expanded=not reference_is_loaded):
+            st.markdown("""
+            Add a publication reference that will be linked to your dataset metadata. 
+            You can provide a DOI for automatic metadata retrieval or manually enter publication details.
+            """)
+            
+            # Reference input method selection
+            # Persist reference_method
+            if 'rdf_gen_reference_method' not in st.session_state:
+                st.session_state['rdf_gen_reference_method'] = "DOI"
+            
+            ref_method_idx = 0 if st.session_state['rdf_gen_reference_method'] == "DOI" else 1
+            reference_method = st.radio(
+                "Choose reference input method:",
+                ("DOI", "Manual Entry"),
+                index=ref_method_idx,
+                key="reference_method_radio",
+                help="DOI will automatically fetch metadata from CrossRef and OpenAlex APIs"
+            )
+            st.session_state['rdf_gen_reference_method'] = reference_method
+            
+            if reference_method == "DOI":
+                # Persist DOI input
+                if 'rdf_gen_doi_input' not in st.session_state:
+                    st.session_state['rdf_gen_doi_input'] = ""
+                    
+                doi_input = st.text_input(
+                    "DOI",
+                    value=st.session_state['rdf_gen_doi_input'],
+                    key="doi_input_text",
+                    placeholder="e.g., 10.1038/nature12373",
+                    help="Enter the DOI without 'doi:' prefix"
+                )
+                st.session_state['rdf_gen_doi_input'] = doi_input
+                
+                if doi_input and st.button("Fetch Publication Metadata", key="fetch_doi_btn"):
+                    with st.spinner("Fetching publication metadata..."):
+                        try:
+                            converter = DOIToSemOpenAlexConverter()
+                            rdf_graph_ref = converter.convert(doi_input)
+                            
+                            if rdf_graph_ref:
+                                st.session_state['reference_data'] = {
+                                    'method': 'DOI',
+                                    'doi': doi_input,
+                                    'graph': rdf_graph_ref
+                                }
+                                st.session_state['reference_rdf'] = converter.serialize(format='turtle')
+                                st.rerun() # Rerun to show success message and update expander state
+                            else:
+                                st.error("Failed to fetch metadata for the provided DOI.")
+                        except Exception as e:
+                            st.error(f"Error fetching DOI metadata: {e}")
+                
+                # Show persistent preview if data exists
+                if reference_is_loaded and st.session_state['reference_data']['method'] == 'DOI':
+                    st.markdown("**Current Fetched Publication Data:**")
+                    preview_rdf = st.session_state['reference_rdf'][:2000]
+                    if len(st.session_state['reference_rdf']) > 2000:
+                        preview_rdf += "\n... (truncated)"
+                    st.code(preview_rdf, language="turtle")
+                            
+            else:  # Manual Entry
+                st.markdown("**Manual Publication Entry:**")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    title = st.text_input("Title*", key="manual_title", help="Publication title (required)")
+                    authors = st.text_area("Authors*", key="manual_authors", 
+                                         help="Authors separated by semicolons (e.g., Smith, J.; Doe, A.)",
+                                         placeholder="Smith, John; Doe, Alice")
+                    journal = st.text_input("Journal/Publication*", key="manual_journal", 
+                                           help="Journal or publication name (required)")
+                    
+                with col2:
+                    year = st.number_input("Year", key="manual_year", min_value=1900, max_value=2030, 
+                                         value=2023, help="Publication year")
+                    volume = st.text_input("Volume", key="manual_volume", help="Journal volume (optional)")
+                    pages = st.text_input("Pages", key="manual_pages", 
+                                        help="Page range (e.g., 123-145)", placeholder="123-145")
+                    manual_doi = st.text_input("DOI (Optional)", key="manual_doi", 
+                                             placeholder="10.1038/nature12373")
+                
+                if st.button("Generate Reference RDF", key="generate_manual_ref_btn"):
+                    if not title or not authors or not journal:
+                        st.warning("Title, Authors, and Journal are required fields.")
+                    else:
+                        try:
+                            # Create a manual metadata structure similar to CrossRef format
+                            manual_metadata = {
+                                'title': [title],
+                                'author': [],
+                                'container-title': [journal],
+                                'published-print': {
+                                    'date-parts': [[year, 1, 1]]  # Default to January 1st
+                                }
+                            }
+                            
+                            # Parse authors
+                            author_list = [author.strip() for author in authors.split(';')]
+                            for author in author_list:
+                                if ',' in author:
+                                    # Assume "Last, First" format
+                                    parts = author.split(',', 1)
+                                    family = parts[0].strip()
+                                    given = parts[1].strip() if len(parts) > 1 else ""
+                                else:
+                                    # Assume "First Last" format
+                                    parts = author.strip().split()
+                                    given = ' '.join(parts[:-1]) if len(parts) > 1 else ""
+                                    family = parts[-1] if parts else author
+                                
+                                manual_metadata['author'].append({
+                                    'given': given,
+                                    'family': family
+                                })
+                            
+                            # Add optional fields
+                            if volume:
+                                manual_metadata['volume'] = volume
+                            if pages:
+                                manual_metadata['page'] = pages
+                            if manual_doi:
+                                manual_metadata['DOI'] = manual_doi
+                            
+                            # Generate RDF using the reference handler
+                            converter = DOIToSemOpenAlexConverter()
+                            
+                            # Create a work URI for manual entry
+                            work_uri = converter.create_work_uri(manual_doi if manual_doi else title)
+                            
+                            # Add metadata to the graph
+                            converter.add_work_metadata(work_uri, manual_metadata)
+                            converter.add_authors(work_uri, manual_metadata)
+                            converter.add_source(work_uri, manual_metadata)
+                            converter.add_open_access(work_uri, manual_metadata)
+                            
+                            st.session_state['reference_data'] = {
+                                'method': 'Manual',
+                                'metadata': manual_metadata,
+                                'graph': converter.graph
+                            }
+                            st.session_state['reference_rdf'] = converter.serialize(format='turtle')
+                            st.rerun() # Rerun to show success message and update expander state
+                            
+                        except Exception as e:
+                            st.error(f"Error generating reference RDF: {e}")
+                            st.exception(e)
+
+                # Show persistent preview if data exists
+                if reference_is_loaded and st.session_state['reference_data']['method'] == 'Manual':
+                    st.markdown("**Current Manual Publication RDF:**")
+                    preview_rdf = st.session_state['reference_rdf'][:2000]
+                    if len(st.session_state['reference_rdf']) > 2000:
+                        preview_rdf += "\n... (truncated)"
+                    st.code(preview_rdf, language="turtle")
+
+        st.markdown("---")
+        # --- 7. RDF Configuration Section ---
+        st.subheader("7. RDF Generation Configuration")
 
         
         config = st.session_state['config'] # Use the session state config
@@ -926,17 +1182,36 @@ def main():
         with basic_col1:
             # (Subject Identification)
             st.markdown("**Subject Identification**")
+            
+            # Persist id_option
+            if 'rdf_gen_id_option' not in st.session_state:
+                st.session_state['rdf_gen_id_option'] = "Existing ID Column"
+            
+            id_option_idx = 0 if st.session_state['rdf_gen_id_option'] == "Existing ID Column" else 1
             id_option = st.radio("Identify subjects via:", ("Existing ID Column", "Generated IDs"),
-                                 key="id_option_default", horizontal=True,
+                                 index=id_option_idx,
+                                 key="id_option_radio", horizontal=True,
                                  help="Choose unique row ID column or auto-generate.")
+            st.session_state['rdf_gen_id_option'] = id_option
+
             default_id_column = None
             default_id_valid = False
             id_column_options = [""] + list(df.columns)
+            
+            # Persist default_id_column
+            if 'rdf_gen_default_id_col' not in st.session_state:
+                st.session_state['rdf_gen_default_id_col'] = ""
+            
+            def_id_idx = id_column_options.index(st.session_state['rdf_gen_default_id_col']) if st.session_state['rdf_gen_default_id_col'] in id_column_options else 0
+            
             default_id_column_selected = st.selectbox("Select existing ID column (for default method)",
                                                       id_column_options,
-                                                      key="default_id_col_select",
+                                                      index=def_id_idx,
+                                                      key="default_id_col_selectbox",
                                                       disabled=(id_option == "Generated IDs"),
                                                       help="Column with unique values per row, used if cross-file linking is OFF.")
+            st.session_state['rdf_gen_default_id_col'] = default_id_column_selected
+
             if id_option == "Existing ID Column":
                 if not default_id_column_selected:
                     st.warning("Select default ID column if using this method.")
@@ -950,19 +1225,44 @@ def main():
             st.markdown("---")
             # (Cross-File Linking)
             st.markdown("**Cross-File Linking (Overrides Default ID)**")
+            
+            # Persist shared_id checkbox
+            if 'rdf_gen_use_shared_id' not in st.session_state:
+                st.session_state['rdf_gen_use_shared_id'] = False
+            
             use_shared_identifier = st.checkbox("Link subjects across files using a shared identifier?",
-                                                key="shared_id_cb",
+                                                value=st.session_state['rdf_gen_use_shared_id'],
+                                                key="shared_id_checkbox",
                                                 help="Enable for consistent subject URIs across multiple tables using a shared key column.")
+            st.session_state['rdf_gen_use_shared_id'] = use_shared_identifier
+
             shared_id_column = None
             subject_base_uri = None
             shared_id_valid = False
             if use_shared_identifier:
+                # Persist shared identifier column
+                if 'rdf_gen_shared_id_col' not in st.session_state:
+                    st.session_state['rdf_gen_shared_id_col'] = ""
+                
+                shared_id_idx = id_column_options.index(st.session_state['rdf_gen_shared_id_col']) if st.session_state['rdf_gen_shared_id_col'] in id_column_options else 0
+                
                 shared_id_column = st.selectbox("Select Shared Identifier Column", [""] + list(df.columns),
-                                                key="shared_id_col_select",
+                                                index=shared_id_idx,
+                                                key="shared_id_col_selectbox",
                                                 help="The column containing the shared ID.")
-                subject_base_uri_input = st.text_input("Subject Base URI", key="shared_id_base_uri",
+                st.session_state['rdf_gen_shared_id_col'] = shared_id_column
+
+                # Persist subject base uri
+                if 'rdf_gen_subject_base_uri' not in st.session_state:
+                    st.session_state['rdf_gen_subject_base_uri'] = ""
+
+                subject_base_uri_input = st.text_input("Subject Base URI", 
+                                                       value=st.session_state['rdf_gen_subject_base_uri'],
+                                                       key="shared_id_base_uri_input",
                                                        placeholder="e.g., http://example.org/samples/",
                                                        help="REQUIRED Base URI (e.g., http://myorg.com/entity/). ID is appended.")
+                st.session_state['rdf_gen_subject_base_uri'] = subject_base_uri_input
+
                 if not shared_id_column:
                     st.warning("Select the shared identifier column.")
                 elif not subject_base_uri_input or not is_valid_uri_simple(subject_base_uri_input.strip()):
@@ -978,16 +1278,30 @@ def main():
             st.markdown("**Named Graph (Required)**")
             named_graph_uri = None # Initialize as None
             
-            # Radio button to choose between named graph or no named graph
+            # Persist graph_option
+            if 'rdf_gen_graph_option' not in st.session_state:
+                st.session_state['rdf_gen_graph_option'] = "Use Named Graph"
+                
+            graph_opt_idx = 0 if st.session_state['rdf_gen_graph_option'] == "Use Named Graph" else 1
             graph_option = st.radio("Choose graph option:", 
                                    ("Use Named Graph", "No Named Graph"), 
-                                   key="graph_option",
+                                   index=graph_opt_idx,
+                                   key="graph_option_radio",
                                    help="Choose whether to use a named graph or generate RDF without one.")
+            st.session_state['rdf_gen_graph_option'] = graph_option
             
             if graph_option == "Use Named Graph":
                 # The base URI for the graph is now derived from the default_namespace in the config
                 default_base_uri = config.get('default_namespace', "http://example.com/data/") # Fallback for UI
-                graph_base = st.text_input("Base URI for graph", value=default_base_uri, key="ng_base")
+                
+                # Persist graph base uri
+                if 'rdf_gen_graph_base_uri' not in st.session_state:
+                    st.session_state['rdf_gen_graph_base_uri'] = default_base_uri
+                
+                graph_base = st.text_input("Base URI for graph", 
+                                           value=st.session_state['rdf_gen_graph_base_uri'], 
+                                           key="ng_base_input")
+                st.session_state['rdf_gen_graph_base_uri'] = graph_base
                 try:
                     # Use uploaded_file.name which should be available here
                     if uploaded_file:
@@ -1055,73 +1369,42 @@ def main():
             match_type_column = st.selectbox("SKOS Match Type Column (Opt.)", map_cols_options, index=match_type_col_idx,
                                              key="map_match_col", help="Optional: SKOS relation.")
             st.markdown("**RDF Type for Subjects (Opt.)**")
-            use_instance_class = st.checkbox("Assign rdf:type?", key="use_class")
+            st.info("""
+                Specify what **type of entity** each row in your dataset represents. 
+                
+                **Example:** If your data describes bacterial isolates, you might provide the URI for Campylobacter isolates from an ontology: `http://purl.obolibrary.org/obo/NCBITaxon_197`.
+                
+                This assigns an `rdf:type` statement to all main subjects generated from your table.
+            """)
+            
+            # Persist class checkbox
+            if 'rdf_gen_use_class' not in st.session_state:
+                st.session_state['rdf_gen_use_class'] = False
+                
+            use_instance_class = st.checkbox("Assign rdf:type?", 
+                                             value=st.session_state['rdf_gen_use_class'],
+                                             key="use_class_checkbox")
+            st.session_state['rdf_gen_use_class'] = use_instance_class
+
             instance_class_uri = None
             if use_instance_class:
-                instance_class_input = st.text_input("Class URI", key="class_uri_input",
+                # Persist class URI
+                if 'rdf_gen_class_uri' not in st.session_state:
+                    st.session_state['rdf_gen_class_uri'] = ""
+                    
+                instance_class_input = st.text_input("Class URI", 
+                                                     value=st.session_state['rdf_gen_class_uri'],
+                                                     key="class_uri_input_text",
                                                      placeholder="e.g., http://schema.org/Dataset",
                                                      help="Full URI for subject class.")
+                st.session_state['rdf_gen_class_uri'] = instance_class_input
+
                 if instance_class_input and not is_valid_uri_simple(instance_class_input.strip()):
                     st.warning("Class URI invalid.")
                 elif instance_class_input:
                     instance_class_uri = instance_class_input.strip()
 
-        # --- Grouping Configuration ---
         st.markdown("---")
-        st.subheader("6. Configure Grouping (Optional)") # Was 4
-        with st.expander("Group Related Columns into Substructures"):
-            st.markdown("Group columns (z. B. `plasmid_circular`) into Blank Nodes. Requires 'Connecting Predicate' URI.")
-            group_active = st.checkbox("Enable column grouping?", key="group_active")
-            group_config = {}
-            grouping_valid = True
-            if group_active:
-                try:
-                    suggested_groups_dict = suggest_groups(df.columns)
-                    if suggested_groups_dict:
-                        st.markdown("**Detected Potential Groups:**")
-                        for group_key, group_data in suggested_groups_dict.items():
-                            display_name = group_data['display']
-                            columns = group_data['columns']
-                            activate_group = st.checkbox(
-                                f"Group columns related to '{display_name}'?",
-                                key=f"group_cb_{group_key}",
-                                help=f"Columns: {', '.join(columns)}"
-                            )
-                            if activate_group:
-                                conn_pred = st.text_input(
-                                    f"Connecting Predicate URI for '{display_name}'",
-                                    key=f"group_pred_{group_key}",
-                                    placeholder="z. B. http://example.org/hasAnalysisResult",
-                                    help="REQUIRED: Full URI."
-                                )
-                                group_type = st.text_input(
-                                    f"RDF Type URI for '{display_name}' Group (Opt.)",
-                                    key=f"group_type_{group_key}",
-                                    placeholder="z. B. http://example.org/AnalysisResult",
-                                    help="Optional: Full `rdf:type` URI."
-                                )
-                                if not conn_pred or not is_valid_uri_simple(conn_pred.strip()):
-                                    st.warning(f"Valid Connecting URI needed for '{display_name}'.")
-                                    grouping_valid = False
-                                else:
-                                    group_type_uri_final = group_type.strip() if group_type and is_valid_uri_simple(group_type.strip()) else None
-                                    if group_type and not group_type_uri_final:
-                                        st.warning(f"Group Type URI for '{display_name}' invalid, ignoring.")
-                                    group_config[display_name] = {
-                                        'columns': columns,
-                                        'connecting_predicate': conn_pred.strip(),
-                                        'group_type': group_type_uri_final
-                                    }
-                    else:
-                        st.info("No obvious groups found based on column names.")
-                except Exception as e:
-                    st.error(f"Error suggesting groups: {e}")
-
-        st.markdown("---")
-        # --- 7. Generate RDF from Table Data ---
-        st.subheader("7. Generate RDF from Table Data") # Was 7
-
-        # Selector for Active Schema Template
         active_template_name_to_apply = None
         if st.session_state.schema_templates:
             template_names = ["None (use default column mapping)"] + [t['template_name'] for t in st.session_state.schema_templates]
@@ -1240,164 +1523,16 @@ def main():
                 st.session_state['skos_data'] = None
                 st.session_state['rdf_preview'] = None
         
-        st.markdown("---")
-        # --- 8. Configure DCAT Metadata Catalog (Optional) ---
-        st.subheader("8. Configure DCAT Metadata Catalog (Optional)") # Was 6
-        # The DCAT builder internally checks if RDF data (from session or upload) is ready.
-        # The expander state can be true by default, as the function handles the display logic.
-        with st.expander("Wrap Generated RDF in a DCAT Catalog", expanded=True):
+        # --- 8. DCAT Metadata Catalog builder ---
+        if st.session_state.get('rdf_data'):
+            st.markdown("---")
+            st.subheader("8. DCAT Metadata Catalog builder")
             display_dcat_builder()
-
-        st.markdown("---")
-        # --- 9. Reference Handling (Optional) ---
-        st.subheader("9. Publication Reference Handling (Optional)")
-        with st.expander("Add Publication Reference to Dataset", expanded=False):
-            st.markdown("""
-            Add a publication reference that will be linked to your dataset metadata. 
-            You can provide a DOI for automatic metadata retrieval or manually enter publication details.
-            """)
-            
-            # Reference input method selection
-            reference_method = st.radio(
-                "Choose reference input method:",
-                ("DOI", "Manual Entry"),
-                key="reference_method",
-                help="DOI will automatically fetch metadata from CrossRef and OpenAlex APIs"
-            )
-            
-            if reference_method == "DOI":
-                doi_input = st.text_input(
-                    "DOI",
-                    key="doi_input",
-                    placeholder="e.g., 10.1038/nature12373",
-                    help="Enter the DOI without 'doi:' prefix"
-                )
-                
-                if doi_input and st.button("Fetch Publication Metadata", key="fetch_doi_btn"):
-                    with st.spinner("Fetching publication metadata..."):
-                        try:
-                            converter = DOIToSemOpenAlexConverter()
-                            rdf_graph = converter.convert(doi_input)
-                            
-                            if rdf_graph:
-                                st.session_state['reference_data'] = {
-                                    'method': 'DOI',
-                                    'doi': doi_input,
-                                    'graph': rdf_graph
-                                }
-                                st.session_state['reference_rdf'] = converter.serialize(format='turtle')
-                                st.success(f"Successfully fetched metadata for DOI: {doi_input}")
-                                
-                                # Show preview of fetched metadata
-                                st.markdown("**Fetched Publication Data:**")
-                                preview_rdf = st.session_state['reference_rdf'][:2000]
-                                if len(st.session_state['reference_rdf']) > 2000:
-                                    preview_rdf += "\n... (truncated)"
-                                st.code(preview_rdf, language="turtle")
-                            else:
-                                st.error("Failed to fetch metadata for the provided DOI.")
-                        except Exception as e:
-                            st.error(f"Error fetching DOI metadata: {e}")
-                            
-            else:  # Manual Entry
-                st.markdown("**Manual Publication Entry:**")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    title = st.text_input("Title*", key="manual_title", help="Publication title (required)")
-                    authors = st.text_area("Authors*", key="manual_authors", 
-                                         help="Authors separated by semicolons (e.g., Smith, J.; Doe, A.)",
-                                         placeholder="Smith, John; Doe, Alice")
-                    journal = st.text_input("Journal/Publication*", key="manual_journal", 
-                                           help="Journal or publication name (required)")
-                    
-                with col2:
-                    year = st.number_input("Year", key="manual_year", min_value=1900, max_value=2030, 
-                                         value=2023, help="Publication year")
-                    volume = st.text_input("Volume", key="manual_volume", help="Journal volume (optional)")
-                    pages = st.text_input("Pages", key="manual_pages", 
-                                        help="Page range (e.g., 123-145)", placeholder="123-145")
-                    manual_doi = st.text_input("DOI (Optional)", key="manual_doi", 
-                                             placeholder="10.1038/nature12373")
-                
-                if st.button("Generate Reference RDF", key="generate_manual_ref_btn"):
-                    if not title or not authors or not journal:
-                        st.warning("Title, Authors, and Journal are required fields.")
-                    else:
-                        try:
-                            # Create a manual metadata structure similar to CrossRef format
-                            manual_metadata = {
-                                'title': [title],
-                                'author': [],
-                                'container-title': [journal],
-                                'published-print': {
-                                    'date-parts': [[year, 1, 1]]  # Default to January 1st
-                                }
-                            }
-                            
-                            # Parse authors
-                            author_list = [author.strip() for author in authors.split(';')]
-                            for author in author_list:
-                                if ',' in author:
-                                    # Assume "Last, First" format
-                                    parts = author.split(',', 1)
-                                    family = parts[0].strip()
-                                    given = parts[1].strip() if len(parts) > 1 else ""
-                                else:
-                                    # Assume "First Last" format
-                                    parts = author.strip().split()
-                                    given = ' '.join(parts[:-1]) if len(parts) > 1 else ""
-                                    family = parts[-1] if parts else author
-                                
-                                manual_metadata['author'].append({
-                                    'given': given,
-                                    'family': family
-                                })
-                            
-                            # Add optional fields
-                            if volume:
-                                manual_metadata['volume'] = volume
-                            if pages:
-                                manual_metadata['page'] = pages
-                            if manual_doi:
-                                manual_metadata['DOI'] = manual_doi
-                            
-                            # Generate RDF using the reference handler
-                            converter = DOIToSemOpenAlexConverter()
-                            
-                            # Create a work URI for manual entry
-                            work_uri = converter.create_work_uri(manual_doi if manual_doi else title)
-                            
-                            # Add metadata to the graph
-                            converter.add_work_metadata(work_uri, manual_metadata)
-                            converter.add_authors(work_uri, manual_metadata)
-                            converter.add_source(work_uri, manual_metadata)
-                            converter.add_open_access(work_uri, manual_metadata)
-                            
-                            st.session_state['reference_data'] = {
-                                'method': 'Manual',
-                                'metadata': manual_metadata,
-                                'graph': converter.graph
-                            }
-                            st.session_state['reference_rdf'] = converter.serialize(format='turtle')
-                            st.success("Publication reference RDF generated successfully!")
-                            
-                            # Show preview
-                            st.markdown("**Generated Publication RDF:**")
-                            preview_rdf = st.session_state['reference_rdf'][:2000]
-                            if len(st.session_state['reference_rdf']) > 2000:
-                                preview_rdf += "\n... (truncated)"
-                            st.code(preview_rdf, language="turtle")
-                            
-                        except Exception as e:
-                            st.error(f"Error generating reference RDF: {e}")
-                            st.exception(e)
-
 
     # --- Download and Preview Section ---
     if st.session_state.get('rdf_data') or st.session_state.get('dcat_catalog_data'):
         st.markdown("---")
-        st.subheader("10. Download & Preview Generated RDF")
+        st.subheader("9. Download & Preview Generated RDF")
         
         uploaded_file_name = uploaded_file.name if uploaded_file else "rdf_output"
         file_stem = os.path.splitext(uploaded_file_name)[0]

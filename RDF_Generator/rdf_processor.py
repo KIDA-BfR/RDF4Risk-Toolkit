@@ -122,31 +122,26 @@ def _define_predicates(df, pred_mappings, id_column, subject_column, column_to_g
     default_namespace = config.get('default_namespace', 'https://fskx-graphdb.risk-ai-cloud.com/')
 
     for col in df.columns:
-        if col == id_column or (subject_column and col == subject_column) or col in column_to_group_info:
+        if col == id_column or (subject_column and col == subject_column):
             continue
 
         pred_uri = None
 
-        # CRITICAL FIX: Check term_to_concept_uri_map FIRST (Problem 3 fix)
-        # This ensures we use internal concept URIs instead of external matched URIs
+        # CRITICAL FIX: Check term_to_concept_uri_map FIRST
         if term_to_concept_uri_map and col in term_to_concept_uri_map:
             pred_uri = term_to_concept_uri_map[col]
             logging.debug(f"Column '{col}': Using internal concept URI from map: {pred_uri}")
         else:
-            # Fallback: If not in concept map, try mapping table or generate new URI
             col_norm = str(col).strip().lower()
             match_row = pred_mappings[pred_mappings['_norm_term'] == col_norm]
 
             if not match_row.empty:
                 raw_mapping_uri = strip_angle_brackets(safe_value(match_row.iloc[0][iri_column]))
                 if raw_mapping_uri and is_valid_uri(raw_mapping_uri):
-                    # Note: If term_to_concept_uri_map exists but column not in it,
-                    # we still use external URI as fallback (backwards compatibility)
                     pred_uri = URIRef(map_custom_uri_to_standard_uri(raw_mapping_uri, default_namespace))
                     logging.debug(f"Column '{col}': Using URI from mapping table: {pred_uri}")
 
             if not pred_uri:
-                # Generate internal URI if no mapping found
                 col_cleaned = clean_string_for_uri(col, config.get('uri_character_replacements'))
                 if col_cleaned:
                     pred_uri = URIRef(default_namespace + "concepts/" + col_cleaned)
@@ -155,12 +150,13 @@ def _define_predicates(df, pred_mappings, id_column, subject_column, column_to_g
                     logging.warning(f"Cannot generate predicate URI for column '{col}'. Skipping.")
                     continue
 
-        # Add predicate metadata (type and label) only once per unique URI
-        if pred_uri not in defined_predicates.values():
+        # Add predicate metadata only once
+        if not any(isinstance(d, dict) and d.get('local_uri') == pred_uri for d in defined_predicates.values()):
             graph_target.add((pred_uri, RDF.type, RDF.Property))
             graph_target.add((pred_uri, RDFS.label, Literal(str(col).strip(), datatype=XSD.string)))
 
-        defined_predicates[col] = pred_uri
+        # Always store as dict for consistency (Requirement 1 & 2)
+        defined_predicates[col] = {'local_uri': pred_uri}
 
     return defined_predicates
 
@@ -223,8 +219,11 @@ def _process_rows(df, id_column, subject_column, subject_uri_base, config, class
                     continue  # Should not happen if group_bnodes initialized correctly
 
                 # Determine predicate for the grouped column's data
-                pred_uri_for_group_prop = defined_predicates.get(col_name)
-                if not pred_uri_for_group_prop:  # Define if not already
+                pred_info = defined_predicates.get(col_name)
+                # Requirement 4: Handle consistent dict structure
+                pred_uri_for_group_prop = pred_info.get('local_uri') if isinstance(pred_info, dict) else pred_info
+
+                if not pred_uri_for_group_prop:  # Define if not already (Keeping fallback logic)
                     # CRITICAL FIX: Check term_to_concept_uri_map FIRST for grouped columns too
                     if term_to_concept_uri_map and col_name in term_to_concept_uri_map:
                         pred_uri_for_group_prop = term_to_concept_uri_map[col_name]
@@ -243,10 +242,14 @@ def _process_rows(df, id_column, subject_column, subject_uri_base, config, class
                             if col_cleaned_grp:
                                 pred_uri_for_group_prop = URIRef(str(DATASET_Default) + col_cleaned_grp)
 
-                    if pred_uri_for_group_prop and pred_uri_for_group_prop not in defined_predicates.values():
-                        graph_target.add((pred_uri_for_group_prop, RDF.type, RDF.Property))
-                        graph_target.add((pred_uri_for_group_prop, RDFS.label, Literal(str(col_name).strip(), datatype=XSD.string)))
-                        defined_predicates[col_name] = pred_uri_for_group_prop
+                    if pred_uri_for_group_prop:
+                        # Check if this URI is already in any of the values (considering dicts)
+                        if not any((d.get('local_uri') if isinstance(d, dict) else d) == pred_uri_for_group_prop for d in defined_predicates.values()):
+                            graph_target.add((pred_uri_for_group_prop, RDF.type, RDF.Property))
+                            graph_target.add((pred_uri_for_group_prop, RDFS.label, Literal(str(col_name).strip(), datatype=XSD.string)))
+                        
+                        # Store as dict for consistency (Requirement 1)
+                        defined_predicates[col_name] = {'local_uri': pred_uri_for_group_prop}
 
                 if not pred_uri_for_group_prop:
                     logging.warning(f"Row {idx+1}, Grouped Col '{col_name}': Predicate URI missing for group property.")
@@ -263,32 +266,24 @@ def _process_rows(df, id_column, subject_column, subject_uri_base, config, class
                 continue
 
             group_info = column_to_group_info.get(col)
-            # If column is part of a group, its direct properties are handled by group processing,
-            # not as direct properties of the main subject unless explicitly mapped outside grouping.
-            # The original logic correctly assigns to target_subject_node (which is bnode if grouped).
+            # Implementation of Requirement 3: Emit triples into correct node
+            target_node = group_bnodes.get(group_info['group_key']) if group_info else subject_uri
 
-            target_subject_node = group_bnodes.get(group_info['group_key']) if group_info else subject_uri
-
-            obj_value_raw = safe_value(row.get(col))  # Use .get for safety
+            obj_value_raw = safe_value(row.get(col))
             if obj_value_raw is None:
                 continue
 
-            pred_uri = defined_predicates.get(col)  # Predicates should be pre-defined
+            pred_info = defined_predicates.get(col)
+            # Requirement 1 & 4: Use dict structure
+            pred_uri = pred_info.get('local_uri') if isinstance(pred_info, dict) else pred_info
+            
             if not pred_uri:
-                # This case should ideally be covered by pre-definition or skipped if col is only for grouping
-                if group_info:  # If it's a grouped column, its predicate is for the BNode
-                    # Predicate definition for grouped columns happens inside group processing loop or needs to be ensured
-                    pass  # Already handled if defined_predicates is populated correctly for grouped columns
-                else:  # Not grouped, not pre-defined: error or dynamic creation
-                    logging.warning(f"Row {idx+1}, Col '{col}': Predicate URI not pre-defined and not in a group. Skipping.")
-                    continue
-
-            if not pred_uri:
-                continue  # Safety skip
+                logging.warning(f"Row {idx+1}, Col '{col}': Predicate URI not pre-defined. Skipping.")
+                continue
 
             obj = _create_object_node(obj_value_raw, col, obj_mappings, EX, graph_target, config, term_to_concept_uri_map, iri_column=iri_column)
             if obj is not None:
-                graph_target.add((target_subject_node, pred_uri, obj))
+                graph_target.add((target_node, pred_uri, obj))
             else:
                 logging.warning(f"Row {idx+1}, Col '{col}': Could not determine object for '{obj_value_raw}'.")
 

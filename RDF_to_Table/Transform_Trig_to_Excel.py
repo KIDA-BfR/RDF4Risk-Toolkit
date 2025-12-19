@@ -22,13 +22,9 @@ except ImportError as e:
 
 
 
-# Namespace patterns
-INTERNAL_CONCEPTS_NAMESPACE = 'https://fskx-graphdb.risk-ai-cloud.com/concepts/'
-SUBJECT_URI_PATTERN = '/subjects/id_'
-
-# Named graph URIs
-DCAT_METADATA_GRAPH = 'https://fskx-graphdb.risk-ai-cloud.com/graph/dcat-metadata'
-PUBLICATION_REFERENCE_GRAPH = 'https://fskx-graphdb.risk-ai-cloud.com/graph/publication-reference'
+# Named graph suffixes
+DCAT_METADATA_SUFFIX = '/graph/dcat-metadata'
+PUBLICATION_REFERENCE_SUFFIX = '/graph/publication-reference'
 
 # Excel styling
 HEADER_BG_COLOR = "366092"  # Blue
@@ -55,14 +51,16 @@ class TriGConverter:
     - Creating comprehensive property mapping sheets
     """
 
-    def __init__(self, input_file: Path):
+    def __init__(self, input_file: Optional[Path] = None, data: Optional[str] = None):
         """
         Initialize the converter.
 
         Args:
             input_file: Path to the input TriG file
+            data: Raw TriG data as string
         """
         self.input_file = input_file
+        self.data = data
         self.graph: Optional[Dataset] = None
 
         # Property mappings
@@ -113,13 +111,14 @@ class TriGConverter:
         return uri
 
     def _should_use_local_name(self, uri: str) -> bool:
-        """Check if URI is from internal concepts namespace and has no label."""
-        return (INTERNAL_CONCEPTS_NAMESPACE in uri and
-                uri not in self.uri_to_label)
+        """Check if URI should use its local name and has no label."""
+        # Check if it's an internal-looking URI (contains /concepts/ or /subjects/)
+        is_internal = '/concepts/' in uri or '/subjects/' in uri
+        return is_internal and uri not in self.uri_to_label
 
     def _is_internal_concept(self, uri: str) -> bool:
         """Check if URI is an internal concept (should not have hyperlinks)."""
-        return INTERNAL_CONCEPTS_NAMESPACE in uri
+        return '/concepts/' in uri
 
     def _get_hyperlink_uri(self, uri: str) -> str:
         """
@@ -251,18 +250,26 @@ class TriGConverter:
 
     def parse_trig(self) -> bool:
         """
-        Parse the TriG file into an RDF graph.
+        Parse the TriG file or data into an RDF graph.
 
         Returns:
             True if parsing succeeded, False otherwise
         """
         try:
-            print(f"Loading TriG file: {self.input_file}")
             self.graph = Dataset()
-            self.graph.parse(self.input_file, format='trig')
+            if self.input_file:
+                print(f"Loading TriG file: {self.input_file}")
+                self.graph.parse(self.input_file, format='trig')
+            elif self.data:
+                print("Loading TriG data from string")
+                self.graph.parse(data=self.data, format='trig')
+            else:
+                print("Error: No input file or data provided")
+                return False
+
             print(f"Successfully loaded {len(self.graph):,} triples")
 
-            if len(self.graph) == 0:
+            if len(self.graph) == 0 and self.input_file:
                 print("Warning: No triples found. Trying alternative parsing...")
                 with open(self.input_file, 'r', encoding='utf-8') as f:
                     content = f.read()
@@ -271,7 +278,7 @@ class TriGConverter:
 
             return True
         except Exception as e:
-            print(f"Error parsing TriG file: {e}")
+            print(f"Error parsing TriG: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -281,33 +288,31 @@ class TriGConverter:
         Extract all data in a single optimized pass through the graph.
 
         This method:
-        1. Collects all triples organized by subject
+        1. Collects all triples organized by subject and graph
         2. Extracts property labels, URI mappings, and match relationships
-        3. Builds subject data dictionaries
+        3. Dynamically identifies data vs metadata graphs
+        4. Builds subject data dictionaries
         """
         print("Extracting data from graph (optimized single-pass)...")
 
         # Data collection structures
         properties_with_labels = {}
         property_types = set()
-        subjects_dict = defaultdict(list)
+        graph_triples = defaultdict(list)
+        all_subjects = set()
 
-        # Convert graph to list for progress tracking
-        graph_items = list(self.graph)
-        total_triples = len(graph_items)
-        print(f"Processing {total_triples:,} triples...")
+        # Iterate through all quads in the dataset
+        total_triples = len(self.graph)
+        print(f"Processing {total_triples:,} quads...")
 
-        # Single pass through all triples
-        for item in tqdm(graph_items, desc="Loading triples", unit="triple"):
-            # Handle quads (s, p, o, g) and triples (s, p, o)
-            if len(item) == 4:
-                s, p, o, g = item
-                # Store data from specific named graphs
-                graph_uri = str(g) if g else None
-                if graph_uri in [DCAT_METADATA_GRAPH, PUBLICATION_REFERENCE_GRAPH]:
-                    self.named_graphs_data[graph_uri].append((s, p, o))
-            else:
-                s, p, o = item
+        # Single pass through all quads
+        for s, p, o, g in tqdm(self.graph.quads((None, None, None, None)), 
+                              total=total_triples, desc="Loading quads", unit="quad"):
+            graph_uri = str(g) if g else None
+
+            # Store triples by graph for later processing
+            graph_triples[graph_uri].append((s, p, o))
+            all_subjects.add(s)
 
             # Extract namespaces
             self._extract_namespace(s)
@@ -335,10 +340,6 @@ class TriGConverter:
             if p == RDF.type and o == RDF.Property:
                 property_types.add(str(s))
 
-            # Collect subject data
-            if SUBJECT_URI_PATTERN in str(s):
-                subjects_dict[s].append((p, o))
-
         # Build property labels and mappings
         for prop_uri in property_types:
             if prop_uri in properties_with_labels:
@@ -346,10 +347,46 @@ class TriGConverter:
                 self.property_labels[prop_uri] = label
                 self.label_to_property_uri[label] = prop_uri
 
+        # Identify graphs and extract subjects
+        subjects_dict = defaultdict(list)
+        
+        # Categorize graphs
+        metadata_graphs = []
+        data_graphs = []
+        
+        for graph_uri, triples in graph_triples.items():
+            if not graph_uri:
+                data_graphs.append(graph_uri)
+                continue
+                
+            if graph_uri.endswith(DCAT_METADATA_SUFFIX) or graph_uri.endswith(PUBLICATION_REFERENCE_SUFFIX):
+                self.named_graphs_data[graph_uri] = triples
+                metadata_graphs.append(graph_uri)
+            else:
+                data_graphs.append(graph_uri)
+        
+        # Identify main subjects from data graphs
+        # A subject is a 'main subject' if it's in a data graph AND not a property
+        for graph_uri in data_graphs:
+            for s, p, o in graph_triples[graph_uri]:
+                # Heuristic: focusing on row subjects (usually containing /subjects/)
+                # and excluding properties and metadata-related subjects
+                s_str = str(s)
+                if s_str not in property_types and '/subjects/' in s_str:
+                    subjects_dict[s].append((p, o))
+
+        # Fallback: if no /subjects/ found, take all subjects from data graphs that aren't properties
+        if not subjects_dict and data_graphs:
+            for graph_uri in data_graphs:
+                for s, p, o in graph_triples[graph_uri]:
+                    if str(s) not in property_types:
+                        subjects_dict[s].append((p, o))
+
         # Print statistics
         print(f"Found {len(self.property_labels)} property labels (declared as rdf:Property)")
         print(f"Found {len(self.namespaces)} namespaces")
-        print(f"Found {len(subjects_dict)} subjects")
+        print(f"Found {len(subjects_dict)} data subjects across {len(data_graphs)} graphs")
+        print(f"Found {len(metadata_graphs)} metadata graphs")
         print(f"Found {len(self.uri_to_exact_match)} exactMatch relationships")
         print(f"Found {len(self.uri_to_close_match)} closeMatch relationships")
 
@@ -704,7 +741,8 @@ class TriGConverter:
     def _write_markdown_header(self, f):
         """Write markdown file header."""
         f.write("# RDF Metadata Export\n\n")
-        f.write(f"**Source File:** {self.input_file.name}\n\n")
+        source_name = self.input_file.name if self.input_file else "Session Data"
+        f.write(f"**Source:** {source_name}\n\n")
         f.write(f"**Generated:** {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
 
     def _write_markdown_statistics(self, f):
@@ -718,8 +756,11 @@ class TriGConverter:
         """Write DCAT metadata graph section."""
         f.write("## DCAT Metadata Graph\n\n")
 
-        if DCAT_METADATA_GRAPH in self.named_graphs_data:
-            self._write_graph_section(f, DCAT_METADATA_GRAPH)
+        # Find the DCAT metadata graph by suffix
+        dcat_graph_uri = next((g for g in self.named_graphs_data.keys() if g and g.endswith(DCAT_METADATA_SUFFIX)), None)
+
+        if dcat_graph_uri:
+            self._write_graph_section(f, dcat_graph_uri)
         else:
             f.write("*No DCAT metadata found*\n\n")
 
@@ -727,8 +768,11 @@ class TriGConverter:
         """Write publication reference graph section."""
         f.write("## Publication Reference Graph\n\n")
 
-        if PUBLICATION_REFERENCE_GRAPH in self.named_graphs_data:
-            self._write_graph_section(f, PUBLICATION_REFERENCE_GRAPH)
+        # Find the publication reference graph by suffix
+        pub_graph_uri = next((g for g in self.named_graphs_data.keys() if g and g.endswith(PUBLICATION_REFERENCE_SUFFIX)), None)
+
+        if pub_graph_uri:
+            self._write_graph_section(f, pub_graph_uri)
         else:
             f.write("*No publication reference data found*\n\n")
 
@@ -820,7 +864,7 @@ class TriGConverter:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate output filenames
-        base_name = self.input_file.stem
+        base_name = self.input_file.stem if self.input_file else "output"
         excel_file = output_dir / f"{base_name}.xlsx"
         markdown_file = output_dir / f"{base_name}.md"
 

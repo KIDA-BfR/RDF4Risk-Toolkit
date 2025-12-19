@@ -5,13 +5,13 @@ import streamlit as st
 # Set the page configuration for the landing page
 st.set_page_config(
     page_title="Linked Data Toolkit",
-    page_icon="🔗",  # Updated icon
+    page_icon="link",
     layout="wide",   # Optional: "wide" or "centered"
     initial_sidebar_state="expanded" # Optional: "auto", "expanded", "collapsed"
 )
 
 # --- Page Content ---
-st.title("Welcome to the Linked Data Toolkit! 🔗")
+st.title("Welcome to the Linked Data Toolkit!")
 
 st.markdown("""
 This application provides a suite of tools designed to assist you in the Linked Data generation workflow. 
@@ -48,11 +48,10 @@ This tool is essential for transforming your structured information into a Linke
 
 st.subheader("4. RDF to Table Service")
 st.markdown("""
-Convert RDF data (from Turtle, N-Quads, RDF/XML, or JSON-LD files) back into a conventional tabular format. 
-This can be useful for analysis, review, or when you need to make RDF data accessible for spreadsheet applications or relational databases.
+Explore and export RDF data from TriG files in a tabular format. This tool allows you to view TriG data, extract metadata, and download it in various formats like Excel (with clickable hyperlinks), CSV, and Markdown. It's particularly useful for analyzing linked data, reviewing RDF datasets, and generating human-readable documentation.
 *Access this tool via the 'RDF to Table Page' link in the sidebar.*
 """)
 
 
 st.markdown("---")
-st.info("👈 Select a tool from the sidebar to get started!")
+st.info("Select a tool from the sidebar to get started!")
