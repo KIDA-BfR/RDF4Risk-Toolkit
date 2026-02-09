@@ -5,8 +5,7 @@ app_version: "PoC"
 user_agent_template: "StreamlitReconciliationApp/{version}"
 default_namespace: "https://fskx-graphdb.risk-ai-cloud.com/"
 
-# --- File Paths ---
-output_rdf_path: "/Users/tarasgunther/Documents/Projekte/Arbeit/Headless-LODServicce/output/dataset.trig"
+
 
 # --- RDF Generation Settings ---
 rdf_format: "trig"
