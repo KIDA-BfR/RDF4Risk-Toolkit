@@ -13,7 +13,6 @@ import Levenshtein
 
 # --- Configuration ---
 def render_matching_table_generator_page():
-    st.set_page_config(page_title="Matching & Preprocessing App", layout="wide")
     st.title("Data Preprocessing & Matching Table Creator")
     # Configure logging
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

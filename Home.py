@@ -1,17 +1,20 @@
 # streamlit_app.py (This is your main landing page)
 
 import streamlit as st
+from style import apply_global_styles
 
 # Set the page configuration for the landing page
 st.set_page_config(
-    page_title="Linked Data Toolkit",
+    page_title="RDF4Risk Toolkit",
     page_icon="link",
     layout="wide",   # Optional: "wide" or "centered"
     initial_sidebar_state="expanded" # Optional: "auto", "expanded", "collapsed"
 )
 
+apply_global_styles(active_step=0)
+
 # --- Page Content ---
-st.title("Welcome to the Linked Data Toolkit!")
+st.title("Welcome to the RDF4Risk Toolkit!")
 
 st.markdown("""
 This application provides a suite of tools designed to assist you in the Linked Data generation workflow. 

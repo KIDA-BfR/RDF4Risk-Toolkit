@@ -1,6 +1,11 @@
 import streamlit as st
 import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from style import apply_global_styles
+
+st.set_page_config(page_title="Matching & Preprocessing App", layout="wide")
+apply_global_styles(active_step=1)
 
 # --- Debugging Setup ---
 if 'page1_debug_log' not in st.session_state:

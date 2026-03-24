@@ -1,8 +1,11 @@
 import streamlit as st
 import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from style import apply_global_styles
 
 st.set_page_config(layout="wide") # Set page config here as it's the main entry point for this page
+apply_global_styles(active_step=2)
 
 # --- Debugging Setup ---
 if 'page2_debug_log' not in st.session_state:
