@@ -6,6 +6,15 @@ import pandas as pd
 import time
 import concurrent.futures
 import logging
+import tempfile
+from pathlib import Path
+
+# Support both package imports (e.g. Reconciliation.reconciliation_ui)
+# and direct script imports (e.g. streamlit run Reconciliation/reconciliation_ui.py).
+try:
+    from . import local_resource_provider
+except ImportError:
+    import local_resource_provider
 
 # --- Configure Logging (Console Only) ---
 logger = logging.getLogger(__name__)
@@ -21,20 +30,28 @@ try:
     from . import processing_service # Explicit relative import
     from .processing_service import fetch_suggestions_for_term_from_provider # Import the new function
 except ImportError as import_err:
-    st.error(f"Critical Import Error (reconciliation_ui): Could not import '.processing_service'. Error: {import_err}")
-    logger.critical(f"Critical Import Error (reconciliation_ui): Could not import '.processing_service'. Error: {import_err}", exc_info=True)
-    # If this is the main entry point, stop. Otherwise, re-raise.
-    if __name__ == "__main__":
-        st.stop()
-    else:
-        raise
+    try:
+        import processing_service
+        from processing_service import fetch_suggestions_for_term_from_provider
+    except ImportError:
+        st.error(f"Critical Import Error (reconciliation_ui): Could not import '.processing_service'. Error: {import_err}")
+        logger.critical(f"Critical Import Error (reconciliation_ui): Could not import '.processing_service'. Error: {import_err}", exc_info=True)
+        # If this is the main entry point, stop. Otherwise, re-raise.
+        if __name__ == "__main__":
+            st.stop()
+        else:
+            raise
 
 semantic_search = None
 try:
     from . import semantic_search # Explicit relative import
     logger.info("Successfully imported '.semantic_search' module.")
 except ImportError as import_err:
-    logger.warning(f"Import Warning (reconciliation_ui): Could not import '.semantic_search'. Cosine similarity will be unavailable. Error: {import_err}")
+    try:
+        import semantic_search
+        logger.info("Successfully imported 'semantic_search' module via direct import fallback.")
+    except ImportError:
+        logger.warning(f"Import Warning (reconciliation_ui): Could not import '.semantic_search'. Cosine similarity will be unavailable. Error: {import_err}")
 
 # --- Custom Provider Ontology Fetchers ---
 # Import get_available_ontologies from relevant providers
@@ -46,7 +63,15 @@ try:
     from .agroportal_provider import get_available_ontologies as get_agroportal_ontologies
     logger.info("Successfully imported ontology fetchers from provider modules.")
 except ImportError as import_err:
-    logger.warning(f"Import Warning (reconciliation_ui): Could not import one or more ontology fetchers. Ontology filtering may be limited. Error: {import_err}")
+    try:
+        from bioportal_provider import get_available_ontologies as get_bioportal_ontologies
+        from earthportal_provider import get_available_ontologies as get_earthportal_ontologies
+        from ols_provider import get_available_ontologies as get_ols_ontologies
+        from semlookp_provider import get_available_ontologies as get_semlookp_ontologies
+        from agroportal_provider import get_available_ontologies as get_agroportal_ontologies
+        logger.info("Successfully imported ontology fetchers via direct import fallback.")
+    except ImportError:
+        logger.warning(f"Import Warning (reconciliation_ui): Could not import one or more ontology fetchers. Ontology filtering may be limited. Error: {import_err}")
 
 # --- Import from reconciliation_utils.py ---
 try:
@@ -58,12 +83,21 @@ try:
     )
     logger.info("Successfully imported utilities from 'reconciliation_utils.py'.")
 except ImportError as import_err:
-    st.error(f"Critical Import Error (reconciliation_ui): Could not import from 'reconciliation_utils.py'. Error: {import_err}")
-    logger.critical(f"Critical Import Error (reconciliation_ui): Could not import from 'reconciliation_utils.py'. Error: {import_err}", exc_info=True)
-    if __name__ == "__main__":
-        st.stop()
-    else:
-        raise
+    try:
+        from reconciliation_utils import (
+            NO_MATCH_URI, NO_MATCH_DISPLAY, CUSTOM_SPARQL_PROVIDER_NAME, DEFAULT_SPARQL_QUERY_TEMPLATE,
+            load_config, CONFIG, USER_AGENT,
+            calculate_levenshtein_score, format_suggestion_display, create_download_link,
+            get_combined_and_sorted_suggestions, prefill_best_matches, render_pagination_controls_ui
+        )
+        logger.info("Successfully imported utilities from 'reconciliation_utils.py' via direct import fallback.")
+    except ImportError:
+        st.error(f"Critical Import Error (reconciliation_ui): Could not import from 'reconciliation_utils.py'. Error: {import_err}")
+        logger.critical(f"Critical Import Error (reconciliation_ui): Could not import from 'reconciliation_utils.py'. Error: {import_err}", exc_info=True)
+        if __name__ == "__main__":
+            st.stop()
+        else:
+            raise
 
 # --- Main UI Rendering Function ---
 def render_reconciliation_ui():
@@ -77,6 +111,8 @@ def render_reconciliation_ui():
     if 'last_uploaded_filename' not in st.session_state: st.session_state['last_uploaded_filename'] = None
     if 'semantic_model' not in st.session_state: st.session_state['semantic_model'] = None
     if 'provider_queue' not in st.session_state: st.session_state['provider_queue'] = []
+    if 'local_resources' not in st.session_state: st.session_state['local_resources'] = []
+    if 'local_backend' not in st.session_state: st.session_state['local_backend'] = "auto"
     if 'provider_status' not in st.session_state: st.session_state['provider_status'] = {} 
     if 'total_indices_to_process' not in st.session_state: st.session_state['total_indices_to_process'] = [] 
     if 'display_provider' not in st.session_state: st.session_state['display_provider'] = None 
@@ -127,8 +163,19 @@ def render_reconciliation_ui():
     if 'selected_ontologies_by_provider' not in st.session_state: st.session_state['selected_ontologies_by_provider'] = {}
     if 'ontology_loading_status' not in st.session_state: st.session_state['ontology_loading_status'] = {} # e.g., {'BioPortal': 'loading', 'AgroPortal': 'loaded', 'OLS (EBI)': 'error'}
 
-    st.title("CSV Reconciliation Tool (PoC)")
-    st.write("Upload CSV, select sources, manage queue via sidebar, reconcile terms.")
+    st.title("Data Reconciliation Tool")
+    st.write("Upload tabular data, select sources, manage queue via sidebar, reconcile terms.")
+
+    st.subheader("Matching Table Structure Information")
+    st.info("""
+Your matching table (CSV or Excel) should be structured with the following columns:
+- **Term**: The term you want to reconcile (required).
+- **URI**: The reconciled URI for the term (optional, will be filled by the service).
+- **RDF Role**: The RDF role of the term (optional, e.g., predicate, object).
+- **Match Type**: The SKOS match type (optional, e.g., skos:exactMatch, skos:closeMatch).
+""")
+
+    st.markdown("---")
 
     if CONFIG is None:
         st.error("Critical Error: 'config.yaml' could not be loaded. App cannot continue.")
@@ -357,11 +404,67 @@ def render_reconciliation_ui():
             CUSTOM_SPARQL_PROVIDER_NAME: "Connect to your own custom SPARQL endpoint. Requires Endpoint URL and a valid SPARQL query template."
         }
         st.subheader("Reconciliation Sources")
-        standard_providers = ["Wikidata", "NCBI", "BioPortal", "OLS (EBI)", "AgroPortal", "EarthPortal", "SemLookP", "QUDT"]
+        standard_providers = ["Wikidata", "NCBI", "BioPortal", "OLS (EBI)", "AgroPortal", "EarthPortal", "SemLookP", "QUDT", "Local Ontology"]
         available_providers = standard_providers.copy()
         if st.session_state.get('custom_sparql_enabled'):
             available_providers.append(CUSTOM_SPARQL_PROVIDER_NAME)
         
+        with st.expander("Local ontology / thesaurus files", expanded=False):
+            backend = st.selectbox(
+                "Parser backend",
+                ["auto", "oak", "rdflib", "tabular"],
+                key="local_backend",
+                help="OAK takes very long on larger files > 2 MB. Use rdflib for faster RDF/OWL parsing."
+            )
+            uploaded_ontos = st.file_uploader(
+                "Upload OWL/OBO/RDF/TTL/JSON-LD or CSV/TSV/XLSX",
+                accept_multiple_files=True,
+                key="local_onto_uploader"
+            )
+
+            if st.button("Index uploaded files"):
+                resources = []
+                status_placeholder = st.empty()
+                progress_placeholder = st.empty()
+
+                for uf in uploaded_ontos or []:
+                    status_placeholder.info(f"Indexing {uf.name}...")
+                    
+                    # Save to a temp file with correct suffix
+                    suffix = Path(uf.name).suffix
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+                    tmp.write(uf.getbuffer())
+                    tmp.close()
+
+                    try:
+                        def update_progress(count):
+                            progress_placeholder.text(f"Extracting entities from {uf.name}: {count:,} found so far...")
+
+                        with st.spinner(f"Parsing {uf.name} with {backend} backend..."):
+                            idx = local_resource_provider.load_local_resource_index(
+                                tmp.name,
+                                resource_name=uf.name,
+                                force_backend=backend,
+                                progress_callback=update_progress,
+                                max_entities=50000  # Safety limit
+                            )
+                        resources.append({"name": uf.name, "path": tmp.name, "index": idx, "backend": backend})
+                    except Exception as e:
+                        st.error(f"Error indexing {uf.name}: {e}")
+
+                st.session_state["local_resources"] = resources
+                status_placeholder.empty()
+                progress_placeholder.empty()
+                
+                if resources:
+                    st.success(f"Indexed {len(resources)} local resources.")
+                    for res in resources:
+                        st.info(f" - {res['name']} indexed using backend: **{res['index'].parse_backend}** ({len(res['index'].entities):,} entities)")
+                        with st.expander(f"Sample entities from {res['name']}", expanded=False):
+                            sample = res['index'].entities[:5]
+                            for ent in sample:
+                                st.text(f"• {ent.label} <{ent.uri}>")
+
         st.write("Select providers to add to the queue:")
         cols_prov = st.columns(2)
         for i, provider_name_iter in enumerate(available_providers):
@@ -798,6 +901,9 @@ def render_reconciliation_ui():
                                     }
                                 elif provider_name == "NCBI":
                                     current_config_for_provider['ncbi_databases'] = st.session_state.get('ncbi_selected_databases', [])
+                                elif provider_name == "Local Ontology":
+                                    current_config_for_provider['local_resources'] = st.session_state.get('local_resources', [])
+                                    current_config_for_provider['local_backend'] = st.session_state.get('local_backend', "auto")
                                 
                                 if provider_name in st.session_state.get('selected_ontologies_by_provider', {}):
                                     current_config_for_provider['selected_ontologies_by_provider'] = {
@@ -1328,6 +1434,9 @@ def render_reconciliation_ui():
                                                     }
                                                 if p_name == "NCBI":
                                                     dynamic_dialog_config['ncbi_databases'] = st.session_state.get('ncbi_selected_databases', [])
+                                                if p_name == "Local Ontology":
+                                                    dynamic_dialog_config['local_resources'] = st.session_state.get('local_resources', [])
+                                                    dynamic_dialog_config['local_backend'] = st.session_state.get('local_backend', "auto")
                                                 if p_name == CUSTOM_SPARQL_PROVIDER_NAME and st.session_state.get('custom_sparql_enabled'):
                                                     dynamic_dialog_config['custom_sparql'] = {
                                                         'endpoint': st.session_state.get('custom_sparql_endpoint'),
