@@ -43,6 +43,8 @@ def render_matching_table_generator_page():
         'transformations_prepared': False, # Tracks if any rules are currently prepared
         'preprocessing_applied_in_last_run': False, # Tracks if preprocessing was applied in the *last* matching table generation
         'omitted_columns_selection': [], # For user to select columns to omit values from
+        'omitted_columns_multiselect_key': [], # Mirrors widget state for omission multiselect
+        'pending_omitted_columns_selection': None, # Deferred widget sync to avoid post-instantiation writes
         'selected_sheet': None, # For Excel files: tracks the selected sheet name
         'available_sheets': [] # For Excel files: list of available sheet names
     }
@@ -172,6 +174,51 @@ def render_matching_table_generator_page():
             # TypeError: if input is not suitable (e.g., complex object passed accidentally)
             return False
 
+    def make_dataframe_arrow_compatible(df: pd.DataFrame) -> pd.DataFrame:
+        """Normalizes problematic object columns so Streamlit/pyarrow can serialize them reliably."""
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            return df
+
+        df_fixed = df.copy()
+
+        def _decode_possible_bytes(value):
+            if isinstance(value, (bytes, bytearray, memoryview)):
+                raw = bytes(value)
+                for enc in ("utf-8", "latin-1", "windows-1252"):
+                    try:
+                        return raw.decode(enc)
+                    except Exception:
+                        continue
+                return raw.decode("utf-8", errors="replace")
+            return value
+
+        converted_columns = []
+        for col in df_fixed.columns:
+            series = df_fixed[col]
+            if not pd.api.types.is_object_dtype(series):
+                continue
+
+            normalized = series.map(_decode_possible_bytes)
+            non_null = normalized.dropna()
+
+            # Mixed object dtypes (e.g., int + bytes/str) often break pyarrow conversion.
+            # Convert such columns to pandas nullable string while keeping missing values.
+            unique_types = {type(v) for v in non_null}
+            has_mixed_types = len(unique_types) > 1
+            if has_mixed_types:
+                df_fixed[col] = normalized.map(lambda v: pd.NA if pd.isna(v) else str(v)).astype("string")
+                converted_columns.append(col)
+            else:
+                df_fixed[col] = normalized
+
+        if converted_columns:
+            logging.info(
+                "Converted mixed object columns to nullable string for Arrow compatibility: %s",
+                converted_columns,
+            )
+
+        return df_fixed
+
     def split_column(df, column_name, delimiter, new_column_names):
         """Splits a column into multiple new columns based on a delimiter."""
         if not isinstance(df, pd.DataFrame) or column_name not in df.columns:
@@ -225,6 +272,14 @@ def render_matching_table_generator_page():
         #     # Could add date conversion attempt here too if needed
 
         return df
+
+    def update_omitted_columns_selection(new_selection):
+        """Updates omission selection and stages widget sync for next rerun phase."""
+        normalized = sorted(list(set(new_selection)))
+        st.session_state['omitted_columns_selection'] = normalized
+        # IMPORTANT: do not write widget key directly after widget instantiation.
+        # We stage this value and apply it before the next multiselect creation.
+        st.session_state['pending_omitted_columns_selection'] = normalized
 
     
     def suggest_split_names(
@@ -423,6 +478,10 @@ def render_matching_table_generator_page():
 
                 logging.info(f"DataFrame columns after sanitization and deduplication: {list(df.columns)}")
 
+                # Prevent Streamlit/pyarrow serialization errors on mixed object columns
+                # (e.g., bytes + int in one column, as seen for columns like 'CIP').
+                df = make_dataframe_arrow_compatible(df)
+
                 logging.info(f"Loaded DataFrame shape: {df.shape}")
                 if df.empty:
                     logging.warning("Loaded DataFrame is empty.")
@@ -436,7 +495,7 @@ def render_matching_table_generator_page():
                 st.session_state['prepared_expand_config'] = {}
                 st.session_state['transformations_prepared'] = False
                 st.session_state['preprocessing_applied_in_last_run'] = False
-                st.session_state['omitted_columns_selection'] = []
+                update_omitted_columns_selection([])
                 st.session_state['current_start_row'] = start_row_val
             else:
                 # This case should ideally not happen if read_csv/excel worked but returned None
@@ -471,7 +530,7 @@ def render_matching_table_generator_page():
             st.session_state['prepared_expand_config'] = {}
             st.session_state['transformations_prepared'] = False
             st.session_state['preprocessing_applied_in_last_run'] = False
-            st.session_state['omitted_columns_selection'] = []
+            update_omitted_columns_selection([])
             # Clear Levenshtein state
             if 'similar_term_groups' in st.session_state: st.session_state.similar_term_groups = []
             if 'user_choices_for_similar_terms' in st.session_state: st.session_state.user_choices_for_similar_terms = {}
@@ -505,7 +564,7 @@ def render_matching_table_generator_page():
             st.session_state['prepared_expand_config'] = {}
             st.session_state['transformations_prepared'] = False
             st.session_state['preprocessing_applied_in_last_run'] = False
-            st.session_state['omitted_columns_selection'] = []
+            update_omitted_columns_selection([])
             st.session_state['current_start_row'] = 1 # Reset start row state to default
             # Clear Levenshtein state
             if 'similar_term_groups' in st.session_state: st.session_state.similar_term_groups = []
@@ -556,7 +615,7 @@ def render_matching_table_generator_page():
                 st.session_state['prepared_expand_config'] = {}
                 st.session_state['transformations_prepared'] = False
                 st.session_state['preprocessing_applied_in_last_run'] = False
-                st.session_state['omitted_columns_selection'] = []
+                update_omitted_columns_selection([])
                 st.rerun()
 
     # Start row input - value linked to state, triggers reload via callback
@@ -613,6 +672,12 @@ def render_matching_table_generator_page():
 
         columns_for_omission_multiselect = list(df_initial_preview.columns) # df_initial_preview is available here
 
+        # Apply deferred omission widget sync BEFORE instantiating the multiselect.
+        pending_omitted = st.session_state.get('pending_omitted_columns_selection')
+        if pending_omitted is not None:
+            st.session_state['omitted_columns_multiselect_key'] = pending_omitted
+            st.session_state['pending_omitted_columns_selection'] = None
+
         def sync_omitted_columns_selection():
             # Sync the primary session state variable from the widget's state
             if "omitted_columns_multiselect_key" in st.session_state:
@@ -652,10 +717,14 @@ def render_matching_table_generator_page():
                 if numeric_cols_to_add:
                     # Update session state for omitted_columns_selection
                     current_omitted = set(st.session_state.get('omitted_columns_selection', []))
-                    current_omitted.update(numeric_cols_to_add)
-                    st.session_state.omitted_columns_selection = sorted(list(current_omitted))
-                    logging.info(f"Added numeric columns to omission list: {numeric_cols_to_add}. New list: {st.session_state.omitted_columns_selection}")
-                    st.rerun() # Rerun to update the multiselect widget
+                    new_numeric_cols = sorted(list(set(numeric_cols_to_add) - current_omitted))
+                    if new_numeric_cols:
+                        current_omitted.update(new_numeric_cols)
+                        update_omitted_columns_selection(list(current_omitted))
+                        logging.info(f"Added numeric columns to omission list: {new_numeric_cols}. New list: {st.session_state.omitted_columns_selection}")
+                        st.rerun() # Rerun to update the multiselect widget
+                    else:
+                        st.info("All detected numeric columns are already in the omission list.")
                 else:
                     st.info("No purely numeric columns found to add to the omission list.")
             else:
@@ -685,10 +754,14 @@ def render_matching_table_generator_page():
                 if date_cols_to_add:
                     # Update session state for omitted_columns_selection
                     current_omitted = set(st.session_state.get('omitted_columns_selection', []))
-                    current_omitted.update(date_cols_to_add)
-                    st.session_state.omitted_columns_selection = sorted(list(current_omitted))
-                    logging.info(f"Added date columns to omission list: {date_cols_to_add}. New list: {st.session_state.omitted_columns_selection}")
-                    st.rerun() # Rerun to update the multiselect widget
+                    new_date_cols = sorted(list(set(date_cols_to_add) - current_omitted))
+                    if new_date_cols:
+                        current_omitted.update(new_date_cols)
+                        update_omitted_columns_selection(list(current_omitted))
+                        logging.info(f"Added date columns to omission list: {new_date_cols}. New list: {st.session_state.omitted_columns_selection}")
+                        st.rerun() # Rerun to update the multiselect widget
+                    else:
+                        st.info("All detected date columns are already in the omission list.")
                 else:
                     st.info("No date columns found to add to the omission list.")
             else:
@@ -707,10 +780,14 @@ def render_matching_table_generator_page():
                 if id_cols_to_add:
                     # Update session state for omitted_columns_selection
                     current_omitted = set(st.session_state.get('omitted_columns_selection', []))
-                    current_omitted.update(id_cols_to_add)
-                    st.session_state.omitted_columns_selection = sorted(list(current_omitted))
-                    logging.info(f"Added ID columns to omission list: {id_cols_to_add}. New list: {st.session_state.omitted_columns_selection}")
-                    st.rerun() # Rerun to update the multiselect widget
+                    new_id_cols = sorted(list(set(id_cols_to_add) - current_omitted))
+                    if new_id_cols:
+                        current_omitted.update(new_id_cols)
+                        update_omitted_columns_selection(list(current_omitted))
+                        logging.info(f"Added ID columns to omission list: {new_id_cols}. New list: {st.session_state.omitted_columns_selection}")
+                        st.rerun() # Rerun to update the multiselect widget
+                    else:
+                        st.info("All detected ID columns are already in the omission list.")
                 else:
                     st.info("No columns with 'ID' in their name found to add to the omission list.")
             else:
