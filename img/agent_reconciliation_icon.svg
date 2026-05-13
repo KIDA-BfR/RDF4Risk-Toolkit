@@ -1,0 +1,53 @@
+<svg
+  width="64"
+  height="64"
+  viewBox="0 0 64 64"
+  fill="none"
+  xmlns="http://www.w3.org/2000/svg"
+  role="img"
+  aria-labelledby="title desc"
+>
+  <title id="title">Agent-Based Reconciliation Icon</title>
+  <desc id="desc">A compact icon showing an agent hub reconciling candidate nodes into a validated semantic match.</desc>
+
+  <defs>
+    <linearGradient id="mainGradient" x1="9" y1="9" x2="55" y2="55" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2563EB"/>
+      <stop offset="0.52" stop-color="#0891B2"/>
+      <stop offset="1" stop-color="#14B8A6"/>
+    </linearGradient>
+
+    <linearGradient id="accentGradient" x1="40" y1="14" x2="56" y2="30" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#14B8A6"/>
+    </linearGradient>
+
+    <filter id="softShadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#0F172A" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <circle cx="13.5" cy="18" r="5.5" fill="#F8FAFC" stroke="#2563EB" stroke-width="2"/>
+  <circle cx="13.5" cy="32" r="5.5" fill="#F8FAFC" stroke="#0891B2" stroke-width="2"/>
+  <circle cx="13.5" cy="46" r="5.5" fill="#F8FAFC" stroke="#14B8A6" stroke-width="2"/>
+
+  <path d="M19.5 18 C25 18 25.5 27 30.5 29" stroke="url(#mainGradient)" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M19.5 32 H29" stroke="url(#mainGradient)" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M19.5 46 C25 46 25.5 37 30.5 35" stroke="url(#mainGradient)" stroke-width="2.6" stroke-linecap="round"/>
+
+  <path
+    d="M32 20.5L42 26.25V37.75L32 43.5L22 37.75V26.25L32 20.5Z"
+    fill="url(#mainGradient)"
+    filter="url(#softShadow)"
+  />
+  <circle cx="32" cy="32" r="4.5" fill="#FFFFFF" opacity="0.96"/>
+  <path d="M28.8 32H35.2" stroke="#2563EB" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M32 28.8V35.2" stroke="#14B8A6" stroke-width="1.8" stroke-linecap="round"/>
+
+  <path d="M42.5 32H47.5" stroke="url(#mainGradient)" stroke-width="2.6" stroke-linecap="round"/>
+  <circle cx="52" cy="32" r="8.5" fill="url(#accentGradient)" filter="url(#softShadow)"/>
+  <path d="M48.3 32.1L50.9 34.7L56.1 29.2" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <circle cx="25.2" cy="24.6" r="1.7" fill="#38BDF8"/>
+  <circle cx="25.2" cy="39.4" r="1.7" fill="#14B8A6"/>
+</svg>

@@ -1,9 +1,25 @@
+import base64
+from pathlib import Path
+
 import streamlit as st
+
+
+_LOGO_PATH = Path(__file__).resolve().parent / "img" / "rdf4risk_shield.png"
+
+
+def _load_logo_data_uri() -> str:
+    """Return logo image as data URI for reliable CSS rendering in the sidebar."""
+    if not _LOGO_PATH.exists():
+        return ""
+
+    encoded_logo = base64.b64encode(_LOGO_PATH.read_bytes()).decode("utf-8")
+    return f"data:image/png;base64,{encoded_logo}"
 
 def apply_global_styles(active_step: int = 0):
     """
     active_step: 1=Matching Table Generator, 2=Reconciliation,
-                 3=RDF Generator, 4=RDF to Table
+                 3=Agent-Based Reconciliation,
+                 4=RDF Generator, 5=RDF to Table
                  0 = Home (no step highlighted)
     Home is li:nth-child(1); MTG is li:nth-child(2); so active nth = active_step + 1.
     """
@@ -20,24 +36,48 @@ def apply_global_styles(active_step: int = 0):
             }}
         """
 
+    sidebar_logo_data_uri = _load_logo_data_uri()
+    sidebar_brand_css = f"""
+            [data-testid="stSidebarNav"] {{
+                position: relative;
+                padding-top: 220px !important;
+            }}
+
+            [data-testid="stSidebarNav"]::before {{
+                content: "";
+                position: absolute;
+                left: 50%;
+                top: 8px;
+                transform: translateX(-50%);
+                width: 132px;
+                height: 132px;
+                background: url('{sidebar_logo_data_uri}') center center / contain no-repeat;
+            }}
+
+            [data-testid="stSidebarNav"]::after {{
+                content: "RDF4Risk Toolkit";
+                position: absolute;
+                left: 50%;
+                top: 150px;
+                transform: translateX(-50%);
+                width: 100%;
+                text-align: center;
+                font-size: 24px;
+                font-weight: 700;
+                letter-spacing: 0.14em;
+                color: #6e6e73;
+                white-space: nowrap;
+            }}
+    """
+
     st.markdown(f"""
         <style>
             /* ── Hide Streamlit chrome ─────────────────────────────────────── */
             [data-testid="stDecoration"] {{ display: none !important; }}
             [data-testid="stHeader"]     {{ display: none !important; }}
 
-            /* ── Sidebar: workflow strip ───────────────────────────────────── */
-
-            /* "WORKFLOW" label above the nav */
-            [data-testid="stSidebarNav"]::before {{
-                content: "RDF4Risk Toolkit";
-                display: block;
-                font-size: 24px;
-                font-weight: 700;
-                letter-spacing: 0.12em;
-                color: #6e6e73;
-                padding: 20px 16px 10px 16px;
-            }}
+            /* ── Sidebar: top branding (logo + title) ─────────────────────── */
+            {sidebar_brand_css}
 
             /* Nav list container */
             [data-testid="stSidebarNavItems"] {{

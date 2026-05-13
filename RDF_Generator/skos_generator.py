@@ -50,11 +50,15 @@ def create_skos_graph_and_lookup_map(
     terms_graph.add((scheme_uri, RDFS.label, Literal("Concept Scheme from Mapping Table")))
 
     for _, row in mapping_df.iterrows():
-        term = safe_value(row.get('Term'))
+        term = safe_value(row.get('subject_label'))
+        if not term:
+            term = safe_value(row.get('Term'))
         if not term:
             continue
 
-        uri = strip_angle_brackets(safe_value(row.get('URI')))
+        uri = strip_angle_brackets(safe_value(row.get('object_id')))
+        if not uri:
+            uri = strip_angle_brackets(safe_value(row.get('URI')))
 
         # Always generate a consistent internal concept URI for the SKOS concept
         clean_term = clean_string_for_uri(term, config.get('uri_character_replacements', {}))
@@ -74,7 +78,9 @@ def create_skos_graph_and_lookup_map(
         # Link the concept to the dynamically provided data graph URI
         terms_graph.add((concept_uri, VOID.inDataset, data_graph_uri_ref))
 
-        provider_term = safe_value(row.get('Provider Term'))
+        provider_term = safe_value(row.get('object_label'))
+        if not provider_term:
+            provider_term = safe_value(row.get('Provider Term'))
         if provider_term:
             terms_graph.add((concept_uri, SKOS.altLabel, Literal(provider_term)))
 
@@ -94,8 +100,10 @@ def create_skos_graph_and_lookup_map(
         if ui_link and is_valid_uri(ui_link):
             terms_graph.add((concept_uri, RDFS.seeAlso, URIRef(ui_link)))
 
-        # Handle exact and close matches
-        match_type = safe_value(row.get('Match Type'))
+        # Handle SSSOM predicate mappings
+        match_type = safe_value(row.get('predicate_id'))
+        if not match_type:
+            match_type = safe_value(row.get('Match Type'))
 
         if uri and is_valid_uri(uri) and match_type:
             match_uri = URIRef(uri)

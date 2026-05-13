@@ -44,8 +44,8 @@ except Exception as path_ex:
 # --- Import Application Module and Render Page ---
 # Explicitly import the rendering function and call it
 try:
-    from Reconciliation.reconciliation_ui import render_reconciliation_ui
-    log_debug("SUCCESS: Imported 'render_reconciliation_ui' from Reconciliation.reconciliation_ui.")
+    from semi_automatic_reconciliation.reconciliation_ui import render_reconciliation_ui
+    log_debug("SUCCESS: Imported 'render_reconciliation_ui' from semi_automatic_reconciliation.reconciliation_ui.")
     
     # The render_reconciliation_ui function handles the entire UI, including the sidebar.
     # No need to duplicate sidebar logic here.

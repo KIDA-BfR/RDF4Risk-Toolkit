@@ -1,0 +1,24 @@
+{
+  "scripts": {
+    "start": "node scripts/dev.mjs",
+    "start:frontend": "vite --host 0.0.0.0",
+    "build": "vite build --base=./ --outDir build"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.11.4",
+    "@emotion/styled": "^11.11.5",
+    "@mui/material": "^5.15.21",
+    "lottie-react": "^2.4.1",
+    "motion": "^12.38.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "streamlit-component-lib": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.66",
+    "@types/react-dom": "^18.2.22",
+    "@vitejs/plugin-react": "^4.2.1",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.0"
+  }
+}

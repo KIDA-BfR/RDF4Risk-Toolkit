@@ -1,0 +1,88 @@
+app_version: PoC
+user_agent_template: 'StreamlitReconciliationApp/0.9 (Contact: Michael.Zarske@bfr.bund.de)
+  requests/python'
+wikidata:
+  api_url: https://www.wikidata.org/w/api.php
+ncbi:
+  tool_name: MyStreamlitReconTool
+  eutils_base_url: https://eutils.ncbi.nlm.nih.gov/entrez/eutils/
+  default_databases:
+  - taxonomy
+  - bioproject
+  - gene
+  default_retmax: 10
+bioportal:
+  base_url: https://data.bioontology.org
+  default_ontologies: NCIT,MESH,SNOMEDCT,GO
+  default_pagesize: 15
+  include_fields: prefLabel,synonym,definition
+  preferred_ontologies: NCIT,PO,uberon
+ols:
+  base_url: https://www.ebi.ac.uk/ols4/api
+  default_ontologies: go,chebi,doid,hp,mondo
+  default_rows: 15
+  query_fields: label,synonym,description,short_form,obo_id,iri
+  field_list: iri,label,synonym,description,ontology_prefix
+  preferred_ontologies: chebi
+agroportal:
+  base_url: https://data.agroportal.lirmm.fr
+  default_pagesize: 15
+  include_fields: prefLabel,synonym,definition
+  preferred_ontologies: Agrovoc,Foodon,Foodex2
+earthportal:
+  base_url: https://data.earthportal.eu
+  default_pagesize: 15
+  include_fields: prefLabel,synonym,definition
+  preferred_ontologies: Sweet
+semlookp:
+  preferred_ontologies: mesh
+agent_reconciliation:
+  openai_compatible_base_url: http://127.0.0.1:1234
+  preferred_model_provider: openai_codex
+  preferred_model_name: gpt-5.4-mini
+  timeout_seconds: 180
+  max_iterations: 3
+  max_workers: 4
+  default_batch_size: 10
+  langsmith_project: RDF4RiskAssessment
+  trusted_ontologies:
+  - CHEBI
+  - MESH
+  - NCIT
+  - LOINC
+  - FOODON
+  - NCBITAXON
+  - QUDT
+  - QUDT2
+  bioportal_agent_ontologies:
+  - CHEBI
+  - NCIT
+  - NIFSTD
+  - BERO
+  - OCHV
+  - SNOMEDCT
+  - QUDT
+  - QUDT2
+  - FOODON
+  enable_agentic_refinement: false
+  agentic_trigger_policy: no_exact_or_low_confidence
+  agentic_min_confidence_to_skip_refinement: 0.8
+  agentic_max_planner_calls: 1
+  agentic_max_tool_actions: 0
+  agentic_total_llm_call_budget: 4
+  agentic_max_candidate_rescore: 0
+  candidate_pool_limit: 6
+  enable_second_pass_related_retry: false
+  openai_compatible_model_registry:
+  - qwen3.5-4b
+  provenance_defaults:
+    author_id: https://orcid.org/0000-0003-4691-0483
+    author_label: Michael Zarske
+    reviewer_id: https://orcid.org/0000-0003-4691-0483
+    reviewer_label: Michael Zarske
+    creator_id: ''
+    creator_label: ''
+    mapping_tool: RDF4Risk Agent-Based Reconciliation
+    mapping_tool_version: '1.0'
+    mapping_date: '2026-04-23'
+    publication_date: ''

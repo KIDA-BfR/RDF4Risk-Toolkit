@@ -96,15 +96,18 @@ def _prepare_mappings(mapping_df, string_column, iri_column, rdf_role_column):
         logging.info("Found 'Mapped ID' instead of 'URI'. Adjusting iri_column.")
         iri_column = 'Mapped ID'
 
-    if not all(col in mapping_df.columns for col in [string_column, iri_column, rdf_role_column]):
-        raise ValueError(f"Mapping table is missing required columns. Needed: {string_column}, {iri_column}, {rdf_role_column}.")
+    # Canonical SSSOM mode (no RDF role split): `string_column` term labels + URI column are required.
+    if not all(col in mapping_df.columns for col in [string_column, iri_column]):
+        raise ValueError(f"Mapping table is missing required columns. Needed: {string_column}, {iri_column}.")
 
     # Convert relevant columns to string type to ensure '.str' accessor works
-    mapping_df[rdf_role_column] = mapping_df[rdf_role_column].astype(str)
     mapping_df[string_column] = mapping_df[string_column].astype(str)
+    mapping_df[iri_column] = mapping_df[iri_column].astype(str)
 
-    pred_mappings = mapping_df[mapping_df[rdf_role_column].str.strip().str.lower() == "predicate"].copy()
-    obj_mappings = mapping_df[mapping_df[rdf_role_column].str.strip().str.lower() == "object"].copy()
+    # In strict SSSOM flow, both predicates (column headers) and objects (cell values)
+    # are resolved from the same mapping table by term lookup.
+    pred_mappings = mapping_df.copy()
+    obj_mappings = mapping_df.copy()
 
     pred_mappings['_norm_term'] = pred_mappings[string_column].str.strip().str.lower()
     obj_mappings['_norm_term'] = obj_mappings[string_column].str.strip().str.lower()
@@ -442,7 +445,7 @@ def create_rdf_with_mappings(
     id_column: str,                 # Default subject ID column (_generated_id_ or selected)
     string_column: str,             # Mapping table: Original term column
     iri_column: str,                # Mapping table: Target URI column
-    rdf_role_column: str,           # Mapping table: 'predicate' or 'object'
+    rdf_role_column: str = None,    # Deprecated in strict SSSOM flow; kept for API compatibility
     instance_class_uri: str = None, # Optional: Full URI for rdf:type of subjects
     named_graph_uri: str = None,    # Optional: URI for the named graph context
     subject_uri_base: str = None,   # Optional: Base URI for subjects (enables cross-file linking)

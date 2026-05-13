@@ -107,7 +107,6 @@ def process_chunk_for_provider(
     user_agent: str,
     num_suggestions: int,
     matching_strategy: str,
-    semantic_model,
     chunk_size: int
 ) -> (dict, set, bool, str):
     """
@@ -181,12 +180,12 @@ def process_chunk_for_provider(
                 elif current_provider_name == "NCBI":
                     kwargs_for_call['limit_per_db'] = num_suggestions
                     kwargs_for_call['api_key'] = config.get('ncbi', {}).get('api_key')
-                    if not kwargs_for_call['api_key']: raise ValueError("Required NCBI API Key not found in config.")
+                    if not kwargs_for_call['api_key']: raise ValueError("Required NCBI API Key not found in environment variables (.env / OS env).")
                     kwargs_for_call['databases_to_search'] = config.get('ncbi_databases', [])
                 elif current_provider_name == "BioPortal":
                     kwargs_for_call['page_size'] = num_suggestions
                     kwargs_for_call['api_key'] = config.get('bioportal', {}).get('api_key')
-                    if not kwargs_for_call['api_key']: raise ValueError("Required BioPortal API key not found in config.")
+                    if not kwargs_for_call['api_key']: raise ValueError("Required BioPortal API key not found in environment variables (.env / OS env).")
                 elif current_provider_name == "OLS (EBI)":
                     pass
                 elif current_provider_name == "SemLookP":
@@ -199,11 +198,11 @@ def process_chunk_for_provider(
                 elif current_provider_name == "AgroPortal":
                     kwargs_for_call['page_size'] = num_suggestions
                     kwargs_for_call['api_key'] = config.get('agroportal', {}).get('api_key')
-                    if not kwargs_for_call['api_key']: raise ValueError("Required AgroPortal API key not found in config.")
+                    if not kwargs_for_call['api_key']: raise ValueError("Required AgroPortal API key not found in environment variables (.env / OS env).")
                 elif current_provider_name == "EarthPortal":
                     kwargs_for_call['page_size'] = num_suggestions
                     kwargs_for_call['api_key'] = config.get('earthportal', {}).get('api_key')
-                    if not kwargs_for_call['api_key']: raise ValueError("Required EarthPortal API key not found in config.")
+                    if not kwargs_for_call['api_key']: raise ValueError("Required EarthPortal API key not found in environment variables (.env / OS env).")
                 elif current_provider_name == "QUDT":
                     kwargs_for_call['limit'] = num_suggestions
                     kwargs_for_call['config'] = config # Pass the full config to access QUDT specific settings
@@ -307,16 +306,16 @@ def fetch_suggestions_for_term_from_provider(
             elif provider_name == "NCBI":
                 kwargs_for_call['limit_per_db'] = num_suggestions
                 kwargs_for_call['api_key'] = config.get('ncbi', {}).get('api_key')
-                if not kwargs_for_call['api_key'] or kwargs_for_call['api_key'] == 'YourAPIKey':
-                    raise ValueError("Required NCBI API Key not found or is default in config.")
+                if not kwargs_for_call['api_key']:
+                    raise ValueError("Required NCBI API Key not found in environment variables (.env / OS env).")
                 selected_ncbi_dbs = config.get('ncbi_databases')
                 if selected_ncbi_dbs:
                     kwargs_for_call['databases_to_search'] = selected_ncbi_dbs
             elif provider_name == "BioPortal":
                 kwargs_for_call['page_size'] = num_suggestions
                 kwargs_for_call['api_key'] = config.get('bioportal', {}).get('api_key')
-                if not kwargs_for_call['api_key'] or kwargs_for_call['api_key'] == 'YourAPIKey':
-                    raise ValueError("Required BioPortal API key not found or is default in config.")
+                if not kwargs_for_call['api_key']:
+                    raise ValueError("Required BioPortal API key not found in environment variables (.env / OS env).")
                 selected_ontologies = config.get('selected_ontologies_by_provider', {}).get(provider_name, [])
                 if selected_ontologies:
                     kwargs_for_call['ontologies'] = ",".join(selected_ontologies)
@@ -332,8 +331,8 @@ def fetch_suggestions_for_term_from_provider(
             elif provider_name == "AgroPortal":
                 kwargs_for_call['page_size'] = num_suggestions
                 kwargs_for_call['api_key'] = config.get('agroportal', {}).get('api_key')
-                if not kwargs_for_call['api_key'] or kwargs_for_call['api_key'] == 'YourAPIKey':
-                    raise ValueError("Required AgroPortal API key not found or is default in config.")
+                if not kwargs_for_call['api_key']:
+                    raise ValueError("Required AgroPortal API key not found in environment variables (.env / OS env).")
                 selected_ontologies = config.get('selected_ontologies_by_provider', {}).get(provider_name, [])
                 if selected_ontologies:
                     kwargs_for_call['ontologies'] = ",".join(selected_ontologies)
@@ -341,8 +340,8 @@ def fetch_suggestions_for_term_from_provider(
             elif provider_name == "EarthPortal":
                 kwargs_for_call['page_size'] = num_suggestions
                 kwargs_for_call['api_key'] = config.get('earthportal', {}).get('api_key')
-                if not kwargs_for_call['api_key'] or kwargs_for_call['api_key'] == 'YourAPIKey':
-                    raise ValueError("Required EarthPortal API key not found or is default in config.")
+                if not kwargs_for_call['api_key']:
+                    raise ValueError("Required EarthPortal API key not found in environment variables (.env / OS env).")
                 selected_ontologies = config.get('selected_ontologies_by_provider', {}).get(provider_name, [])
                 if selected_ontologies:
                     kwargs_for_call['ontologies'] = ",".join(selected_ontologies)

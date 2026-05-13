@@ -1,0 +1,22 @@
+{
+  "P31": "instance of",
+  "P279": "subclass of",
+  "P361": "part of",
+  "P527": "has part(s)",
+  "P171": "parent taxon",
+  "P225": "taxon name",
+  "P703": "found in taxon",
+  "P17": "country",
+  "P495": "country of origin",
+  "P106": "occupation",
+  "P105": "taxon rank",
+  "P1269": "facet of",
+  "P2176": "drug used for treatment",
+  "P2175": "medical condition treated",
+  "P1552": "has characteristic",
+  "P1889": "different from",
+  "P486": "MeSH descriptor ID",
+  "P18": "image",
+  "P3612": "Levenshtein placeholder",
+  "P235": "InChIKey"
+}

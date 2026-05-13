@@ -1,60 +1,39 @@
-# streamlit_app.py (This is your main landing page)
+import os
 
 import streamlit as st
+import streamlit.components.v1 as components
+
 from style import apply_global_styles
 
-# Set the page configuration for the landing page
+
+def get_home_component_path() -> str:
+    """Return the shared React/Material-UI component build directory."""
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "agentic_reconciliation",
+        "components",
+        "workflow_config_panel",
+        "frontend",
+        "build",
+    )
+
+
 st.set_page_config(
     page_title="RDF4Risk Toolkit",
     page_icon="link",
-    layout="wide",   # Optional: "wide" or "centered"
-    initial_sidebar_state="expanded" # Optional: "auto", "expanded", "collapsed"
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 apply_global_styles(active_step=0)
 
-# --- Page Content ---
-st.title("Welcome to the RDF4Risk Toolkit!")
-
-st.markdown("""
-This application provides a suite of tools designed to assist you in the Linked Data generation workflow. 
-From preparing your data and reconciling it against knowledge bases to generating and converting RDF, these tools aim to streamline your tasks.
-Navigate through the different tools using the sidebar on the left.
-
-Below is a brief overview of the available tools:
-""")
-
-st.header("Available Tools")
-
-# Descriptions for each tool
-
-st.subheader("1. Matching Table Service")
-st.markdown("""
-This tool helps you generate matching tables from your data sources. 
-It's a preparatory step to create structured mappings, often used before reconciliation or RDF generation, by comparing and aligning datasets based on specified criteria.
-*Access this tool via the 'Matching Table Generator Page' link in the sidebar.*
-""")
-
-st.subheader("2. Reconciliation Service")
-st.markdown("""
-The Reconciliation tool allows you to reconcile your terms against external vocabularies and knowledge bases (e.g., Wikidata, NCBI). 
-This process enriches your data by linking it to authoritative URIs, a crucial step in creating Linked Data.
-*Access this tool via the 'Reconciliation Page' link in the sidebar.*
-""")
-
-st.subheader("3. RDF Generator Service")
-st.markdown("""
-Generate RDF (Resource Description Framework) data from your tabular data and mappings. 
-This tool is essential for transforming your structured information into a Linked Data format, making it machine-readable and interoperable.
-*Access this tool via the 'RDF Generator Page' link in the sidebar.*
-""")
-
-st.subheader("4. RDF to Table Service")
-st.markdown("""
-Explore and export RDF data from TriG files in a tabular format. This tool allows you to view TriG data, extract metadata, and download it in various formats like Excel (with clickable hyperlinks), CSV, and Markdown. It's particularly useful for analyzing linked data, reviewing RDF datasets, and generating human-readable documentation.
-*Access this tool via the 'RDF to Table Page' link in the sidebar.*
-""")
-
-
-st.markdown("---")
-st.info("Select a tool from the sidebar to get started!")
+component_path = get_home_component_path()
+if not os.path.exists(os.path.join(component_path, "index.html")):
+    st.error(
+        "RDF4Risk Home React/Material-UI component build is missing. "
+        "Run `npm install && npm run build` in "
+        "agentic_reconciliation/components/workflow_config_panel/frontend."
+    )
+else:
+    home_component = components.declare_component("rdf4risk_home_panel", path=component_path)
+    home_component(app="home", key="rdf4risk_home_mui_app", default=None)

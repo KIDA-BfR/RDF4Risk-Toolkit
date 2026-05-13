@@ -1,0 +1,54 @@
+{
+  "provider": "openai_codex",
+  "note": "Curated registry for ChatGPT Subscription (Codex OAuth). Models are not fetched live.",
+  "models": [
+    {
+      "model_id": "gpt-5.4",
+      "label": "GPT-5.4",
+      "supports_reasoning": true,
+      "reasoning_mode": "chain_of_thought"
+    },
+    {
+      "model_id": "gpt-5.4-mini",
+      "label": "GPT-5.4 Mini",
+      "supports_reasoning": true,
+      "reasoning_mode": "chain_of_thought"
+    },
+    {
+      "model_id": "gpt-5.4-nano",
+      "label": "GPT-5.4 Nano",
+      "supports_reasoning": true,
+      "reasoning_mode": "chain_of_thought"
+    },
+    {
+      "model_id": "gpt-5.3-codex",
+      "label": "GPT-5.3 Codex",
+      "supports_reasoning": true,
+      "reasoning_mode": "chain_of_thought"
+    },
+    {
+      "model_id": "gpt-5.2-codex",
+      "label": "GPT-5.2 Codex",
+      "supports_reasoning": true,
+      "reasoning_mode": "chain_of_thought"
+    },
+    {
+      "model_id": "gpt-5.1-codex-max",
+      "label": "GPT-5.1 Codex Max",
+      "supports_reasoning": true,
+      "reasoning_mode": "chain_of_thought"
+    },
+    {
+      "model_id": "gpt-5.1-codex-mini",
+      "label": "GPT-5.1 Codex Mini",
+      "supports_reasoning": true,
+      "reasoning_mode": "chain_of_thought"
+    },
+    {
+      "model_id": "gpt-5.2",
+      "label": "GPT-5.2",
+      "supports_reasoning": true,
+      "reasoning_mode": "chain_of_thought"
+    }
+  ]
+}

@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 import sys
+import base64
+import io
 import streamlit as st
+import streamlit.components.v1 as components
 import os
 import pandas as pd
 import time
@@ -9,8 +12,8 @@ import logging
 import tempfile
 from pathlib import Path
 
-# Support both package imports (e.g. Reconciliation.reconciliation_ui)
-# and direct script imports (e.g. streamlit run Reconciliation/reconciliation_ui.py).
+# Support both package imports (e.g. semi_automatic_reconciliation.reconciliation_ui)
+# and direct script imports (e.g. streamlit run semi_automatic_reconciliation/reconciliation_ui.py).
 try:
     from . import local_resource_provider
 except ImportError:
@@ -41,17 +44,6 @@ except ImportError as import_err:
             st.stop()
         else:
             raise
-
-semantic_search = None
-try:
-    from . import semantic_search # Explicit relative import
-    logger.info("Successfully imported '.semantic_search' module.")
-except ImportError as import_err:
-    try:
-        import semantic_search
-        logger.info("Successfully imported 'semantic_search' module via direct import fallback.")
-    except ImportError:
-        logger.warning(f"Import Warning (reconciliation_ui): Could not import '.semantic_search'. Cosine similarity will be unavailable. Error: {import_err}")
 
 # --- Custom Provider Ontology Fetchers ---
 # Import get_available_ontologies from relevant providers
@@ -99,17 +91,73 @@ except ImportError as import_err:
         else:
             raise
 
+try:
+    from semi_automatic_reconciliation.shared_table_io import (
+        LEXICAL_MAPPING_JUSTIFICATION,
+        LEXICAL_SIMILARITY_THRESHOLD_MAPPING_JUSTIFICATION,
+        REVIEW_MAPPING_JUSTIFICATION,
+        SEMANTIC_MAPPING_JUSTIFICATION,
+        apply_mapping_justification_for_row,
+        export_curated_sssom_table,
+        REQUIRED_MATCHING_TABLE_COLUMNS,
+        prepare_loaded_matching_table,
+        finalize_accepted_results,
+    )
+    logger.info("Successfully imported shared matching-table helpers.")
+except ImportError as import_err:
+    try:
+        from semi_automatic_reconciliation.shared_table_io import (
+            LEXICAL_MAPPING_JUSTIFICATION,
+            LEXICAL_SIMILARITY_THRESHOLD_MAPPING_JUSTIFICATION,
+            REVIEW_MAPPING_JUSTIFICATION,
+            SEMANTIC_MAPPING_JUSTIFICATION,
+            apply_mapping_justification_for_row,
+            export_curated_sssom_table,
+            REQUIRED_MATCHING_TABLE_COLUMNS,
+            prepare_loaded_matching_table,
+            finalize_accepted_results,
+        )
+        logger.info("Successfully imported shared matching-table helpers via direct import fallback.")
+    except ImportError:
+        st.error(f"Critical Import Error (reconciliation_ui): Could not import from 'shared_table_io.py'. Error: {import_err}")
+        logger.critical(f"Critical Import Error (reconciliation_ui): Could not import from 'shared_table_io.py'. Error: {import_err}", exc_info=True)
+        if __name__ == "__main__":
+            st.stop()
+        else:
+            raise
+
 # --- Main UI Rendering Function ---
-def render_reconciliation_ui():
-    """Renders the entire Reconciliation Tool UI and handles its logic."""
+def _render_legacy_streamlit_reconciliation_ui():
+    """Legacy Streamlit reconciliation UI retained as backend reference only."""
     # st.set_page_config(layout="wide") # Removed as it should only be called once per app page
+
+    st.components.v1.html(
+        """
+        <script>
+            function scrollToTop() {
+                const mainContent = window.parent.document.querySelector('section.main');
+                if (mainContent) {
+                    mainContent.scrollTo({ top: 0, behavior: 'smooth' });
+                } else {
+                    window.parent.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+            }
+            window.parent.scrollToTop = scrollToTop;
+            // Execute scrollToTop if requested
+            if (window.parent.document.getElementById('reconciliation-scroll-top-trigger')) {
+                scrollToTop();
+                window.parent.document.getElementById('reconciliation-scroll-top-trigger').remove();
+            }
+        </script>
+        """,
+        height=0,
+    )
 
     # --- Session State Initialization (inside the main function) ---
     if 'df' not in st.session_state: st.session_state['df'] = None
     if 'suggestions' not in st.session_state: st.session_state['suggestions'] = {}
     if 'selected_uris' not in st.session_state: st.session_state['selected_uris'] = {} 
     if 'last_uploaded_filename' not in st.session_state: st.session_state['last_uploaded_filename'] = None
-    if 'semantic_model' not in st.session_state: st.session_state['semantic_model'] = None
     if 'provider_queue' not in st.session_state: st.session_state['provider_queue'] = []
     if 'local_resources' not in st.session_state: st.session_state['local_resources'] = []
     if 'local_backend' not in st.session_state: st.session_state['local_backend'] = "auto"
@@ -148,7 +196,6 @@ def render_reconciliation_ui():
     if 'dialog_selected_suggestion_uri' not in st.session_state: st.session_state['dialog_selected_suggestion_uri'] = None 
     if 'dialog_selected_suggestion_source' not in st.session_state: st.session_state['dialog_selected_suggestion_source'] = None 
     
-    if 'semantic_model_load_attempted' not in st.session_state: st.session_state['semantic_model_load_attempted'] = False
     if 'matching_strategy_radio' not in st.session_state: st.session_state['matching_strategy_radio'] = "API Ranking" # Default
     if 'suggestion_slider' not in st.session_state: st.session_state['suggestion_slider'] = 10 # Default
     if 'levenshtein_threshold_slider' not in st.session_state: st.session_state['levenshtein_threshold_slider'] = 0.7 # Default threshold
@@ -164,15 +211,20 @@ def render_reconciliation_ui():
     if 'ontology_loading_status' not in st.session_state: st.session_state['ontology_loading_status'] = {} # e.g., {'BioPortal': 'loading', 'AgroPortal': 'loaded', 'OLS (EBI)': 'error'}
 
     st.title("Data Reconciliation Tool")
+    st.caption("This is the manual reconciliation workflow. For the automated workflow, use the 'Agent Based Reconciliation' page in the sidebar.")
     st.write("Upload tabular data, select sources, manage queue via sidebar, reconcile terms.")
 
     st.subheader("Matching Table Structure Information")
     st.info("""
-Your matching table (CSV or Excel) should be structured with the following columns:
-- **Term**: The term you want to reconcile (required).
-- **URI**: The reconciled URI for the term (optional, will be filled by the service).
-- **RDF Role**: The RDF role of the term (optional, e.g., predicate, object).
-- **Match Type**: The SKOS match type (optional, e.g., skos:exactMatch, skos:closeMatch).
+Your matching table (CSV or Excel) should be structured with strict SSSOM columns:
+- **subject_id**
+- **subject_label**
+- **predicate_id**
+- **object_id**
+- **object_label**
+- **mapping_justification**
+
+Legacy tables (`Term`, `URI`, `RDF Role`, `Match Type`) are still accepted and automatically migrated.
 """)
 
     st.markdown("---")
@@ -191,8 +243,6 @@ Your matching table (CSV or Excel) should be structured with the following colum
         st.session_state['display_provider'] = None
         st.session_state['provider_has_results'] = set()
         st.session_state['processing_active'] = False
-        st.session_state['semantic_model'] = None
-        st.session_state['semantic_model_load_attempted'] = False
         st.session_state['csv_load_error_message'] = None
         st.session_state['stop_processing_requested'] = False
         st.session_state['processed_terms_count'] = 0
@@ -203,7 +253,7 @@ Your matching table (CSV or Excel) should be structured with the following colum
         st.session_state['last_uploaded_filename'] = source_name_msg # Use source_name as a placeholder or actual filename
 
         # Ensure required columns exist and are of correct type
-        required_cols_check = ["Term", "URI", "RDF Role", "Match Type"]
+        required_cols_check = REQUIRED_MATCHING_TABLE_COLUMNS
         missing_cols = [col for col in required_cols_check if col not in st.session_state.df.columns]
         if missing_cols:
             err_msg = f"Loaded data is missing required columns: {', '.join(missing_cols)}"
@@ -212,26 +262,16 @@ Your matching table (CSV or Excel) should be structured with the following colum
             st.session_state['df'] = None # Invalidate df
             return False # Indicate failure
 
-        if 'URI' not in st.session_state.df.columns: st.session_state.df['URI'] = ''
-        st.session_state.df['URI'] = st.session_state.df['URI'].astype(str)
-        if 'Source Provider' not in st.session_state.df.columns: st.session_state.df['Source Provider'] = ''
-        if 'Provider Term' not in st.session_state.df.columns: st.session_state.df['Provider Term'] = ''
-        if 'Provider Description' not in st.session_state.df.columns: st.session_state.df['Provider Description'] = ''
-        if 'Confirmed Display String' not in st.session_state.df.columns: st.session_state.df['Confirmed Display String'] = ''
-        st.session_state.df = st.session_state.df.fillna({'URI': '', 'Source Provider': '', 'Provider Term': '', 'Provider Description': '', 'Confirmed Display String': ''})
-
-        st.session_state['total_indices_to_process'] = list(
-            st.session_state.df[
-                (st.session_state.df['URI'] == '') |
-                (st.session_state.df['URI'] == NO_MATCH_URI)
-            ].index
-        )
+        (
+            st.session_state['df'],
+            st.session_state['total_indices_to_process'],
+            all_terms_list,
+        ) = prepare_loaded_matching_table(st.session_state['df'], NO_MATCH_URI)
         logger.info(f"Loaded df from '{source_name_msg}'. Found {len(st.session_state.total_indices_to_process)} terms needing URI.")
         st.session_state['data_source_message'] = f"Data successfully loaded from: {source_name_msg}."
 
         # Store all unique terms for downstream apps (e.g., RDF Generator)
         if 'Term' in st.session_state.df.columns:
-            all_terms_list = st.session_state.df['Term'].astype(str).unique().tolist()
             st.session_state['all_terms_for_reconciliation'] = all_terms_list
             logger.info(f"Stored {len(all_terms_list)} unique terms in 'all_terms_for_reconciliation'.")
         else:
@@ -246,17 +286,21 @@ Your matching table (CSV or Excel) should be structured with the following colum
 
     persistent_missing_configs = []
     ncbi_api_key = CONFIG.get('ncbi', {}).get('api_key')
-    if not ncbi_api_key or ncbi_api_key == 'YourAPIKey':
+    if not ncbi_api_key:
         persistent_missing_configs.append("NCBI API Key (for NCBI provider)")
     bioportal_api_key = CONFIG.get('bioportal', {}).get('api_key')
-    if not bioportal_api_key or bioportal_api_key == 'YourAPIKey': 
+    if not bioportal_api_key:
         persistent_missing_configs.append("BioPortal API Key (for BioPortal provider)")
-    agroportal_api_key = CONFIG.get('agroportal', {}).get('api_key') # Add AgroPortal API Key check
-    if not agroportal_api_key or agroportal_api_key == 'YourAPIKey':
+    agroportal_api_key = CONFIG.get('agroportal', {}).get('api_key')
+    if not agroportal_api_key:
         persistent_missing_configs.append("AgroPortal API Key (for AgroPortal provider)")
     geonames_username = CONFIG.get('geonames', {}).get('username')
     if persistent_missing_configs:
-        st.warning(f"**Configuration Alert:** The following required items are missing from your `config.yaml` and are needed for full functionality: {'; '.join(persistent_missing_configs)}. Some providers may not work correctly.", icon="⚠️")
+        st.warning(
+            f"**Configuration Alert:** The following required items are missing from environment variables (.env / OS env): {'; '.join(persistent_missing_configs)}. "
+            "Some providers may not work correctly.",
+            icon="⚠️",
+        )
 
     # --- Data Input Selection ---
     st.subheader("1. Select Data Source for Reconciliation")
@@ -267,14 +311,14 @@ Your matching table (CSV or Excel) should be structured with the following colum
     shared_matching_table_df_candidate = st.session_state.get('shared_matching_table')
     can_load_shared = False
     if shared_matching_table_df_candidate is not None and isinstance(shared_matching_table_df_candidate, pd.DataFrame) and not shared_matching_table_df_candidate.empty:
-        required_cols_shared = ["Term", "URI", "RDF Role", "Match Type"] # Columns expected from generator
+        required_cols_shared = REQUIRED_MATCHING_TABLE_COLUMNS
         if all(col in shared_matching_table_df_candidate.columns for col in required_cols_shared):
             can_load_shared = True
             if st.button("Load Data from Matching Table Generator", key="load_shared_data_button"):
                 if _reset_state_and_load_df(shared_matching_table_df_candidate, "Matching Table Generator", is_from_shared_generator=True):
                     data_loaded_this_run = True
         else:
-            st.warning("Data from Generator is available but missing required columns (Term, URI, RDF Role, Match Type). Cannot load.", icon="⚠️")
+            st.warning("Data from Generator is available but missing required SSSOM columns. Cannot load.", icon="⚠️")
     
     if can_load_shared:
         st.markdown("--- OR ---")
@@ -373,6 +417,7 @@ Your matching table (CSV or Excel) should be structured with the following colum
             data_loaded_this_run = True
         
         if data_loaded_this_run:
+            st.components.v1.html("<script>setTimeout(window.parent.scrollToTop, 10);</script>", height=0)
             st.rerun()
 
     if st.session_state.get('csv_load_error_message'):
@@ -514,9 +559,11 @@ Your matching table (CSV or Excel) should be structured with the following colum
                     st.session_state['display_provider'] = None
                 newly_confirmed_providers.append(provider_name_iter_update)
             
-            if newly_confirmed_providers: st.success(f"Queue updated with: {', '.join(newly_confirmed_providers)}.")
-            else: st.info("No providers selected for the queue.")
-            st.rerun() 
+                if newly_confirmed_providers: st.success(f"Queue updated with: {', '.join(newly_confirmed_providers)}.")
+            else:
+                st.info("No providers selected for the queue.")
+            st.components.v1.html("<script>setTimeout(window.parent.scrollToTop, 10);</script>", height=0)
+            st.rerun()
 
         if st.session_state.get('processing_active', False): st.caption("Processing is active. Cannot modify the queue now.")
 
@@ -536,13 +583,13 @@ Your matching table (CSV or Excel) should be structured with the following colum
                         ontologies_list = []
                         if provider_name == "BioPortal":
                             api_key = CONFIG.get('bioportal', {}).get('api_key')
-                            if api_key and api_key != 'YourAPIKey':
+                            if api_key:
                                 ontologies_list = get_bioportal_ontologies(USER_AGENT, api_key)
                             else:
                                 raise ValueError("BioPortal API Key is missing or default.")
                         elif provider_name == "EarthPortal":
                             api_key = CONFIG.get('earthportal', {}).get('api_key')
-                            if api_key and api_key != 'YourAPIKey':
+                            if api_key:
                                 ontologies_list = get_earthportal_ontologies(USER_AGENT, api_key)
                             else:
                                 raise ValueError("EarthPortal API Key is missing or default.")
@@ -552,7 +599,7 @@ Your matching table (CSV or Excel) should be structured with the following colum
                             ontologies_list = get_semlookp_ontologies(USER_AGENT)
                         elif provider_name == "AgroPortal":
                             api_key = CONFIG.get('agroportal', {}).get('api_key')
-                            if api_key and api_key != 'YourAPIKey':
+                            if api_key:
                                 ontologies_list = get_agroportal_ontologies(USER_AGENT, api_key)
                             else:
                                 raise ValueError("AgroPortal API Key is missing or default.")
@@ -697,7 +744,7 @@ Your matching table (CSV or Excel) should be structured with the following colum
         st.markdown("---")
 
         st.subheader("Matching Strategy")
-        strategy_options = ["API Ranking", "Levenshtein Similarity", "Cosine Similarity"]
+        strategy_options = ["API Ranking", "Levenshtein Similarity"]
         current_strategy = st.session_state.get('matching_strategy_radio', "API Ranking")
         try:
             current_strategy_idx = strategy_options.index(current_strategy)
@@ -713,39 +760,6 @@ Your matching table (CSV or Excel) should be structured with the following colum
         if chosen_strategy != current_strategy:
             st.session_state['matching_strategy_radio'] = chosen_strategy
             st.rerun()
-
-
-        if st.session_state.get('matching_strategy_radio') == "Cosine Similarity":
-            if not semantic_search:
-                st.error("Semantic Search module not available. Cosine Similarity disabled.")
-            elif st.session_state.get('semantic_model') is None and not st.session_state.get('semantic_model_load_attempted', False):
-                st.session_state['semantic_model_load_attempted'] = True 
-                with st.spinner("Loading semantic model..."):
-                    try:
-                        model_name = CONFIG.get('cosine_model', {}).get('name', 'all-MiniLM-L6-v2')
-                        logger.info(f"Attempting to load semantic model: {model_name}")
-                        st.session_state['semantic_model'] = semantic_search.load_model(model_name)
-                        if st.session_state.get('semantic_model') and st.session_state.get('semantic_model') != "LOAD_FAILED":
-                            st.sidebar.success("Semantic model loaded successfully.")
-                            logger.info("Semantic model loaded successfully.")
-                        else:
-                            st.sidebar.error("Failed to load semantic model. It might be configured incorrectly or files are missing.")
-                            logger.error("semantic_search.load_model returned None or LOAD_FAILED.")
-                            st.session_state['semantic_model'] = "LOAD_FAILED" 
-                    except RuntimeError as e_rt: 
-                        st.sidebar.error(f"Runtime error loading semantic model: {e_rt}. Cosine similarity will not work.")
-                        logger.error(f"Runtime error loading semantic model: {e_rt}", exc_info=True)
-                        st.session_state['semantic_model'] = "LOAD_FAILED" 
-                    except Exception as e_model:
-                        st.sidebar.error(f"An unexpected error occurred loading semantic model: {e_model}. Cosine similarity will be unavailable.")
-                        logger.error(f"Unexpected error loading semantic model: {e_model}", exc_info=True)
-                        st.session_state['semantic_model'] = "LOAD_FAILED" 
-                    st.rerun() 
-            elif st.session_state.get('semantic_model') == "LOAD_FAILED":
-                 st.sidebar.warning("Semantic model failed to load. Cosine similarity is unavailable. Check logs.", icon="⚠️")
-            elif st.session_state.get('semantic_model'):
-                 st.sidebar.caption("Semantic model loaded.") 
-        
         st.subheader("Query Settings")
         current_slider_val = st.session_state.get('suggestion_slider', 10)
         new_slider_val = st.slider("Max Suggestions per Term", 1, 25, value=current_slider_val, key="suggestion_slider_widget")
@@ -770,22 +784,24 @@ Your matching table (CSV or Excel) should be structured with the following colum
                     for provider_name in st.session_state.get('provider_queue', []):
                         if provider_name == "NCBI":
                             ncbi_key = CONFIG.get('ncbi', {}).get('api_key')
-                            if not ncbi_key or ncbi_key == 'YourAPIKey': missing_configs.append("NCBI API Key")
+                            if not ncbi_key: missing_configs.append("NCBI API Key")
                         elif provider_name == "BioPortal":
                             bioportal_key = CONFIG.get('bioportal', {}).get('api_key')
-                            if not bioportal_key or bioportal_key == 'YourAPIKey': missing_configs.append("BioPortal API Key")
+                            if not bioportal_key: missing_configs.append("BioPortal API Key")
                         elif provider_name == "AgroPortal":
                             agroportal_key = CONFIG.get('agroportal', {}).get('api_key')
-                            if not agroportal_key or agroportal_key == 'YourAPIKey': missing_configs.append("AgroPortal API Key")
+                            if not agroportal_key: missing_configs.append("AgroPortal API Key")
                         elif provider_name == "EarthPortal":
                             earthportal_key = CONFIG.get('earthportal', {}).get('api_key')
-                            if not earthportal_key or earthportal_key == 'YourAPIKey': missing_configs.append("EarthPortal API Key")
+                            if not earthportal_key: missing_configs.append("EarthPortal API Key")
                         elif provider_name == "GeoNames":
                             geonames_user = CONFIG.get('geonames', {}).get('username')
                             if not geonames_user or geonames_user == 'YourUsername': missing_configs.append("GeoNames Username")
                 
                 if missing_configs:
-                    st.sidebar.error(f"Cannot start: Missing configuration(s) in config.yaml: {', '.join(missing_configs)}")
+                    st.sidebar.error(
+                        f"Cannot start: Missing required environment variable value(s) (.env / OS env): {', '.join(missing_configs)}"
+                    )
                 else: 
                     if st.session_state.get('df') is not None:
                         st.session_state['total_indices_to_process'] = list(
@@ -818,7 +834,9 @@ Your matching table (CSV or Excel) should be structured with the following colum
                                         del st.session_state.get('suggestions', {})[idx_sugg][p_name_btn]
                                 if p_name_btn in st.session_state.get('provider_has_results', set()):
                                     st.session_state.get('provider_has_results', set()).remove(p_name_btn)
-                            logger.info("Starting parallel processing..."); st.info("🚀 Processing started (parallel)..."); st.rerun()
+                            logger.info("Starting parallel processing..."); st.info("🚀 Processing started (parallel)..."); 
+                            st.components.v1.html("<script>setTimeout(window.parent.scrollToTop, 10);</script>", height=0)
+                            st.rerun()
                     else:
                         st.session_state['total_indices_to_process'] = []
                         logger.warning("Attempted to start processing but DataFrame is None.")
@@ -981,11 +999,33 @@ Your matching table (CSV or Excel) should be structured with the following colum
         df_display_copy = st.session_state.get('df').copy()
         if 'URI' in df_display_copy.columns: 
             df_display_copy['URI'] = df_display_copy['URI'].replace(NO_MATCH_URI, "")
-        
-        columns_to_show_in_main_table = ["Term", "URI", "RDF Role", "Match Type", "Source Provider", "Provider Term", "Provider Description"]
-        df_preview = df_display_copy[[col for col in columns_to_show_in_main_table if col in df_display_copy.columns]].copy()
-        
+
+        st.subheader("1) Curated SSSOM Result (Preview)")
+        curated_columns_to_show = [
+            "subject_label",
+            "object_id",
+            "predicate_id",
+            "object_label",
+            "mapping_justification",
+        ]
+        df_preview = df_display_copy[[col for col in curated_columns_to_show if col in df_display_copy.columns]].copy()
+
         st.dataframe(df_preview, use_container_width=True, key="main_df_display_preview")
+
+        with st.expander("2) Candidate / Provider Context (UI-only metadata)", expanded=False):
+            provider_context_columns = [
+                "subject_label",
+                "object_id",
+                "Source Provider",
+                "Provider Term",
+                "Provider Description",
+                "Confirmed Display String",
+                "comment",
+            ]
+            provider_context_preview = df_display_copy[
+                [col for col in provider_context_columns if col in df_display_copy.columns]
+            ].copy()
+            st.dataframe(provider_context_preview, use_container_width=True, key="provider_context_df_display_preview")
     else: st.info("No data loaded to display.")
     st.markdown(f"*Total terms requiring reconciliation: {len(st.session_state.get('total_indices_to_process',[]))}*")
     st.markdown("---")
@@ -1079,14 +1119,15 @@ Your matching table (CSV or Excel) should be structured with the following colum
             "Enable SKOS Matching",
             value=current_skos_state,
             key="skos_matching_toggle_widget",
-            help="Enable this to select a SKOS match type (e.g., exactMatch, closeMatch) for your mappings. If disabled, the 'Match Type' column will be empty."
+            help="Enable this to select a SKOS predicate (e.g., skos:exactMatch, skos:closeMatch). If disabled, the 'predicate_id' column will be empty."
         )
 
         if new_skos_state != current_skos_state:
             st.session_state['skos_matching_enabled'] = new_skos_state
             if not new_skos_state and st.session_state.get('df') is not None:
                 st.session_state.df['Match Type'] = ''
-                logger.info("SKOS matching disabled. Cleared all 'Match Type' values.")
+                st.session_state.df['predicate_id'] = ''
+                logger.info("SKOS matching disabled. Cleared all 'predicate_id' values.")
             st.rerun()
             
         recon_controls_cols = st.columns([2,3])
@@ -1185,7 +1226,7 @@ Your matching table (CSV or Excel) should be structured with the following colum
                 filtered_by_unreconciled = []
                 for idx_filter in term_indices_to_iterate:
                     current_uri = str(st.session_state.get('df').loc[idx_filter, 'URI']).strip()
-                    current_match_type = str(st.session_state.get('df').loc[idx_filter, 'Match Type']).strip()
+                    current_match_type = str(st.session_state.get('df').loc[idx_filter, 'predicate_id']).strip()
 
                     is_uri_unreconciled = (not current_uri or current_uri == NO_MATCH_URI)
                     is_skos_match_unreconciled = (st.session_state.get('skos_matching_enabled') and not current_match_type)
@@ -1216,7 +1257,7 @@ Your matching table (CSV or Excel) should be structured with the following colum
                 current_uri_in_df = str(st.session_state.get('df').loc[index_main, 'URI']).strip()
                 current_source_in_df = str(st.session_state.get('df').loc[index_main, 'Source Provider']).strip()
                 confirmed_display_string_from_df = str(st.session_state.get('df').loc[index_main, 'Confirmed Display String']).strip()
-                current_match_type_in_df = str(st.session_state.get('df').loc[index_main, 'Match Type']).strip()
+                current_match_type_in_df = str(st.session_state.get('df').loc[index_main, 'predicate_id']).strip()
 
                 row_cols = st.columns([3, 4, 3, 2])
                 
@@ -1233,21 +1274,7 @@ Your matching table (CSV or Excel) should be structured with the following colum
                         )
                     else:
                         original_suggestions = st.session_state.get('suggestions', {}).get(index_main, {}).get(current_display_mode, [])
-                        processed_suggestions = []
-                        if original_suggestions and semantic_search and st.session_state.get('matching_strategy_radio') == "Cosine Similarity":
-                            if st.session_state.get('semantic_model') and st.session_state.get('semantic_model') != "LOAD_FAILED":
-                                try:
-                                    processed_suggestions = semantic_search.calculate_hybrid_scores(
-                                        model=st.session_state.get('semantic_model'),
-                                        input_term=term_main, suggestions=list(original_suggestions)
-                                    )
-                                except Exception as e: 
-                                    processed_suggestions = original_suggestions
-                                    logger.error(f"Error during hybrid scoring for original suggestions (term: '{term_main}'): {e}", exc_info=True)
-                            else: 
-                                processed_suggestions = original_suggestions
-                        elif original_suggestions: 
-                            processed_suggestions = original_suggestions
+                        processed_suggestions = original_suggestions if original_suggestions else []
                     
                     for sugg in processed_suggestions:
                         s_uri = sugg.get('uri'); s_label = sugg.get('label')
@@ -1301,21 +1328,44 @@ Your matching table (CSV or Excel) should be structured with the following colum
 
                     if uri_changed or source_changed or display_string_changed:
                         st.session_state.df.loc[index_main, 'URI'] = chosen_uri_inline
+                        st.session_state.df.loc[index_main, 'object_id'] = chosen_uri_inline
                         st.session_state.df.loc[index_main, 'Source Provider'] = chosen_source_inline if chosen_uri_inline != NO_MATCH_URI else ""
                         st.session_state.df.loc[index_main, 'Confirmed Display String'] = selected_display_option_inline if chosen_uri_inline != NO_MATCH_URI else NO_MATCH_DISPLAY
                         
                         if chosen_suggestion_obj:
                             st.session_state.df.loc[index_main, 'Provider Term'] = chosen_suggestion_obj.get('label', '')
                             st.session_state.df.loc[index_main, 'Provider Description'] = chosen_suggestion_obj.get('description', '')
+                            st.session_state.df.loc[index_main, 'object_label'] = chosen_suggestion_obj.get('label', '')
                         else:
                             st.session_state.df.loc[index_main, 'Provider Term'] = ""
                             st.session_state.df.loc[index_main, 'Provider Description'] = ""
+                            if chosen_uri_inline == NO_MATCH_URI:
+                                st.session_state.df.loc[index_main, 'object_label'] = ""
                         
                         if chosen_uri_inline != NO_MATCH_URI:
                             if st.session_state.get('skos_matching_enabled') and (not current_match_type_in_df or current_match_type_in_df == ""):
                                 st.session_state.df.loc[index_main, 'Match Type'] = 'skos:exactMatch'
+                                st.session_state.df.loc[index_main, 'predicate_id'] = 'skos:exactMatch'
                         elif chosen_uri_inline == NO_MATCH_URI:
                             st.session_state.df.loc[index_main, 'Match Type'] = ''
+                            st.session_state.df.loc[index_main, 'predicate_id'] = ''
+
+                        apply_mapping_justification_for_row(
+                            st.session_state.df,
+                            index_main,
+                            default_when_mapped=(
+                                REVIEW_MAPPING_JUSTIFICATION
+                                if chosen_suggestion_obj is None
+                                else (
+                                    LEXICAL_MAPPING_JUSTIFICATION
+                                    if isinstance(chosen_suggestion_obj.get('levenshtein_score'), (int, float))
+                                    and float(chosen_suggestion_obj.get('levenshtein_score')) >= 1.0
+                                    else LEXICAL_SIMILARITY_THRESHOLD_MAPPING_JUSTIFICATION
+                                )
+                            ),
+                            no_match_uri=NO_MATCH_URI,
+                            force_when_mapped=True,
+                        )
 
                         logger.info(f"[InlineSelect] Term index {index_main} ('{term_main}') updated. URI: '{chosen_uri_inline}', Source: '{chosen_source_inline}', Display: '{st.session_state.df.loc[index_main, 'Confirmed Display String']}'.")
                         st.rerun()
@@ -1342,7 +1392,19 @@ Your matching table (CSV or Excel) should be structured with the following colum
                     if selected_match_type != current_match_type_in_df:
                         final_match_type = "" if selected_match_type == "No Match" else selected_match_type
                         st.session_state.df.loc[index_main, 'Match Type'] = final_match_type
-                        logger.info(f"[MatchTypeSelect] Term index {index_main} ('{term_main}') updated Match Type to: '{final_match_type}'.")
+                        st.session_state.df.loc[index_main, 'predicate_id'] = final_match_type
+                        current_uri_after_match_type = str(st.session_state.df.loc[index_main, 'URI']).strip()
+                        is_reconciled = bool(current_uri_after_match_type) and current_uri_after_match_type != NO_MATCH_URI
+                        apply_mapping_justification_for_row(
+                            st.session_state.df,
+                            index_main,
+                            default_when_mapped=(
+                                REVIEW_MAPPING_JUSTIFICATION if is_reconciled else SEMANTIC_MAPPING_JUSTIFICATION
+                            ),
+                            no_match_uri=NO_MATCH_URI,
+                            force_when_mapped=is_reconciled,
+                        )
+                        logger.info(f"[MatchTypeSelect] Term index {index_main} ('{term_main}') updated predicate_id to: '{final_match_type}'.")
                         st.rerun()
 
                 with row_cols[3]:
@@ -1487,10 +1549,12 @@ Your matching table (CSV or Excel) should be structured with the following colum
                                 chosen_uri, chosen_source, chosen_suggestion_obj = options_dialog_custom.get(selected_dialog_uri_display, (NO_MATCH_URI, "", None))
                                 if chosen_uri != NO_MATCH_URI:
                                     st.session_state.df.loc[idx, 'URI'] = chosen_uri
+                                    st.session_state.df.loc[idx, 'object_id'] = chosen_uri
                                     st.session_state.df.loc[idx, 'Source Provider'] = chosen_source
                                     st.session_state.df.loc[idx, 'Confirmed Display String'] = selected_dialog_uri_display
                                     if chosen_suggestion_obj:
                                         st.session_state.df.loc[idx, 'Provider Term'] = chosen_suggestion_obj.get('label', '')
+                                        st.session_state.df.loc[idx, 'object_label'] = chosen_suggestion_obj.get('label', '')
                                         st.session_state.df.loc[idx, 'Provider Description'] = chosen_suggestion_obj.get('description', '')
                                     else:
                                         st.session_state.df.loc[idx, 'Provider Term'] = ""
@@ -1498,11 +1562,21 @@ Your matching table (CSV or Excel) should be structured with the following colum
                                     logger.info(f"[DialogConfirm] Term index {idx} updated to URI '{chosen_uri}'.")
                                 else:
                                     st.session_state.df.loc[idx, 'URI'] = NO_MATCH_URI
+                                    st.session_state.df.loc[idx, 'object_id'] = NO_MATCH_URI
                                     st.session_state.df.loc[idx, 'Source Provider'] = ""
                                     st.session_state.df.loc[idx, 'Confirmed Display String'] = NO_MATCH_DISPLAY
                                     st.session_state.df.loc[idx, 'Provider Term'] = ""
                                     st.session_state.df.loc[idx, 'Provider Description'] = ""
+                                    st.session_state.df.loc[idx, 'object_label'] = ""
                                     logger.info(f"[DialogConfirm] Term index {idx} set to NO_MATCH_URI.")
+
+                                apply_mapping_justification_for_row(
+                                    st.session_state.df,
+                                    idx,
+                                    default_when_mapped=REVIEW_MAPPING_JUSTIFICATION,
+                                    no_match_uri=NO_MATCH_URI,
+                                    force_when_mapped=True,
+                                )
                                 
                                 st.session_state['active_reconciliation_index'] = None
                                 st.rerun()
@@ -1524,22 +1598,1022 @@ Your matching table (CSV or Excel) should be structured with the following colum
     st.markdown("---"); st.header("Download Reconciled Data")
     if st.session_state.get('df') is not None:
         download_df_main = st.session_state.get('df').copy()
-        
-        cols_for_download = [
-            "Term", "URI", "RDF Role", "Match Type",
-            "Source Provider", "Provider Term", "Provider Description"
-        ]
-        final_cols_for_download = [col for col in cols_for_download if col in download_df_main.columns]
-        download_df_main = download_df_main[final_cols_for_download]
 
-        if 'URI' in download_df_main.columns: 
-            download_df_main['URI'] = download_df_main['URI'].replace(NO_MATCH_URI, "")
-        
+        sssom_download_df = export_curated_sssom_table(download_df_main)
+
+        candidate_review_columns = [
+            "subject_id",
+            "subject_label",
+            "predicate_id",
+            "object_id",
+            "object_label",
+            "mapping_justification",
+            "Source Provider",
+            "Provider Term",
+            "Provider Description",
+            "Confirmed Display String",
+            "confidence",
+            "comment",
+            "mapping_provider",
+            "object_source",
+            "mapping_tool",
+            "match_string",
+            "semantic_similarity_score",
+            "semantic_similarity_measure",
+            "Review Status",
+        ]
+        candidate_review_df = download_df_main[[
+            col for col in candidate_review_columns if col in download_df_main.columns
+        ]].copy()
+
+        if 'object_id' in candidate_review_df.columns:
+            candidate_review_df['object_id'] = candidate_review_df['object_id'].replace(NO_MATCH_URI, "")
+
         original_filename_main = st.session_state.get('last_uploaded_filename', "data.csv")
-        download_filename_main = f"{os.path.splitext(original_filename_main)[0]}_reconciled.csv"
+        base_filename_main = os.path.splitext(original_filename_main)[0]
+        sssom_download_filename = f"{base_filename_main}_sssom_curated.csv"
+        candidate_review_download_filename = f"{base_filename_main}_candidate_review.csv"
         
-        st.session_state['shared_reconciled_matching_table'] = st.session_state.get('df').copy()
+        st.session_state['shared_reconciled_matching_table'] = finalize_accepted_results(st.session_state.get('df').copy())
         logger.info("Saved reconciled matching table to 'shared_reconciled_matching_table' for RDF Generator.")
-        
-        create_download_link(download_df_main, download_filename_main, f"Download '{download_filename_main}'")
+
+        st.subheader("1) SSSOM Download")
+        st.caption("Final curated mapping table with SSSOM core + optional SSSOM fields only.")
+        create_download_link(sssom_download_df, sssom_download_filename, f"Download '{sssom_download_filename}'")
+
+        st.subheader("2) Candidate / Review Download")
+        st.caption("Extended review/context export including provider metadata and additional candidate context.")
+        create_download_link(
+            candidate_review_df,
+            candidate_review_download_filename,
+            f"Download '{candidate_review_download_filename}'"
+        )
     else: st.info("Upload and process a CSV first.")
+
+
+# ---------------------------------------------------------------------------
+# Material-UI reconciliation application bridge
+# ---------------------------------------------------------------------------
+RECONCILIATION_MUI_ACTIVE_STAGE_KEY = "reconciliation_mui_active_stage"
+RECONCILIATION_MUI_EVENT_NONCE_KEY = "reconciliation_mui_event_nonce"
+RECONCILIATION_MUI_STATUS_MESSAGE_KEY = "reconciliation_mui_status_message"
+RECONCILIATION_UPLOADED_SOURCE_SIGNATURE_KEY = "reconciliation_mui_uploaded_source_signature"
+
+RECONCILIATION_STAGES = {"load", "configure", "run", "reconcile", "export"}
+STANDARD_RECONCILIATION_PROVIDERS = [
+    "Wikidata",
+    "NCBI",
+    "BioPortal",
+    "OLS (EBI)",
+    "AgroPortal",
+    "EarthPortal",
+    "SemLookP",
+    "QUDT",
+    "Local Ontology",
+]
+LOOKUP_ONTOLOGY_PROVIDERS = ["BioPortal", "OLS (EBI)", "SemLookP", "AgroPortal", "EarthPortal"]
+SKOS_MATCH_TYPES = ["", "skos:exactMatch", "skos:closeMatch", "skos:broadMatch", "skos:narrowMatch", "skos:relatedMatch"]
+
+ONTOLOGY_PROVIDER_CONFIG_KEYS = {
+    "BioPortal": ("bioportal",),
+    "OLS (EBI)": ("ols",),
+    "SemLookP": ("semlookp",),
+    "AgroPortal": ("agroportal",),
+    "EarthPortal": ("earthportal",),
+}
+
+ONTOLOGY_FAVORITE_CONFIG_FIELDS = (
+    "preferred_ontologies",
+    "favorite_ontologies",
+    "favourite_ontologies",
+    "default_ontologies",
+)
+
+
+PROVIDER_TOOLTIPS = {
+    "Wikidata": "A large, collaboratively edited multilingual knowledge graph. Good for general concepts, people, places and organizations.",
+    "NCBI": "National Center for Biotechnology Information. Biomedical and genomic databases. Requires API key.",
+    "BioPortal": "Stanford BioPortal biomedical ontology repository. Requires API key.",
+    "OLS (EBI)": "Ontology Lookup Service from EMBL-EBI.",
+    "SemLookP": "Semantic Lookup Platform for Life Sciences.",
+    "AgroPortal": "Agricultural and food-domain ontology portal. Requires API key.",
+    "EarthPortal": "Earth system and environmental science semantic artifact repository.",
+    "QUDT": "Units of Measure, Quantity Kinds and Dimensions via SPARQL.",
+    "Local Ontology": "Uploaded OWL/OBO/RDF/TTL/JSON-LD/CSV/TSV/XLSX resources indexed locally.",
+    CUSTOM_SPARQL_PROVIDER_NAME: "Custom SPARQL endpoint configured by endpoint URL, query template and result variables.",
+}
+
+
+def _initialize_reconciliation_mui_state():
+    defaults = {
+        "df": None,
+        "suggestions": {},
+        "selected_uris": {},
+        "last_uploaded_filename": None,
+        "provider_queue": [],
+        "local_resources": [],
+        "local_backend": "auto",
+        "provider_status": {},
+        "total_indices_to_process": [],
+        "display_provider": None,
+        "display_mixed_results": False,
+        "provider_has_results": set(),
+        "processing_active": False,
+        "stop_processing_requested": False,
+        "processed_terms_count": 0,
+        "current_term_index_processing": 0,
+        "custom_sparql_enabled": False,
+        "custom_sparql_endpoint": "",
+        "custom_sparql_query_template": DEFAULT_SPARQL_QUERY_TEMPLATE,
+        "custom_sparql_var_uri": "uri",
+        "custom_sparql_var_label": "label",
+        "custom_sparql_var_description": "description",
+        "csv_load_error_message": None,
+        "data_source_message": None,
+        "linked_preprocessed_data_df": None,
+        "ncbi_selected_databases": ['taxonomy', 'bioproject', 'gene', 'protein', 'nuccore', 'biosample', 'sra', 'pubmed'],
+        "custom_search_terms": {},
+        "custom_search_results": {},
+        "custom_search_summaries": {},
+        "active_reconciliation_index": None,
+        "matching_strategy_radio": "API Ranking",
+        "suggestion_slider": 10,
+        "levenshtein_threshold_slider": 0.7,
+        "show_only_matched_terms": False,
+        "show_only_unreconciled_terms": False,
+        "items_per_page": 10,
+        "current_page": 1,
+        "skos_matching_enabled": False,
+        "available_ontologies_by_provider": {},
+        "selected_ontologies_by_provider": {},
+        "ontology_loading_status": {},
+        RECONCILIATION_MUI_ACTIVE_STAGE_KEY: "load",
+    }
+    for key, default in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+
+def _get_reconciliation_component_path() -> str:
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "agentic_reconciliation",
+        "components",
+        "workflow_config_panel",
+        "frontend",
+        "build",
+    )
+
+
+def _json_safe(value: object):
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    return value
+
+
+def _records(df: pd.DataFrame | None, limit: int = 50) -> list[dict[str, object]]:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return []
+    preview = df.head(limit).copy().where(pd.notna(df.head(limit).copy()), "")
+    return [{str(k): _json_safe(v) for k, v in row.items()} for row in preview.to_dict(orient="records")]
+
+
+def _read_matching_table_payload(event: dict) -> tuple[pd.DataFrame, str]:
+    filename = str(event.get("filename", "uploaded_matching_table.csv") or "uploaded_matching_table.csv")
+    content_base64 = event.get("content_base64")
+    content_text = event.get("content")
+    suffix = os.path.splitext(filename)[1].lower()
+    if content_base64:
+        payload = base64.b64decode(str(content_base64))
+    elif isinstance(content_text, str):
+        payload = content_text.encode("utf-8")
+    else:
+        raise ValueError("Uploaded file payload is empty.")
+
+    if suffix == ".csv" or not suffix:
+        last_exception = None
+        for sep in [",", ";", "\t"]:
+            try:
+                candidate = pd.read_csv(io.BytesIO(payload), sep=sep, encoding="utf-8", skipinitialspace=True)
+                if candidate.shape[1] > 1:
+                    return candidate.fillna(""), filename
+                last_exception = ValueError(f"Only one column detected with separator {sep!r}.")
+            except Exception as exc:
+                last_exception = exc
+        try:
+            return pd.read_csv(io.BytesIO(payload), sep=None, engine="python", skipinitialspace=True).fillna(""), filename
+        except Exception as exc:
+            raise ValueError(f"Failed to parse CSV. Last error: {last_exception or exc}") from exc
+    if suffix in {".xlsx", ".xls"}:
+        return pd.read_excel(io.BytesIO(payload), engine="openpyxl" if suffix == ".xlsx" else None).fillna(""), filename
+    raise ValueError(f"Unsupported file type: {suffix}. Please upload CSV, XLSX, or XLS.")
+
+
+def _reset_reconciliation_state_and_load_df(df_to_load: pd.DataFrame, source_name_msg: str, is_from_shared_generator: bool = False) -> bool:
+    st.session_state["suggestions"] = {}
+    st.session_state["selected_uris"] = {}
+    st.session_state["custom_search_results"] = {}
+    st.session_state["custom_search_summaries"] = {}
+    st.session_state["provider_queue"] = []
+    st.session_state["provider_status"] = {}
+    st.session_state["display_provider"] = None
+    st.session_state["display_mixed_results"] = False
+    st.session_state["provider_has_results"] = set()
+    st.session_state["processing_active"] = False
+    st.session_state["csv_load_error_message"] = None
+    st.session_state["stop_processing_requested"] = False
+    st.session_state["processed_terms_count"] = 0
+    st.session_state["current_term_index_processing"] = 0
+    st.session_state["active_reconciliation_index"] = None
+
+    st.session_state["df"] = df_to_load.copy().fillna("")
+    st.session_state["last_uploaded_filename"] = source_name_msg
+    missing_cols = [col for col in REQUIRED_MATCHING_TABLE_COLUMNS if col not in st.session_state.df.columns]
+    if missing_cols:
+        st.session_state["csv_load_error_message"] = f"Loaded data is missing required columns: {', '.join(missing_cols)}"
+        st.session_state["df"] = None
+        return False
+
+    (
+        st.session_state["df"],
+        st.session_state["total_indices_to_process"],
+        all_terms_list,
+    ) = prepare_loaded_matching_table(st.session_state["df"], NO_MATCH_URI)
+    st.session_state["data_source_message"] = f"Data successfully loaded from: {source_name_msg}."
+    st.session_state["all_terms_for_reconciliation"] = all_terms_list if "Term" in st.session_state.df.columns else []
+    if not is_from_shared_generator:
+        st.session_state["linked_preprocessed_data_df"] = None
+    return True
+
+
+def _available_reconciliation_providers() -> list[str]:
+    providers = STANDARD_RECONCILIATION_PROVIDERS.copy()
+    if st.session_state.get("custom_sparql_enabled") and CUSTOM_SPARQL_PROVIDER_NAME not in providers:
+        providers.append(CUSTOM_SPARQL_PROVIDER_NAME)
+    return providers
+
+
+def _normalize_ontology_acronym(value: object) -> str:
+    return str(value or "").strip().upper()
+
+
+def _split_configured_ontology_values(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_values = value.replace(";", ",").split(",")
+    elif isinstance(value, (list, tuple, set)):
+        raw_values = list(value)
+    else:
+        raw_values = [value]
+    return [normalized for item in raw_values if (normalized := _normalize_ontology_acronym(item))]
+
+
+def _configured_favorite_ontologies(provider_name: str) -> list[str]:
+    """Return provider-specific favorites from config.yaml, normalized for UI matching."""
+    favorites: list[str] = []
+    if not isinstance(CONFIG, dict):
+        return favorites
+
+    for config_key in ONTOLOGY_PROVIDER_CONFIG_KEYS.get(provider_name, ()):  # provider-level config, e.g. agroportal.preferred_ontologies
+        provider_config = CONFIG.get(config_key, {})
+        if not isinstance(provider_config, dict):
+            continue
+        for field_name in ONTOLOGY_FAVORITE_CONFIG_FIELDS:
+            favorites.extend(_split_configured_ontology_values(provider_config.get(field_name)))
+
+    # BioPortal-backed agent settings are also useful defaults for BioPortal ontology filters.
+    if provider_name == "BioPortal":
+        agent_config = CONFIG.get("agent_reconciliation", {})
+        if isinstance(agent_config, dict):
+            for field_name in ("bioportal_agent_ontologies", "trusted_ontologies"):
+                favorites.extend(_split_configured_ontology_values(agent_config.get(field_name)))
+
+    return list(dict.fromkeys(favorites))
+
+
+def _default_selected_ontologies_for_provider(provider_name: str, available_ontologies: list[str]) -> list[str]:
+    available_normalized = {_normalize_ontology_acronym(ontology): ontology for ontology in available_ontologies}
+    selected = []
+    for favorite in _configured_favorite_ontologies(provider_name):
+        if favorite in available_normalized:
+            selected.append(available_normalized[favorite])
+    return selected
+
+
+def _missing_provider_configurations(provider_queue: list[str]) -> list[str]:
+    missing = []
+    if CONFIG:
+        for provider_name in provider_queue:
+            if provider_name == "NCBI" and not CONFIG.get("ncbi", {}).get("api_key"):
+                missing.append("NCBI API Key")
+            elif provider_name == "BioPortal" and not CONFIG.get("bioportal", {}).get("api_key"):
+                missing.append("BioPortal API Key")
+            elif provider_name == "AgroPortal" and not CONFIG.get("agroportal", {}).get("api_key"):
+                missing.append("AgroPortal API Key")
+            elif provider_name == "EarthPortal" and not CONFIG.get("earthportal", {}).get("api_key"):
+                missing.append("EarthPortal API Key")
+            elif provider_name == "GeoNames":
+                geonames_user = CONFIG.get("geonames", {}).get("username")
+                if not geonames_user or geonames_user == "YourUsername":
+                    missing.append("GeoNames Username")
+    return missing
+
+
+def _ensure_ontology_options_for_queue():
+    selected_lookup_providers = [
+        provider_name
+        for provider_name in st.session_state.get("provider_queue", [])
+        if provider_name in LOOKUP_ONTOLOGY_PROVIDERS
+    ]
+    selected_lookup_set = set(selected_lookup_providers)
+    st.session_state["selected_ontologies_by_provider"] = {
+        provider_name: selections
+        for provider_name, selections in st.session_state.get("selected_ontologies_by_provider", {}).items()
+        if provider_name in selected_lookup_set
+    }
+
+    for provider_name in selected_lookup_providers:
+        if provider_name not in LOOKUP_ONTOLOGY_PROVIDERS:
+            continue
+        if st.session_state.get("ontology_loading_status", {}).get(provider_name) in {"loaded", "loading", "error"}:
+            continue
+        st.session_state.ontology_loading_status[provider_name] = "loading"
+        try:
+            ontologies_list = []
+            if provider_name == "BioPortal":
+                api_key = CONFIG.get("bioportal", {}).get("api_key")
+                if not api_key:
+                    raise ValueError("BioPortal API Key is missing or default.")
+                ontologies_list = get_bioportal_ontologies(USER_AGENT, api_key)
+            elif provider_name == "EarthPortal":
+                api_key = CONFIG.get("earthportal", {}).get("api_key")
+                if not api_key:
+                    raise ValueError("EarthPortal API Key is missing or default.")
+                ontologies_list = get_earthportal_ontologies(USER_AGENT, api_key)
+            elif provider_name == "OLS (EBI)":
+                ontologies_list = get_ols_ontologies(USER_AGENT)
+            elif provider_name == "SemLookP":
+                ontologies_list = get_semlookp_ontologies(USER_AGENT)
+            elif provider_name == "AgroPortal":
+                api_key = CONFIG.get("agroportal", {}).get("api_key")
+                if not api_key:
+                    raise ValueError("AgroPortal API Key is missing or default.")
+                ontologies_list = get_agroportal_ontologies(USER_AGENT, api_key)
+            available_ontologies = sorted([_normalize_ontology_acronym(o) for o in ontologies_list if _normalize_ontology_acronym(o)])
+            st.session_state.available_ontologies_by_provider[provider_name] = available_ontologies
+            st.session_state.ontology_loading_status[provider_name] = "loaded"
+            if provider_name not in st.session_state.selected_ontologies_by_provider:
+                st.session_state.selected_ontologies_by_provider[provider_name] = _default_selected_ontologies_for_provider(
+                    provider_name,
+                    available_ontologies,
+                )
+        except Exception as exc:
+            st.session_state.ontology_loading_status[provider_name] = "error"
+            st.session_state.available_ontologies_by_provider[provider_name] = []
+            logger.error("Error loading ontologies for %s: %s", provider_name, exc, exc_info=True)
+
+
+def _suggestion_options_for_row(row_index, term: str, display_mode: str) -> list[dict[str, object]]:
+    options = [{"display": NO_MATCH_DISPLAY, "uri": NO_MATCH_URI, "source": "", "label": "", "description": ""}]
+    if display_mode == "Mixed Results":
+        all_suggs_for_term = st.session_state.get("suggestions", {}).get(row_index, {})
+        processed_suggestions = get_combined_and_sorted_suggestions(
+            term,
+            all_suggs_for_term,
+            st.session_state.get("suggestion_slider", 10),
+            st.session_state.get("matching_strategy_radio"),
+        )
+    else:
+        processed_suggestions = st.session_state.get("suggestions", {}).get(row_index, {}).get(display_mode, []) or []
+
+    seen_displays = {NO_MATCH_DISPLAY}
+    for sugg in processed_suggestions:
+        if not isinstance(sugg, dict):
+            continue
+        s_uri = sugg.get("uri")
+        s_label = sugg.get("label")
+        if not s_uri or not s_label:
+            continue
+        display_text = format_suggestion_display(sugg, st.session_state.get("matching_strategy_radio"))
+        if display_text in seen_displays:
+            continue
+        seen_displays.add(display_text)
+        options.append(
+            {
+                "display": display_text,
+                "uri": s_uri,
+                "source": sugg.get("source_provider") or sugg.get("db") or sugg.get("ontology") or sugg.get("source_db") or display_mode,
+                "label": s_label,
+                "description": sugg.get("description", ""),
+                "levenshtein_score": sugg.get("levenshtein_score"),
+                "raw": sugg,
+            }
+        )
+    return options
+
+
+def _custom_search_summary_for_row(row_index, display_mode: str | None) -> dict[str, object] | None:
+    summaries = st.session_state.get("custom_search_summaries", {})
+    if not isinstance(summaries, dict):
+        return None
+    summary = summaries.get((row_index, display_mode or "Mixed Results", "mui_custom_search"))
+    if isinstance(summary, dict):
+        return summary
+    return None
+
+
+def _current_reconciliation_display_mode() -> str | None:
+    if st.session_state.get("display_mixed_results"):
+        return "Mixed Results"
+    if st.session_state.get("display_provider"):
+        return str(st.session_state.get("display_provider"))
+    return None
+
+
+def _build_reconciliation_rows(limit: int = 250) -> dict[str, object]:
+    df = st.session_state.get("df")
+    display_mode = _current_reconciliation_display_mode()
+    if not isinstance(df, pd.DataFrame) or df.empty or not display_mode:
+        return {"display_mode": display_mode, "rows": [], "total_rows": 0, "page": 1, "total_pages": 1}
+
+    all_indices = list(df.index)
+    indices = []
+    if st.session_state.get("show_only_matched_terms", False):
+        for idx in all_indices:
+            if display_mode == "Mixed Results":
+                all_suggs = st.session_state.get("suggestions", {}).get(idx, {})
+                if any(s for s_list in all_suggs.values() if s_list is not None for s in s_list if s is not None):
+                    indices.append(idx)
+            elif st.session_state.get("suggestions", {}).get(idx, {}).get(display_mode, []):
+                indices.append(idx)
+    else:
+        indices = all_indices
+
+    if st.session_state.get("show_only_unreconciled_terms", False):
+        filtered = []
+        for idx in indices:
+            current_uri = str(df.loc[idx, "URI"]).strip() if "URI" in df.columns else ""
+            current_match_type = str(df.loc[idx, "predicate_id"]).strip() if "predicate_id" in df.columns else ""
+            is_uri_unreconciled = (not current_uri or current_uri == NO_MATCH_URI)
+            is_skos_unreconciled = bool(st.session_state.get("skos_matching_enabled") and not current_match_type)
+            if is_uri_unreconciled or is_skos_unreconciled:
+                filtered.append(idx)
+        indices = filtered
+
+    items_per_page = max(1, int(st.session_state.get("items_per_page", 10) or 10))
+    total_pages = max(1, (len(indices) + items_per_page - 1) // items_per_page)
+    current_page = min(max(1, int(st.session_state.get("current_page", 1) or 1)), total_pages)
+    st.session_state["current_page"] = current_page
+    page_indices = indices[(current_page - 1) * items_per_page : current_page * items_per_page]
+    rows = []
+    for idx in page_indices[:limit]:
+        term = str(df.loc[idx, "Term"]).strip() if "Term" in df.columns else str(df.loc[idx, "subject_label"]).strip()
+        current_uri = str(df.loc[idx, "URI"]).strip() if "URI" in df.columns else str(df.loc[idx, "object_id"]).strip()
+        current_display = str(df.loc[idx, "Confirmed Display String"]).strip() if "Confirmed Display String" in df.columns else ""
+        current_source = str(df.loc[idx, "Source Provider"]).strip() if "Source Provider" in df.columns else ""
+        match_type = str(df.loc[idx, "predicate_id"]).strip() if "predicate_id" in df.columns else ""
+        options = _suggestion_options_for_row(idx, term, display_mode)
+        selected_display = NO_MATCH_DISPLAY
+        if current_display and current_display != NO_MATCH_DISPLAY:
+            selected_display = current_display
+            if all(option["display"] != current_display for option in options):
+                options.append({"display": current_display, "uri": current_uri, "source": current_source, "label": current_display, "description": ""})
+        elif current_uri and current_uri != NO_MATCH_URI:
+            selected_display = next((o["display"] for o in options if o.get("uri") == current_uri and o.get("source") == current_source), f"{current_uri} (from {current_source or 'previous selection'})")
+            if all(option["display"] != selected_display for option in options):
+                options.append({"display": selected_display, "uri": current_uri, "source": current_source, "label": selected_display, "description": ""})
+        rows.append(
+            {
+                "row_index": idx,
+                "term": term,
+                "subject_label": str(df.loc[idx, "subject_label"]).strip() if "subject_label" in df.columns else term,
+                "current_uri": "" if current_uri == NO_MATCH_URI else current_uri,
+                "raw_uri": current_uri,
+                "object_label": str(df.loc[idx, "object_label"]).strip() if "object_label" in df.columns else "",
+                "source_provider": current_source,
+                "match_type": match_type,
+                "mapping_justification": str(df.loc[idx, "mapping_justification"]).strip() if "mapping_justification" in df.columns else "",
+                "selected_display": selected_display,
+                "options": options,
+                "has_suggestions": len(options) > 1,
+                "custom_search_summary": _custom_search_summary_for_row(idx, display_mode),
+            }
+        )
+    return {"display_mode": display_mode, "rows": rows, "total_rows": len(indices), "page": current_page, "total_pages": total_pages}
+
+
+def _build_provider_status_snapshot() -> list[dict[str, object]]:
+    provider_order = {name: i for i, name in enumerate(st.session_state.get("provider_queue", []))}
+    names = sorted(st.session_state.get("provider_status", {}).keys(), key=lambda name: (provider_order.get(name, float("inf")), name))
+    return [
+        {
+            "name": name,
+            "position": provider_order.get(name, 0) + 1,
+            "status": st.session_state.get("provider_status", {}).get(name, {}).get("status", "pending"),
+            "results_count": st.session_state.get("provider_status", {}).get(name, {}).get("results_count", 0),
+            "error_msg": st.session_state.get("provider_status", {}).get(name, {}).get("error_msg", ""),
+            "has_results": name in st.session_state.get("provider_has_results", set()),
+        }
+        for name in names
+    ]
+
+
+def _download_csv_payload(df: pd.DataFrame | None) -> str:
+    if not isinstance(df, pd.DataFrame):
+        return ""
+    return df.to_csv(index=False)
+
+
+def _build_reconciliation_mui_snapshot() -> dict[str, object]:
+    df = st.session_state.get("df")
+    shared_df = st.session_state.get("shared_matching_table")
+    curated_columns = ["subject_label", "object_id", "predicate_id", "object_label", "mapping_justification"]
+    provider_context_columns = ["subject_label", "object_id", "Source Provider", "Provider Term", "Provider Description", "Confirmed Display String", "comment"]
+    curated_preview = pd.DataFrame()
+    provider_preview = pd.DataFrame()
+    if isinstance(df, pd.DataFrame):
+        display_copy = df.copy()
+        if "URI" in display_copy.columns:
+            display_copy["URI"] = display_copy["URI"].replace(NO_MATCH_URI, "")
+        curated_preview = display_copy[[col for col in curated_columns if col in display_copy.columns]].copy()
+        provider_preview = display_copy[[col for col in provider_context_columns if col in display_copy.columns]].copy()
+
+    sssom_df = export_curated_sssom_table(df.copy()) if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    candidate_review_df = pd.DataFrame()
+    if isinstance(df, pd.DataFrame):
+        candidate_review_columns = [
+            "subject_id", "subject_label", "predicate_id", "object_id", "object_label", "mapping_justification",
+            "Source Provider", "Provider Term", "Provider Description", "Confirmed Display String", "confidence", "comment",
+            "mapping_provider", "object_source", "mapping_tool", "match_string", "semantic_similarity_score",
+            "semantic_similarity_measure", "Review Status",
+        ]
+        candidate_review_df = df[[col for col in candidate_review_columns if col in df.columns]].copy()
+        if "object_id" in candidate_review_df.columns:
+            candidate_review_df["object_id"] = candidate_review_df["object_id"].replace(NO_MATCH_URI, "")
+
+    total_terms = len(st.session_state.get("total_indices_to_process", []))
+    processed_terms = int(st.session_state.get("processed_terms_count", 0) or 0)
+    progress = min(100, round((processed_terms / max(total_terms, 1)) * 100)) if total_terms else 0
+    missing_config_alerts = []
+    if CONFIG:
+        if not CONFIG.get("ncbi", {}).get("api_key"):
+            missing_config_alerts.append("NCBI API Key")
+        if not CONFIG.get("bioportal", {}).get("api_key"):
+            missing_config_alerts.append("BioPortal API Key")
+        if not CONFIG.get("agroportal", {}).get("api_key"):
+            missing_config_alerts.append("AgroPortal API Key")
+
+    original_filename = st.session_state.get("last_uploaded_filename") or "data.csv"
+    base_filename = os.path.splitext(str(original_filename))[0]
+    return {
+        "active_stage": st.session_state.get(RECONCILIATION_MUI_ACTIVE_STAGE_KEY, "load"),
+        "statusMessage": st.session_state.get(RECONCILIATION_MUI_STATUS_MESSAGE_KEY),
+        "data": {
+            "has_table": isinstance(df, pd.DataFrame),
+            "rows": len(df) if isinstance(df, pd.DataFrame) else 0,
+            "columns": len(df.columns) if isinstance(df, pd.DataFrame) else 0,
+            "filename": st.session_state.get("last_uploaded_filename") or "",
+            "source_message": st.session_state.get("data_source_message") or "",
+            "shared_table_available": isinstance(shared_df, pd.DataFrame) and not shared_df.empty,
+            "shared_rows": len(shared_df) if isinstance(shared_df, pd.DataFrame) else 0,
+            "required_columns_detected": bool(isinstance(df, pd.DataFrame) and all(col in df.columns for col in REQUIRED_MATCHING_TABLE_COLUMNS)),
+            "total_terms": total_terms,
+            "curated_preview": _records(curated_preview, limit=20),
+            "provider_context_preview": _records(provider_preview, limit=20),
+        },
+        "config": {
+            "available_providers": _available_reconciliation_providers(),
+            "provider_tooltips": PROVIDER_TOOLTIPS,
+            "provider_queue": st.session_state.get("provider_queue", []),
+            "provider_status": _build_provider_status_snapshot(),
+            "provider_has_results": sorted(list(st.session_state.get("provider_has_results", set()))),
+            "display_provider": st.session_state.get("display_provider"),
+            "display_mixed_results": bool(st.session_state.get("display_mixed_results", False)),
+            "custom_sparql_enabled": bool(st.session_state.get("custom_sparql_enabled", False)),
+            "custom_sparql_endpoint": st.session_state.get("custom_sparql_endpoint", ""),
+            "custom_sparql_query_template": st.session_state.get("custom_sparql_query_template", DEFAULT_SPARQL_QUERY_TEMPLATE),
+            "custom_sparql_var_uri": st.session_state.get("custom_sparql_var_uri", "uri"),
+            "custom_sparql_var_label": st.session_state.get("custom_sparql_var_label", "label"),
+            "custom_sparql_var_description": st.session_state.get("custom_sparql_var_description", "description"),
+            "ncbi_all_databases": ['taxonomy', 'bioproject', 'gene', 'protein', 'nuccore', 'biosample', 'sra', 'pubmed', 'assembly', 'blastdbinfo', 'books', 'cdd', 'clinvar', 'dbgap', 'domains', 'gap', 'gapplus', 'gds', 'geoprofiles', 'homologene', 'medgen', 'mesh', 'ncv', 'nlmcatalog', 'omim', 'pmc', 'popset', 'probe', 'proteinclusters', 'pubchem-compound', 'pubchem-substance', 'pubchem-assay', 'snp', 'structure', 'unigene', 'unists'],
+            "ncbi_selected_databases": st.session_state.get("ncbi_selected_databases", []),
+            "local_backend": st.session_state.get("local_backend", "auto"),
+            "local_resources": [
+                {"name": res.get("name"), "backend": res.get("backend"), "entities": len(getattr(res.get("index"), "entities", [])), "parse_backend": getattr(res.get("index"), "parse_backend", "")}
+                for res in st.session_state.get("local_resources", [])
+                if isinstance(res, dict)
+            ],
+            "ontology_loading_status": st.session_state.get("ontology_loading_status", {}),
+            "available_ontologies_by_provider": st.session_state.get("available_ontologies_by_provider", {}),
+            "selected_ontologies_by_provider": st.session_state.get("selected_ontologies_by_provider", {}),
+            "matching_strategy": st.session_state.get("matching_strategy_radio", "API Ranking"),
+            "suggestion_slider": st.session_state.get("suggestion_slider", 10),
+            "levenshtein_threshold": st.session_state.get("levenshtein_threshold_slider", 0.7),
+            "show_only_matched_terms": bool(st.session_state.get("show_only_matched_terms", False)),
+            "show_only_unreconciled_terms": bool(st.session_state.get("show_only_unreconciled_terms", False)),
+            "items_per_page": st.session_state.get("items_per_page", 10),
+            "skos_matching_enabled": bool(st.session_state.get("skos_matching_enabled", False)),
+            "missing_config_alerts": missing_config_alerts,
+        },
+        "run": {
+            "processing_active": bool(st.session_state.get("processing_active", False)),
+            "processed_terms": processed_terms,
+            "total_terms": total_terms,
+            "progress": progress,
+            "current_term_index": st.session_state.get("current_term_index_processing", 0),
+            "can_start": bool(isinstance(df, pd.DataFrame) and total_terms > 0 and st.session_state.get("provider_queue") and not _missing_provider_configurations(st.session_state.get("provider_queue", []))),
+            "missing_start_configs": _missing_provider_configurations(st.session_state.get("provider_queue", [])),
+        },
+        "reconciliation": _build_reconciliation_rows(),
+        "downloads": {
+            "sssom_csv": _download_csv_payload(sssom_df),
+            "sssom_filename": f"{base_filename}_sssom_curated.csv",
+            "candidate_review_csv": _download_csv_payload(candidate_review_df),
+            "candidate_review_filename": f"{base_filename}_candidate_review.csv",
+        },
+    }
+
+
+def _apply_provider_queue(provider_queue: list[str]):
+    available = set(_available_reconciliation_providers())
+    selected = [str(provider) for provider in provider_queue if str(provider) in available]
+    st.session_state["provider_queue"] = selected
+    st.session_state["provider_status"] = {}
+    for provider in selected:
+        st.session_state.provider_status[provider] = {"status": "pending", "results_count": 0, "error_msg": "", "progress": 0.0, "processed_indices": set()}
+    st.session_state["display_provider"] = None
+    st.session_state["display_mixed_results"] = False
+    _ensure_ontology_options_for_queue()
+
+
+def _process_reconciliation_queue():
+    df = st.session_state.get("df")
+    if not isinstance(df, pd.DataFrame):
+        st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": "Cannot start processing: no table is loaded."}
+        return
+    missing_configs = _missing_provider_configurations(st.session_state.get("provider_queue", []))
+    if missing_configs:
+        st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": f"Cannot start: missing configuration values: {', '.join(missing_configs)}"}
+        return
+    total_indices = list(df[(pd.isnull(df["URI"]) | (df["URI"] == "") | (df["URI"] == NO_MATCH_URI))].index)
+    st.session_state["total_indices_to_process"] = total_indices
+    if not total_indices:
+        st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "info", "text": "All terms already have URIs. Nothing to process."}
+        return
+    provider_queue = list(st.session_state.get("provider_queue", []))
+    if not provider_queue:
+        st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "warning", "text": "Select at least one reconciliation provider before processing."}
+        return
+
+    st.session_state["processing_active"] = True
+    st.session_state["processed_terms_count"] = 0
+    st.session_state["current_term_index_processing"] = 0
+    st.session_state["stop_processing_requested"] = False
+    st.session_state["provider_has_results"] = set()
+    for provider in provider_queue:
+        st.session_state.provider_status[provider] = {"status": "running", "results_count": 0, "error_msg": "", "progress": 0.0}
+
+    for position, actual_df_index in enumerate(total_indices):
+        if st.session_state.get("stop_processing_requested"):
+            break
+        term_to_process = str(df.loc[actual_df_index, "Term"]).strip()
+        st.session_state["current_term_index_processing"] = position
+        if not term_to_process:
+            st.session_state["processed_terms_count"] += 1
+            continue
+        st.session_state.setdefault("suggestions", {}).setdefault(actual_df_index, {})
+        max_workers = min(len(provider_queue), 8) if provider_queue else 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_provider = {}
+            for provider_name in provider_queue:
+                current_config_for_provider = CONFIG.copy()
+                if provider_name == CUSTOM_SPARQL_PROVIDER_NAME and st.session_state.get("custom_sparql_enabled"):
+                    current_config_for_provider["custom_sparql"] = {
+                        "endpoint": st.session_state.get("custom_sparql_endpoint"),
+                        "query_template": st.session_state.get("custom_sparql_query_template"),
+                        "var_uri": st.session_state.get("custom_sparql_var_uri"),
+                        "var_label": st.session_state.get("custom_sparql_var_label"),
+                        "var_description": st.session_state.get("custom_sparql_var_description"),
+                    }
+                elif provider_name == "NCBI":
+                    current_config_for_provider["ncbi_databases"] = st.session_state.get("ncbi_selected_databases", [])
+                elif provider_name == "Local Ontology":
+                    current_config_for_provider["local_resources"] = st.session_state.get("local_resources", [])
+                    current_config_for_provider["local_backend"] = st.session_state.get("local_backend", "auto")
+                if provider_name in st.session_state.get("selected_ontologies_by_provider", {}):
+                    current_config_for_provider["selected_ontologies_by_provider"] = {provider_name: st.session_state.selected_ontologies_by_provider.get(provider_name, [])}
+                future_to_provider[
+                    executor.submit(fetch_suggestions_for_term_from_provider, provider_name, term_to_process, current_config_for_provider, USER_AGENT, st.session_state.get("suggestion_slider", 10))
+                ] = provider_name
+            for future in concurrent.futures.as_completed(future_to_provider):
+                provider_name = future_to_provider[future]
+                try:
+                    provider_suggestions = future.result()
+                    st.session_state.suggestions[actual_df_index][provider_name] = provider_suggestions
+                    if provider_suggestions:
+                        st.session_state.provider_has_results.add(provider_name)
+                        st.session_state.provider_status[provider_name]["results_count"] = st.session_state.provider_status[provider_name].get("results_count", 0) + 1
+                except Exception as exc:
+                    logger.error("Error fetching suggestions for term %r from %s: %s", term_to_process, provider_name, exc, exc_info=True)
+                    st.session_state.suggestions[actual_df_index][provider_name] = []
+                    st.session_state.provider_status[provider_name]["status"] = "error"
+                    st.session_state.provider_status[provider_name]["error_msg"] = str(exc)
+        st.session_state["processed_terms_count"] += 1
+
+    st.session_state["current_term_index_processing"] = len(total_indices)
+    st.session_state["processing_active"] = False
+    for provider in provider_queue:
+        if st.session_state.provider_status.get(provider, {}).get("status") not in {"error", "stopped"}:
+            st.session_state.provider_status[provider]["status"] = "completed"
+    if len(st.session_state.get("provider_has_results", set())) >= 2:
+        st.session_state["display_mixed_results"] = True
+        st.session_state["display_provider"] = None
+    elif st.session_state.get("provider_has_results"):
+        st.session_state["display_provider"] = sorted(st.session_state.get("provider_has_results"))[0]
+        st.session_state["display_mixed_results"] = False
+    st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Processing queue finished. Review provider suggestions in the Reconcile step."}
+    st.session_state[RECONCILIATION_MUI_ACTIVE_STAGE_KEY] = "reconcile"
+
+
+def _apply_reconciliation_selection(row_index, selected_option: dict, match_type: str | None = None):
+    df = st.session_state.get("df")
+    if not isinstance(df, pd.DataFrame) or row_index not in df.index:
+        return
+    chosen_uri = str(selected_option.get("uri", NO_MATCH_URI) or NO_MATCH_URI)
+    chosen_source = str(selected_option.get("source", "") or "")
+    display = str(selected_option.get("display", NO_MATCH_DISPLAY) or NO_MATCH_DISPLAY)
+    raw = selected_option.get("raw") if isinstance(selected_option.get("raw"), dict) else selected_option
+    df.loc[row_index, "URI"] = chosen_uri
+    df.loc[row_index, "object_id"] = chosen_uri
+    df.loc[row_index, "Source Provider"] = chosen_source if chosen_uri != NO_MATCH_URI else ""
+    df.loc[row_index, "Confirmed Display String"] = display if chosen_uri != NO_MATCH_URI else NO_MATCH_DISPLAY
+    if chosen_uri != NO_MATCH_URI:
+        df.loc[row_index, "Provider Term"] = raw.get("label", selected_option.get("label", "")) if isinstance(raw, dict) else selected_option.get("label", "")
+        df.loc[row_index, "Provider Description"] = raw.get("description", selected_option.get("description", "")) if isinstance(raw, dict) else selected_option.get("description", "")
+        df.loc[row_index, "object_label"] = raw.get("label", selected_option.get("label", "")) if isinstance(raw, dict) else selected_option.get("label", "")
+        if st.session_state.get("skos_matching_enabled") and not str(df.loc[row_index, "predicate_id"]).strip():
+            df.loc[row_index, "Match Type"] = "skos:exactMatch"
+            df.loc[row_index, "predicate_id"] = "skos:exactMatch"
+    else:
+        df.loc[row_index, "Provider Term"] = ""
+        df.loc[row_index, "Provider Description"] = ""
+        df.loc[row_index, "object_label"] = ""
+        df.loc[row_index, "Match Type"] = ""
+        df.loc[row_index, "predicate_id"] = ""
+    if match_type is not None:
+        final_match_type = "" if not match_type or chosen_uri == NO_MATCH_URI else str(match_type)
+        df.loc[row_index, "Match Type"] = final_match_type
+        df.loc[row_index, "predicate_id"] = final_match_type
+    apply_mapping_justification_for_row(
+        df,
+        row_index,
+        default_when_mapped=(
+            REVIEW_MAPPING_JUSTIFICATION
+            if not isinstance(raw, dict)
+            else (
+                LEXICAL_MAPPING_JUSTIFICATION
+                if isinstance(raw.get("levenshtein_score"), (int, float)) and float(raw.get("levenshtein_score")) >= 1.0
+                else LEXICAL_SIMILARITY_THRESHOLD_MAPPING_JUSTIFICATION
+            )
+        ),
+        no_match_uri=NO_MATCH_URI,
+        force_when_mapped=True,
+    )
+    st.session_state["df"] = df
+
+
+def _perform_custom_search(row_index, search_term: str, display_mode: str):
+    providers = []
+    if display_mode == "Mixed Results":
+        providers = [p for p in st.session_state.get("provider_queue", []) if st.session_state.get("provider_status", {}).get(p, {}).get("status") not in ["pending", "error"]]
+    elif display_mode:
+        providers = [display_mode]
+    if not providers:
+        st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "warning", "text": "Select a provider or Mixed Results before custom search."}
+        return
+    all_results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(providers))) as executor:
+        future_to_provider = {}
+        for provider_name in providers:
+            dynamic_config = CONFIG.copy()
+            if provider_name in st.session_state.get("selected_ontologies_by_provider", {}):
+                dynamic_config["selected_ontologies_by_provider"] = {provider_name: st.session_state.selected_ontologies_by_provider.get(provider_name, [])}
+            if provider_name == "NCBI":
+                dynamic_config["ncbi_databases"] = st.session_state.get("ncbi_selected_databases", [])
+            if provider_name == "Local Ontology":
+                dynamic_config["local_resources"] = st.session_state.get("local_resources", [])
+                dynamic_config["local_backend"] = st.session_state.get("local_backend", "auto")
+            if provider_name == CUSTOM_SPARQL_PROVIDER_NAME and st.session_state.get("custom_sparql_enabled"):
+                dynamic_config["custom_sparql"] = {
+                    "endpoint": st.session_state.get("custom_sparql_endpoint"),
+                    "query_template": st.session_state.get("custom_sparql_query_template"),
+                    "var_uri": st.session_state.get("custom_sparql_var_uri"),
+                    "var_label": st.session_state.get("custom_sparql_var_label"),
+                    "var_description": st.session_state.get("custom_sparql_var_description"),
+                }
+            future_to_provider[executor.submit(fetch_suggestions_for_term_from_provider, provider_name, search_term, dynamic_config, USER_AGENT, st.session_state.get("suggestion_slider", 10))] = provider_name
+        for future in concurrent.futures.as_completed(future_to_provider):
+            provider_name = future_to_provider[future]
+            try:
+                all_results[provider_name] = future.result()
+            except Exception as exc:
+                logger.error("Error in custom search for %s: %s", provider_name, exc, exc_info=True)
+                all_results[provider_name] = []
+    sorted_results = get_combined_and_sorted_suggestions(search_term, all_results, st.session_state.get("suggestion_slider", 10), st.session_state.get("matching_strategy_radio"))
+    key = (row_index, display_mode or "Mixed Results", "mui_custom_search")
+    st.session_state.setdefault("custom_search_summaries", {})[key] = {
+        "search_term": search_term,
+        "results_count": len(sorted_results),
+        "providers": providers,
+    }
+    st.session_state.custom_search_results[key] = sorted_results
+    row_suggestions = st.session_state.suggestions.setdefault(row_index, {})
+    for provider_name, provider_results in all_results.items():
+        row_suggestions[provider_name] = provider_results or []
+        if provider_results:
+            st.session_state.provider_has_results.add(provider_name)
+            st.session_state.provider_status.setdefault(provider_name, {"status": "completed", "results_count": 0, "error_msg": "", "progress": 1.0})
+            if st.session_state.provider_status[provider_name].get("status") in {"pending", "error"}:
+                st.session_state.provider_status[provider_name]["status"] = "completed"
+    if display_mode and display_mode != "Mixed Results" and display_mode not in row_suggestions:
+        row_suggestions[display_mode] = sorted_results
+    st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": f"Found {len(sorted_results)} result(s) for custom search term '{search_term}'."}
+
+
+def _handle_reconciliation_mui_event(event: object) -> bool:
+    if not isinstance(event, dict):
+        return False
+    nonce = event.get("nonce")
+    if nonce and st.session_state.get(RECONCILIATION_MUI_EVENT_NONCE_KEY) == nonce:
+        return False
+    if nonce:
+        st.session_state[RECONCILIATION_MUI_EVENT_NONCE_KEY] = nonce
+    event_type = str(event.get("type", "") or "")
+
+    if event_type == "navigate":
+        stage = str(event.get("stage", "") or "")
+        if stage in RECONCILIATION_STAGES:
+            st.session_state[RECONCILIATION_MUI_ACTIVE_STAGE_KEY] = stage
+        return True
+    if event_type == "upload_table":
+        try:
+            df_loaded, filename = _read_matching_table_payload(event)
+            if _reset_reconciliation_state_and_load_df(df_loaded, filename, is_from_shared_generator=False):
+                st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": f"Matching table '{filename}' loaded."}
+                st.session_state[RECONCILIATION_MUI_ACTIVE_STAGE_KEY] = "configure"
+            else:
+                st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": st.session_state.get("csv_load_error_message") or "Failed to load matching table."}
+        except Exception as exc:
+            st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": f"Failed to parse uploaded table: {exc}"}
+        return True
+    if event_type == "load_shared_table":
+        shared_df = st.session_state.get("shared_matching_table")
+        if isinstance(shared_df, pd.DataFrame) and not shared_df.empty:
+            if _reset_reconciliation_state_and_load_df(shared_df, "Matching Table Generator", is_from_shared_generator=True):
+                st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Shared matching table loaded for reconciliation."}
+                st.session_state[RECONCILIATION_MUI_ACTIVE_STAGE_KEY] = "configure"
+            else:
+                st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": st.session_state.get("csv_load_error_message") or "Shared table is missing required SSSOM columns."}
+        else:
+            st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "warning", "text": "No shared matching table is available."}
+        return True
+    if event_type == "update_settings":
+        patch = event.get("settings", {}) if isinstance(event.get("settings"), dict) else {}
+        for key in [
+            "custom_sparql_enabled", "custom_sparql_endpoint", "custom_sparql_query_template", "custom_sparql_var_uri",
+            "custom_sparql_var_label", "custom_sparql_var_description", "local_backend", "matching_strategy_radio",
+            "suggestion_slider", "levenshtein_threshold_slider", "items_per_page", "skos_matching_enabled",
+            "show_only_matched_terms", "show_only_unreconciled_terms", "current_page",
+        ]:
+            if key in patch:
+                st.session_state[key] = patch[key]
+        if "ncbi_selected_databases" in patch and isinstance(patch["ncbi_selected_databases"], list):
+            st.session_state["ncbi_selected_databases"] = patch["ncbi_selected_databases"]
+        if "selected_ontologies_by_provider" in patch and isinstance(patch["selected_ontologies_by_provider"], dict):
+            st.session_state["selected_ontologies_by_provider"] = patch["selected_ontologies_by_provider"]
+        if "provider_queue" in patch and isinstance(patch["provider_queue"], list):
+            _apply_provider_queue(patch["provider_queue"])
+        return True
+    if event_type == "confirm_queue":
+        _apply_provider_queue(event.get("provider_queue", []))
+        st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Provider queue updated." if st.session_state.get("provider_queue") else "Provider queue cleared."}
+        return True
+    if event_type == "index_local_resources":
+        resources = []
+        backend = str(event.get("backend") or st.session_state.get("local_backend", "auto"))
+        st.session_state["local_backend"] = backend
+        for uploaded in event.get("files", []) if isinstance(event.get("files"), list) else []:
+            try:
+                filename = str(uploaded.get("filename", "local_resource"))
+                suffix = Path(filename).suffix
+                payload = base64.b64decode(str(uploaded.get("content_base64", "")))
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+                tmp.write(payload)
+                tmp.close()
+                idx = local_resource_provider.load_local_resource_index(tmp.name, resource_name=filename, force_backend=backend, max_entities=50000)
+                resources.append({"name": filename, "path": tmp.name, "index": idx, "backend": backend})
+            except Exception as exc:
+                logger.error("Error indexing local resource: %s", exc, exc_info=True)
+                st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": f"Error indexing local resource: {exc}"}
+        if resources:
+            st.session_state["local_resources"] = resources
+            st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": f"Indexed {len(resources)} local resource(s)."}
+        return True
+    if event_type == "start_processing":
+        _process_reconciliation_queue()
+        return True
+    if event_type == "select_display_provider":
+        provider = str(event.get("provider", "") or "")
+        if provider == "Mixed Results":
+            st.session_state["display_mixed_results"] = True
+            st.session_state["display_provider"] = None
+        elif provider:
+            st.session_state["display_provider"] = provider
+            st.session_state["display_mixed_results"] = False
+        st.session_state[RECONCILIATION_MUI_ACTIVE_STAGE_KEY] = "reconcile"
+        return True
+    if event_type == "update_mapping":
+        row_index = event.get("row_index")
+        try:
+            if isinstance(row_index, str) and row_index.isdigit():
+                row_index = int(row_index)
+        except Exception:
+            pass
+        selected_option = event.get("selected_option", {}) if isinstance(event.get("selected_option"), dict) else {}
+        _apply_reconciliation_selection(row_index, selected_option, event.get("match_type"))
+        st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Mapping selection updated."}
+        return True
+    if event_type == "prefill_best_match":
+        prefill_best_matches()
+        st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Best available suggestions were prefilled for unreconciled rows."}
+        return True
+    if event_type == "custom_search":
+        row_index = event.get("row_index")
+        try:
+            if isinstance(row_index, str) and row_index.isdigit():
+                row_index = int(row_index)
+        except Exception:
+            pass
+        search_term = str(event.get("search_term", "") or "").strip()
+        if search_term:
+            _perform_custom_search(row_index, search_term, str(event.get("display_mode") or _current_reconciliation_display_mode() or ""))
+        else:
+            st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "warning", "text": "Enter a custom search term first."}
+        return True
+    if event_type in {"publish_rdf_handoff", "prepare_downloads"}:
+        df = st.session_state.get("df")
+        if isinstance(df, pd.DataFrame):
+            st.session_state["shared_reconciled_matching_table"] = finalize_accepted_results(df.copy())
+            st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Reconciled matching table published to RDF Generator handoff."}
+        else:
+            st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "warning", "text": "No reconciled data is available yet."}
+        return True
+    if event_type == "reset_workflow":
+        for key in ["df", "suggestions", "selected_uris", "custom_search_results", "custom_search_summaries", "provider_queue", "provider_status", "provider_has_results", "display_provider", "display_mixed_results", "total_indices_to_process"]:
+            if key in st.session_state:
+                del st.session_state[key]
+        _initialize_reconciliation_mui_state()
+        st.session_state[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "info", "text": "Semi-automatic reconciliation workflow reset."}
+        return True
+    return False
+
+
+def _render_reconciliation_mui_app(snapshot: dict[str, object]):
+    component_path = _get_reconciliation_component_path()
+    if not os.path.exists(os.path.join(component_path, "index.html")):
+        st.error(
+            "Reconciliation Material-UI component build is missing. Run `npm install && npm run build` in "
+            "agentic_reconciliation/components/workflow_config_panel/frontend."
+        )
+        return None
+    reconciliation_component = components.declare_component("semi_automatic_reconciliation_panel", path=component_path)
+    try:
+        return reconciliation_component(
+            app="semi_automatic_reconciliation",
+            snapshot=snapshot,
+            key="semi_automatic_reconciliation_mui_app",
+            default=None,
+        )
+    except Exception as exc:
+        st.error(f"SemiAutomaticReconciliation Material-UI component could not be rendered. ({exc})")
+        return None
+
+
+def render_reconciliation_ui():
+    """Render the semi-automatic reconciliation service entirely through the Material-UI component."""
+    _initialize_reconciliation_mui_state()
+    if CONFIG is None:
+        st.error("Critical Error: 'config.yaml' could not be loaded. App cannot continue.")
+        return
+    _ensure_ontology_options_for_queue()
+    snapshot = _build_reconciliation_mui_snapshot()
+    component_event = _render_reconciliation_mui_app(snapshot)
+    if _handle_reconciliation_mui_event(component_event):
+        st.components.v1.html("<script>window.parent.scrollToTop && window.parent.scrollToTop();</script>", height=0)
+        st.rerun()

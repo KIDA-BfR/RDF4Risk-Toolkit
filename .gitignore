@@ -1,8 +1,104 @@
+# Python caches and bytecode
 __pycache__/
 *.py[cod]
+*$py.class
+
+# Python virtual environments
 venv/
+.venv/
+env/
+ENV/
 **/venv/
-.env
-.DS_Store
+**/.venv/
+
+# Python packaging / build artifacts
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test, lint, type-check, and coverage outputs
+tests/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.nox/
+
+# Jupyter / notebook temporary files
 .ipynb_checkpoints/
-.venv
+.tmp_nb_cell_*.py
+.tmp_nb_keycell_*.py
+.tmp_notebook_cells_extract.txt
+
+# Environment files / local secrets
+.env
+.env.*
+!.env.example
+*.local
+*.key
+*.pem
+.streamlit/secrets.toml
+**/.streamlit/secrets.toml
+codex_credentials.json
+codex_tokens.json
+*credentials*.json
+*tokens*.json
+
+# Node / frontend dependencies and generated assets
+node_modules/
+**/node_modules/
+.vite/
+**/.vite/
+build/
+**/build/
+dist/
+**/dist/
+coverage/
+**/coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# AI assistant / local agent configuration and generated context
+AGENTS.md
+CLAUDE.md
+agents.md
+claude.md
+.claude/
+.research/
+**/SKILL.md
+implementation_plan.md
+implementation_task_handoff.md
+*_implementation_plan.md
+*_task_handoff.md
+
+# GitNexus local index and generated artifacts
+.gitnexus/
+.gitnexus*
+gitnexus/
+gitnexus-*/
+
+# Generic temporary files
+tmp/
+temp/
+.tmp/
+.cache/
+cache/
+**/.cache/
+*.tmp
+*.temp
+*.log
+agentic_reconciliation/data/*cache*.json

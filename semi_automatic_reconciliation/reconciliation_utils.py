@@ -11,6 +11,20 @@ import traceback
 import yaml
 import logging
 import concurrent.futures
+from dotenv import load_dotenv
+
+try:
+    from semi_automatic_reconciliation.shared_table_io import (
+        LEXICAL_MAPPING_JUSTIFICATION,
+        LEXICAL_SIMILARITY_THRESHOLD_MAPPING_JUSTIFICATION,
+        apply_mapping_justification_for_row,
+    )
+except ImportError:
+    from semi_automatic_reconciliation.shared_table_io import (  # type: ignore
+        LEXICAL_MAPPING_JUSTIFICATION,
+        LEXICAL_SIMILARITY_THRESHOLD_MAPPING_JUSTIFICATION,
+        apply_mapping_justification_for_row,
+    )
 
 # --- Configure Logging (Console Only) ---
 logger = logging.getLogger(__name__)
@@ -66,8 +80,57 @@ LIMIT {limit}
 # --- Config Loading ---
 @st.cache_data(ttl=3600)
 def load_config(default_config_filename='config.yaml'):
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_file_path = os.path.join(script_dir, default_config_filename)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    config_file_path = os.path.join(project_root, default_config_filename)
+    dotenv_path = os.path.join(project_root, ".env")
+
+    # Load local .env (ignored by git) before reading config so env vars can override placeholders.
+    load_dotenv(dotenv_path=dotenv_path, override=False)
+
+    def _env_first(config_value, env_name: str):
+        env_value = str(os.getenv(env_name) or "").strip()
+        if env_value:
+            return env_value
+        return config_value
+
+    def _apply_secret_env_overrides(config: dict) -> dict:
+        if not isinstance(config, dict):
+            return config
+
+        ncbi_cfg = config.get("ncbi")
+        if isinstance(ncbi_cfg, dict):
+            ncbi_cfg["api_key"] = _env_first(ncbi_cfg.get("api_key"), "NCBI_API_KEY")
+
+        bioportal_cfg = config.get("bioportal")
+        if isinstance(bioportal_cfg, dict):
+            bioportal_cfg["api_key"] = _env_first(bioportal_cfg.get("api_key"), "BIOPORTAL_API_KEY")
+
+        agroportal_cfg = config.get("agroportal")
+        if isinstance(agroportal_cfg, dict):
+            agroportal_cfg["api_key"] = _env_first(agroportal_cfg.get("api_key"), "AGROPORTAL_API_KEY")
+
+        earthportal_cfg = config.get("earthportal")
+        if isinstance(earthportal_cfg, dict):
+            earthportal_cfg["api_key"] = _env_first(earthportal_cfg.get("api_key"), "EARTHPORTAL_API_KEY")
+
+        agent_cfg = config.get("agent_reconciliation")
+        if isinstance(agent_cfg, dict):
+            provider_keys = agent_cfg.get("provider_api_keys")
+            if not isinstance(provider_keys, dict):
+                provider_keys = {}
+                agent_cfg["provider_api_keys"] = provider_keys
+
+            provider_keys["openai"] = _env_first(provider_keys.get("openai"), "OPENAI_API_KEY")
+            provider_keys["anthropic"] = _env_first(provider_keys.get("anthropic"), "ANTHROPIC_API_KEY")
+            provider_keys["google_gemini"] = _env_first(provider_keys.get("google_gemini"), "GOOGLE_API_KEY")
+            provider_keys["openai_compatible"] = _env_first(
+                provider_keys.get("openai_compatible"),
+                "OPENAI_COMPATIBLE_API_KEY",
+            )
+            agent_cfg["langsmith_api_key"] = _env_first(agent_cfg.get("langsmith_api_key"), "LANGSMITH_API_KEY")
+
+        return config
+
     logger.info(f"Attempting to load config from: {config_file_path}")
     if not os.path.exists(config_file_path):
         logger.error(f"Config file not found: {config_file_path}")
@@ -75,6 +138,7 @@ def load_config(default_config_filename='config.yaml'):
     try:
         with open(config_file_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
+        config = _apply_secret_env_overrides(config)
         logger.info(f"Config loaded successfully from {config_file_path}")
         return config
     except Exception as e:
@@ -148,7 +212,6 @@ def format_suggestion_display(suggestion, strategy='API Ranking', max_desc_lengt
     
     score_info = ""; score = None; score_key = None; include_score = False; score_label_prefix = ""
     if strategy == "Levenshtein Similarity": score_key = 'levenshtein_score'; score_label_prefix = "Lev: "; include_score = True
-    elif strategy == "Cosine Similarity": score_key = 'hybrid_score'; score_label_prefix = "Hybrid: "; include_score = True
     elif strategy == "API Ranking": score_key = 'score'; include_score = score_key in suggestion
     if include_score and score_key:
         score = suggestion.get(score_key)
@@ -226,9 +289,6 @@ def get_combined_and_sorted_suggestions(term_main, all_suggestions_for_term, max
     sort_key_str = 'score' # Default to API Ranking
     if strategy == "Levenshtein Similarity":
         sort_key_str = 'levenshtein_score'
-    elif strategy == "Cosine Similarity":
-        # This assumes hybrid scores have been pre-calculated for the Cosine strategy
-        sort_key_str = 'hybrid_score'
 
     # Filter out any non-dict items just in case
     filtered_suggestions = [s for s in combined_suggestions if isinstance(s, dict)]
@@ -239,12 +299,14 @@ def get_combined_and_sorted_suggestions(term_main, all_suggestions_for_term, max
     # If calculate_levenshtein_score returns a non-numeric, it's already 0.0.
 
     # Sort the suggestions.
-    # The key lambda now handles cases where the score value is None or not a number.
+    # If the score for the selected strategy is missing, fall back to Levenshtein score
+    # to avoid penalizing providers that don't return an API score.
     def sort_key_func(x):
         val = x.get(sort_key_str)
         if isinstance(val, (int, float)):
             return val
-        return -1.0 # Default value for sorting if score is missing or invalid
+        # Fallback to levenshtein_score if API score is missing
+        return x.get('levenshtein_score', -1.0)
 
     sorted_suggestions = sorted(
         filtered_suggestions, 
@@ -313,24 +375,44 @@ def prefill_best_matches():
             best_match_display_text = format_suggestion_display(best_match, display_strategy)
 
             df_to_process.loc[index_main, 'URI'] = chosen_uri
+            df_to_process.loc[index_main, 'object_id'] = chosen_uri
             df_to_process.loc[index_main, 'Source Provider'] = chosen_source
             df_to_process.loc[index_main, 'Confirmed Display String'] = best_match_display_text
             df_to_process.loc[index_main, 'Provider Term'] = chosen_label
             df_to_process.loc[index_main, 'Provider Description'] = chosen_description
+            apply_mapping_justification_for_row(
+                df_to_process,
+                index_main,
+                default_when_mapped=(
+                    LEXICAL_MAPPING_JUSTIFICATION
+                    if isinstance(lev_score_for_check, (int, float)) and float(lev_score_for_check) >= 1.0
+                    else LEXICAL_SIMILARITY_THRESHOLD_MAPPING_JUSTIFICATION
+                ),
+                no_match_uri=NO_MATCH_URI,
+                force_when_mapped=True,
+            )
             prefilled_count += 1
         else:
             df_to_process.loc[index_main, 'URI'] = NO_MATCH_URI
+            df_to_process.loc[index_main, 'object_id'] = NO_MATCH_URI
             df_to_process.loc[index_main, 'Source Provider'] = ""
             df_to_process.loc[index_main, 'Confirmed Display String'] = NO_MATCH_DISPLAY
             df_to_process.loc[index_main, 'Provider Term'] = ""
             df_to_process.loc[index_main, 'Provider Description'] = ""
+            apply_mapping_justification_for_row(
+                df_to_process,
+                index_main,
+                default_when_mapped=LEXICAL_MAPPING_JUSTIFICATION,
+                no_match_uri=NO_MATCH_URI,
+            )
 
     if skos_enabled:
         for index_main in indices_to_check:
             current_uri = str(df_to_process.loc[index_main, 'URI']).strip()
-            current_match_type = str(df_to_process.loc[index_main, 'Match Type']).strip()
+            current_match_type = str(df_to_process.loc[index_main, 'predicate_id']).strip()
             if current_uri and current_uri != NO_MATCH_URI and not current_match_type:
                 df_to_process.loc[index_main, 'Match Type'] = 'skos:exactMatch'
+                df_to_process.loc[index_main, 'predicate_id'] = 'skos:exactMatch'
     
     st.session_state['df'] = df_to_process 
     st.success(f"Prefilled {prefilled_count} terms with best matches and updated SKOS matches where applicable.")

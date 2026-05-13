@@ -1,12 +1,18 @@
 # trig_viewer.py - TriG Data Viewer Streamlit App
 
-import streamlit as st
-import pandas as pd
-from pathlib import Path
-import tempfile
+from __future__ import annotations
+
+import base64
 import os
-from collections import defaultdict
 import sys
+import tempfile
+from collections import defaultdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
 
 # Add current directory to path for importing Transform_Trig_to_Excel
 sys.path.insert(0, str(Path(__file__).parent))
@@ -145,358 +151,281 @@ def get_property_counts(converter: TriGConverter) -> dict:
                 counts[prop_label] += 1
     return dict(counts)
 
-# --- Main App ---
+# --- Web app backend bridge ---
+
+RDF_TABLE_COMPONENT_ACTION_NONCE_KEY = "rdf_to_table_component_action_nonce"
+RDF_TABLE_STATUS_MESSAGE_KEY = "rdf_to_table_status_message"
+RDF_TABLE_DOWNLOADS_KEY = "rdf_to_table_downloads"
+
+DCAT_GRAPH_URI = 'https://fskx-graphdb.risk-ai-cloud.com/graph/dcat-metadata'
+PUBLICATION_GRAPH_URI = 'https://fskx-graphdb.risk-ai-cloud.com/graph/publication-reference'
+
+
+def _component_path() -> str:
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "agentic_reconciliation",
+        "components",
+        "workflow_config_panel",
+        "frontend",
+        "build",
+    )
+
+
+def _render_rdf_to_table_mui(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    component_path = _component_path()
+    if not os.path.exists(os.path.join(component_path, "index.html")):
+        st.error(
+            "RDFToTableApp React/Material-UI component build is missing. "
+            "Run `npm install && npm run build` in agentic_reconciliation/components/workflow_config_panel/frontend."
+        )
+        return None
+    rdf_to_table_component = components.declare_component("rdf_to_table_panel", path=component_path)
+    try:
+        return rdf_to_table_component(app="rdf_to_table", snapshot=snapshot, key="rdf_to_table_mui_app", default=None)
+    except Exception as exc:
+        st.error(f"RDFToTableApp React/Material-UI component could not be rendered. ({exc})")
+        return None
+
+
+def _init_rdf_to_table_state() -> None:
+    defaults = {
+        "trig_converter": None,
+        "trig_file_name": None,
+        "rdf_to_table_active_stage": "load",
+        RDF_TABLE_STATUS_MESSAGE_KEY: None,
+        RDF_TABLE_DOWNLOADS_KEY: {},
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value.copy() if isinstance(value, dict) else value
+
+
+def _set_status(severity: str, text: str) -> None:
+    st.session_state[RDF_TABLE_STATUS_MESSAGE_KEY] = {"severity": severity, "text": text}
+
+
+def _preview_records(df: Optional[pd.DataFrame], limit: int = 100) -> List[Dict[str, Any]]:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return []
+    return df.head(limit).fillna("").astype(str).to_dict(orient="records")
+
+
+def _process_trig_data(data: str, file_name: str) -> None:
+    try:
+        converter = TriGConverter(data=data)
+        if not converter.parse_trig():
+            _set_status("error", "Failed to parse TriG data. Please check the file format.")
+            return
+        converter.extract_all_data()
+        converter.expand_list_values()
+        st.session_state.trig_converter = converter
+        st.session_state.trig_file_name = file_name
+        st.session_state[RDF_TABLE_DOWNLOADS_KEY] = {}
+        st.session_state["rdf_to_table_active_stage"] = "preview"
+        _set_status("success", f"Processed {file_name}: {len(converter.graph):,} triples and {len(converter.subjects_data):,} subject rows.")
+    except Exception as exc:
+        import traceback
+        _set_status("error", f"Error processing TriG data: {exc}\n{traceback.format_exc()}")
+
+
+def _handle_upload(event: Dict[str, Any]) -> None:
+    filename = str(event.get("filename", "") or "uploaded.trig").strip() or "uploaded.trig"
+    if not filename.lower().endswith(".trig"):
+        _set_status("error", "Please upload a .trig file.")
+        return
+    try:
+        raw = base64.b64decode(str(event.get("content_base64", "") or ""))
+        data = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        data = raw.decode("utf-8", errors="replace")
+    except Exception as exc:
+        _set_status("error", f"Unable to decode uploaded TriG file: {exc}")
+        return
+    _process_trig_data(data, filename)
+
+
+def _load_catalog_from_generator() -> None:
+    catalog_data = st.session_state.get('dcat_catalog_data')
+    if not catalog_data:
+        _set_status("warning", "No generated DCAT catalog found in session. Generate one in the RDF Generator first.")
+        return
+    _process_trig_data(str(catalog_data), "generated_catalog.trig")
+
+
+def _named_graph_section(graph_uri: str, triples: list, converter: TriGConverter) -> Dict[str, Any]:
+    by_subject = defaultdict(list)
+    for s, p, o in triples:
+        by_subject[str(s)].append((p, o))
+
+    subjects = []
+    for subject_uri in sorted(by_subject.keys()):
+        subject_type = None
+        properties = []
+        for p, o in by_subject[subject_uri]:
+            if str(p) == str(RDF.type):
+                subject_type = converter._extract_local_name(str(o))
+                continue
+            pred_label = converter._extract_local_name(str(p))
+            value_str = str(o)
+            if value_str in converter.uri_to_label:
+                value_display = f"[{converter.uri_to_label[value_str]}]({value_str})"
+            elif value_str.startswith('http'):
+                target = converter._get_hyperlink_uri(value_str)
+                local_name = converter._extract_local_name(value_str)
+                value_display = f"[{local_name}]({target})"
+            else:
+                value_display = value_str
+            properties.append({"Property": pred_label, "Value": value_display})
+        subjects.append({
+            "subject_uri": subject_uri,
+            "subject_type": subject_type or "Resource",
+            "properties": properties,
+        })
+    return {"graph_uri": graph_uri, "subjects": subjects, "triple_count": len(triples)}
+
+
+def _metadata_snapshot(converter: Optional[TriGConverter]) -> Dict[str, Any]:
+    if converter is None:
+        return {"dcat": None, "publication": None, "other_graphs": []}
+    graph_items = converter.named_graphs_data
+    other_graphs = [g for g in graph_items.keys() if g not in [DCAT_GRAPH_URI, PUBLICATION_GRAPH_URI]]
+    return {
+        "dcat": _named_graph_section(DCAT_GRAPH_URI, graph_items[DCAT_GRAPH_URI], converter) if DCAT_GRAPH_URI in graph_items else None,
+        "publication": _named_graph_section(PUBLICATION_GRAPH_URI, graph_items[PUBLICATION_GRAPH_URI], converter) if PUBLICATION_GRAPH_URI in graph_items else None,
+        "other_graphs": [_named_graph_section(str(graph_uri), graph_items[graph_uri], converter) for graph_uri in other_graphs],
+    }
+
+
+def _statistics_snapshot(converter: Optional[TriGConverter]) -> Dict[str, Any]:
+    if converter is None:
+        return {"total_triples": 0, "subjects": 0, "properties": 0, "external_matches": 0, "exact_matches": 0, "close_matches": 0, "namespaces": [], "property_catalog": []}
+    property_counts = get_property_counts(converter)
+    property_catalog = [
+        {
+            "Property URI": f"[{uri}]({uri})",
+            "Label": label,
+            "Usage Count": property_counts.get(label, 0),
+            "External Match": "Yes" if (uri in converter.uri_to_exact_match or uri in converter.uri_to_close_match) else "No",
+        }
+        for uri, label in sorted(converter.property_labels.items(), key=lambda x: property_counts.get(x[1], 0), reverse=True)
+    ]
+    return {
+        "total_triples": len(converter.graph) if converter.graph is not None else 0,
+        "subjects": len(converter.subjects_data),
+        "properties": len(converter.property_labels),
+        "external_matches": len(converter.uri_to_exact_match) + len(converter.uri_to_close_match),
+        "exact_matches": len(converter.uri_to_exact_match),
+        "close_matches": len(converter.uri_to_close_match),
+        "namespaces": [{"Prefix": f"ns{i + 1}", "Namespace URI": uri} for i, uri in enumerate(sorted(converter.namespaces.keys())[:100])],
+        "property_catalog": property_catalog,
+    }
+
+
+def _file_stem() -> str:
+    file_name = str(st.session_state.get("trig_file_name") or "data.trig")
+    return file_name[:-5] if file_name.lower().endswith(".trig") else os.path.splitext(file_name)[0]
+
+
+def _prepare_downloads() -> None:
+    converter = st.session_state.get("trig_converter")
+    if not isinstance(converter, TriGConverter):
+        _set_status("warning", "Load TriG data before preparing downloads.")
+        return
+    stem = _file_stem() or "rdf_table"
+    downloads: Dict[str, Any] = {
+        "csv": pd.DataFrame(converter.subjects_data).to_csv(index=False),
+        "csv_filename": f"{stem}_output.csv",
+    }
+    try:
+        excel_path = Path(tempfile.gettempdir()) / f"{stem}_output.xlsx"
+        converter.export_to_excel(excel_path)
+        downloads["excel_base64"] = base64.b64encode(excel_path.read_bytes()).decode("ascii")
+        downloads["excel_filename"] = f"{stem}_output.xlsx"
+        excel_path.unlink(missing_ok=True)
+    except Exception as exc:
+        downloads["excel_error"] = str(exc)
+    try:
+        md_path = Path(tempfile.gettempdir()) / f"{stem}_metadata.md"
+        converter.export_to_markdown(md_path)
+        downloads["markdown"] = md_path.read_text(encoding="utf-8")
+        downloads["markdown_filename"] = f"{stem}_metadata.md"
+        md_path.unlink(missing_ok=True)
+    except Exception as exc:
+        downloads["markdown_error"] = str(exc)
+    st.session_state[RDF_TABLE_DOWNLOADS_KEY] = downloads
+    if downloads.get("excel_error") or downloads.get("markdown_error"):
+        _set_status("warning", "Downloads were prepared, but at least one format reported an error.")
+    else:
+        _set_status("success", "Excel, CSV, and Markdown downloads are ready.")
+
+
+def _build_snapshot() -> Dict[str, Any]:
+    converter = st.session_state.get("trig_converter")
+    if not isinstance(converter, TriGConverter):
+        converter = None
+    preview_df = create_preview_dataframe(converter) if converter else pd.DataFrame()
+    return {
+        "active_stage": st.session_state.get("rdf_to_table_active_stage", "load"),
+        "statusMessage": st.session_state.get(RDF_TABLE_STATUS_MESSAGE_KEY),
+        "source": {
+            "has_data": converter is not None,
+            "filename": st.session_state.get("trig_file_name") or "",
+            "catalog_available": bool(st.session_state.get('dcat_catalog_data')),
+        },
+        "data": {
+            "rows": len(preview_df) if isinstance(preview_df, pd.DataFrame) else 0,
+            "columns": len(preview_df.columns) if isinstance(preview_df, pd.DataFrame) else 0,
+            "preview": _preview_records(preview_df, 100),
+        },
+        "metadata": _metadata_snapshot(converter),
+        "statistics": _statistics_snapshot(converter),
+        "downloads": st.session_state.get(RDF_TABLE_DOWNLOADS_KEY, {}),
+    }
+
+
+def _handle_mui_event(event: Any) -> bool:
+    if not isinstance(event, dict):
+        return False
+    nonce = event.get("nonce")
+    if nonce and st.session_state.get(RDF_TABLE_COMPONENT_ACTION_NONCE_KEY) == nonce:
+        return False
+    if nonce:
+        st.session_state[RDF_TABLE_COMPONENT_ACTION_NONCE_KEY] = nonce
+    event_type = str(event.get("type", "") or "")
+    should_rerun = True
+    if event_type == "navigate":
+        st.session_state["rdf_to_table_active_stage"] = str(event.get("stage", "load") or "load")
+    elif event_type == "upload_trig":
+        _handle_upload(event)
+    elif event_type == "load_catalog":
+        _load_catalog_from_generator()
+    elif event_type == "prepare_downloads":
+        _prepare_downloads()
+    elif event_type == "reset_workflow":
+        st.session_state.trig_converter = None
+        st.session_state.trig_file_name = None
+        st.session_state[RDF_TABLE_DOWNLOADS_KEY] = {}
+        st.session_state["rdf_to_table_active_stage"] = "load"
+        _set_status("info", "RDF-to-Table workflow reset.")
+    elif event_type == "download_ack":
+        should_rerun = False
+    else:
+        should_rerun = False
+    return should_rerun
+
 
 def main():
-    """Main function to run the TriG Data Viewer app."""
-    st.title("TriG Data Viewer")
-    st.markdown("View and export TriG/RDF data with linked metadata")
+    """Render the RDF-to-Table service through a Material-UI component.
 
-    # Sidebar info
-    with st.sidebar:
-        st.markdown("### About TriG Viewer")
-        st.info("""
-    This app processes TriG (RDF) files and provides:
-    - **Interactive data preview** with clickable links
-    - **DCAT metadata** and publication references
-    - **Excel export** with HYPERLINK formulas (bypasses 65k limit)
-    - **CSV and Markdown** exports
-
-    **Supported Features:**
-    - Multi-valued property expansion
-    - External resource linking (skos:exactMatch/closeMatch)
-    - Property catalogs with usage statistics
-        """)
-
-    # Initialize session state for persistence
-    if 'trig_converter' not in st.session_state:
-        st.session_state.trig_converter = None
-    if 'trig_file_name' not in st.session_state:
-        st.session_state.trig_file_name = None
-
-    # File uploader and direct loading
-    col_u1, col_u2 = st.columns([2, 1])
-    with col_u1:
-        uploaded_file = st.file_uploader(
-            "Upload TriG file",
-            type=['trig'],
-            help="Upload a TriG (RDF) file to view and export"
-        )
-    
-    with col_u2:
-        st.write("") # Spacer
-        st.write("") # Spacer
-        catalog_data = st.session_state.get('dcat_catalog_data')
-        load_from_session = False
-        if catalog_data:
-            if st.button("Load Catalog from Generator", use_container_width=True):
-                load_from_session = True
-        else:
-            st.info("No catalog found in session. Generate one in the RDF Generator first.")
-
-    # Determine if we have a new file or use existing state
-    process_new_file = False
-    if uploaded_file:
-        if st.session_state.trig_file_name != uploaded_file.name:
-            process_new_file = True
-    elif load_from_session:
-        process_new_file = True
-    
-    # Logic to process file or use cached state
-    converter = None
-    
-    if process_new_file:
-        try:
-            with st.spinner("Processing TriG data..."):
-                if uploaded_file:
-                    # Save to temp file
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.trig') as tmp:
-                        tmp.write(uploaded_file.getvalue())
-                        tmp_path = tmp.name
-
-                    # Initialize converter from file
-                    new_converter = TriGConverter(input_file=Path(tmp_path))
-                    file_name = uploaded_file.name
-                else:
-                    # Initialize converter from session state data
-                    new_converter = TriGConverter(data=catalog_data)
-                    file_name = "generated_catalog.trig"
-                    tmp_path = None
-
-                # Parse with progress
-                progress = st.progress(0, text="Parsing TriG...")
-                if not new_converter.parse_trig():
-                    st.error("Failed to parse TriG file. Please check the file format.")
-                    if tmp_path:
-                        os.unlink(tmp_path)
-                    st.stop()
-
-                progress.progress(50, text="Extracting data...")
-                new_converter.extract_all_data()
-
-                progress.progress(80, text="Expanding multi-valued properties...")
-                new_converter.expand_list_values()
-
-                progress.progress(100, text="Complete!")
-                progress.empty()
-
-                # Clean up temp file if one was created
-                if tmp_path:
-                    os.unlink(tmp_path)
-                
-                # Update session state
-                st.session_state.trig_converter = new_converter
-                st.session_state.trig_file_name = file_name
-                converter = new_converter
-        except Exception as e:
-            st.error(f"Error processing file: {e}")
-            with st.expander("Error Details"):
-                st.code(str(e))
-                import traceback
-                st.code(traceback.format_exc())
-            st.stop()
-            
-    elif st.session_state.trig_converter:
-        converter = st.session_state.trig_converter
-        if not uploaded_file:
-            st.info(f"Using previously loaded file: **{st.session_state.trig_file_name}**")
-
-    # Display content if converter is available
-    if converter:
-        try:
-            # Create tabs for different views
-            tab1, tab2, tab3, tab4 = st.tabs([
-                "Data Preview",
-                "Metadata",
-                "Statistics",
-                "Downloads"
-            ])
-
-            # --- Tab 1: Data Preview ---
-            with tab1:
-                st.subheader("Data Preview")
-
-                if converter.subjects_data:
-                    # Create preview DataFrame with markdown links
-                    df_preview = create_preview_dataframe(converter)
-
-                    # Display with Streamlit (markdown links are clickable!)
-                    st.dataframe(
-                        df_preview,
-                        use_container_width=True,
-                        height=600
-                    )
-
-                    st.caption(f"Showing {len(df_preview):,} rows × {len(df_preview.columns)} columns")
-                    st.info("Click on any blue link to open the resource in a new tab")
-                else:
-                    st.warning("No subject data found in the TriG file")
-
-            # --- Tab 2: Metadata ---
-            with tab2:
-                st.subheader("Metadata & References")
-
-                # DCAT Metadata section
-                dcat_graph = 'https://fskx-graphdb.risk-ai-cloud.com/graph/dcat-metadata'
-                if dcat_graph in converter.named_graphs_data:
-                    st.markdown("### DCAT Metadata")
-                    dcat_data = converter.named_graphs_data[dcat_graph]
-                    display_named_graph(dcat_data, converter)
-                else:
-                    st.info("No DCAT metadata found in this file")
-
-                st.markdown("---")
-
-                # Publication References section
-                pub_graph = 'https://fskx-graphdb.risk-ai-cloud.com/graph/publication-reference'
-                if pub_graph in converter.named_graphs_data:
-                    st.markdown("### Publication References")
-                    pub_data = converter.named_graphs_data[pub_graph]
-                    display_named_graph(pub_data, converter)
-                else:
-                    st.info("No publication references found in this file")
-
-                # Show all other named graphs if any
-                other_graphs = [
-                    g for g in converter.named_graphs_data.keys()
-                    if g not in [dcat_graph, pub_graph]
-                ]
-
-                if other_graphs:
-                    st.markdown("---")
-                    st.markdown("### Other Named Graphs")
-                    for graph_uri in other_graphs:
-                        with st.expander(f"Graph: {graph_uri}"):
-                            display_named_graph(converter.named_graphs_data[graph_uri], converter)
-
-            # --- Tab 3: Statistics ---
-            with tab3:
-                st.subheader("Dataset Statistics")
-
-                # Metrics in columns
-                col1, col2, col3, col4 = st.columns(4)
-
-                with col1:
-                    st.metric("Total Triples", f"{len(converter.graph):,}")
-
-                with col2:
-                    st.metric("Subjects", f"{len(converter.subjects_data):,}")
-
-                with col3:
-                    st.metric("Properties", len(converter.property_labels))
-
-                with col4:
-                    matches = len(converter.uri_to_exact_match) + len(converter.uri_to_close_match)
-                    st.metric("External Matches", matches)
-
-                st.markdown("---")
-
-                # Property mappings table
-                st.markdown("### Property Catalog")
-
-                if converter.property_labels:
-                    property_counts = get_property_counts(converter)
-
-                    props_df = pd.DataFrame([
-                        {
-                            "Property URI": f"[{uri}]({uri})",
-                            "Label": label,
-                            "Usage Count": property_counts.get(label, 0),
-                            "External Match": "Yes" if (uri in converter.uri_to_exact_match or
-                                                     uri in converter.uri_to_close_match) else "No"
-                        }
-                        for uri, label in sorted(
-                            converter.property_labels.items(),
-                            key=lambda x: property_counts.get(x[1], 0),
-                            reverse=True
-                        )
-                    ])
-
-                    st.dataframe(props_df, use_container_width=True, height=400)
-                else:
-                    st.info("No properties found")
-
-                # URI mappings statistics
-                if converter.uri_to_exact_match or converter.uri_to_close_match:
-                    st.markdown("---")
-                    st.markdown("### URI Mappings")
-
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Exact Matches (skos:exactMatch)", len(converter.uri_to_exact_match))
-                    with col2:
-                        st.metric("Close Matches (skos:closeMatch)", len(converter.uri_to_close_match))
-
-            # --- Tab 4: Downloads ---
-            with tab4:
-                st.subheader("Download Options")
-
-                st.markdown("### Export Formats")
-                st.markdown("Choose your preferred format to download the processed data:")
-
-                col1, col2, col3 = st.columns(3)
-                
-                # Determine filename base
-                file_name_base = st.session_state.trig_file_name if st.session_state.trig_file_name else "data.trig"
-
-                with col1:
-                    st.markdown("#### Excel")
-                    st.markdown("Excel workbook with HYPERLINK formulas")
-
-                    # Generate Excel file
-                    try:
-                        excel_path = Path(tempfile.gettempdir()) / f"{file_name_base.replace('.trig', '')}_output.xlsx"
-                        converter.export_to_excel(excel_path)
-
-                        with open(excel_path, 'rb') as f:
-                            excel_data = f.read()
-
-                        st.download_button(
-                            "Download Excel",
-                            data=excel_data,
-                            file_name=f"{file_name_base.replace('.trig', '')}_output.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True
-                        )
-                        st.caption("Includes Property Mappings sheet. HYPERLINK formulas (no 65k limit)")
-
-                        # Clean up
-                        os.unlink(excel_path)
-                    except Exception as e:
-                        st.error(f"Failed to generate Excel: {e}")
-
-                with col2:
-                    st.markdown("#### CSV")
-                    st.markdown("Comma-separated values format")
-
-                    # Generate CSV
-                    try:
-                        df_output = pd.DataFrame(converter.subjects_data)
-                        csv_data = df_output.to_csv(index=False).encode('utf-8')
-
-                        st.download_button(
-                            "Download CSV",
-                            data=csv_data,
-                            file_name=f"{file_name_base.replace('.trig', '')}_output.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                        st.caption("Simple CSV format. Compatible with any tool")
-                    except Exception as e:
-                        st.error(f"Failed to generate CSV: {e}")
-
-                with col3:
-                    st.markdown("#### Markdown")
-                    st.markdown("Metadata documentation")
-
-                    # Generate Markdown
-                    try:
-                        md_path = Path(tempfile.gettempdir()) / f"{file_name_base.replace('.trig', '')}_metadata.md"
-                        converter.export_to_markdown(md_path)
-
-                        with open(md_path, 'rb') as f:
-                            md_data = f.read()
-
-                        st.download_button(
-                            "Download Markdown",
-                            data=md_data,
-                            file_name=f"{file_name_base.replace('.trig', '')}_metadata.md",
-                            mime="text/markdown",
-                            use_container_width=True
-                        )
-                        st.caption("Metadata documentation. Human-readable format")
-
-                        # Clean up
-                        os.unlink(md_path)
-                    except Exception as e:
-                        st.error(f"Failed to generate Markdown: {e}")
-
-                st.markdown("---")
-                st.info("Tip: Excel format includes clickable HYPERLINK formulas that bypass Excel's native 65,536 hyperlink limit.")
-
-        except Exception as e:
-            st.error(f"Error displaying data: {e}")
-            with st.expander("Error Details"):
-                st.code(str(e))
-                import traceback
-                st.code(traceback.format_exc())
-
-    else:
-        # Show welcome message when no file is uploaded and no state
-        st.info("Upload a TriG file to get started")
-
-        st.markdown("---")
-        st.markdown("### What is TriG?")
-        st.markdown("""
-        TriG is an RDF serialization format that extends Turtle to support named graphs.
-        This viewer helps you explore and export TriG data in various formats.
-
-        **Key Features:**
-        - View data in a tabular format with clickable links
-        - Access DCAT metadata and publication references
-        - Export to Excel (with HYPERLINK formulas), CSV, or Markdown
-        - Automatic external resource linking via skos:exactMatch and skos:closeMatch
-        """)
+    Streamlit is now only the backend/session-state bridge. The React/MUI
+    component owns upload, preview, metadata, statistics, and download views.
+    """
+    _init_rdf_to_table_state()
+    snapshot = _build_snapshot()
+    event = _render_rdf_to_table_mui(snapshot)
+    if _handle_mui_event(event):
+        st.rerun()
 
 if __name__ == "__main__":
     main()
