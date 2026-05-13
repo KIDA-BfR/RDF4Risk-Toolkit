@@ -1,7 +1,6 @@
 # dcat_generator.py
 import logging
-import streamlit as st
-from rdflib import Graph, Namespace, URIRef, Literal, Dataset
+from rdflib import Graph, Namespace, URIRef, Literal, Dataset, BNode
 from rdflib.namespace import DCTERMS, DCAT, FOAF, RDF, XSD, SKOS
 from datetime import date
 
@@ -33,128 +32,13 @@ LICENSES = {
 }
 
 def display_dcat_builder():
-    """Displays the Streamlit UI for building the DCAT catalog."""
-    st.subheader("DCAT Catalog Metadata")
+    """Deprecated placeholder for the removed Python DCAT form.
 
-    # Get the generated RDF data from session state
-    rdf_graph = st.session_state.get('rdf_graph')
-    skos_graph = st.session_state.get('skos_graph') # Get the SKOS graph
-    named_graph_uri = st.session_state.get('last_named_graph_uri')
-    rdf_format_display = st.session_state.get('last_rdf_format_display', 'Turtle')
-    reference_data = st.session_state.get('reference_data')  # Get publication reference
-
-    if not rdf_graph or not named_graph_uri:
-        st.info("Please generate RDF data with a named graph first.")
-        return
-
-    with st.form("dcat_form"):
-        config = st.session_state.get('config', {})
-        default_namespace = config.get('default_namespace')
-        if not default_namespace:
-            st.error("`default_namespace` not found in configuration. Please configure it in `config.yaml`.")
-            return
-        
-        default_publisher_uri = f"{default_namespace.rstrip('/')}/organization"
-
-        st.text_input("Dataset Title", key="dcat_title", value="My Dataset")
-        st.text_area("Dataset Description", key="dcat_description", value="An example dataset.")
-        st.selectbox("Access Rights", options=["PUBLIC", "RESTRICTED", "NON_PUBLIC"], key="dcat_access_rights")
-        st.text_input("Contact Point (Email or URI)", key="dcat_contact_point", placeholder="e.g. mailto:contact@example.org")
-        st.text_input("Publisher Name", key="dcat_publisher_name", value="My Organization")
-        st.text_input("Publisher URI", key="dcat_publisher_uri", value=default_publisher_uri)
-        st.multiselect("Themes", options=list(THEMES.keys()), key="dcat_themes")
-        st.selectbox("License", options=list(LICENSES.keys()), key="dcat_license")
-        
-        # Publication reference linking
-        if reference_data:
-            st.markdown("---")
-            st.markdown("**Publication Reference**")
-            if reference_data['method'] == 'DOI':
-                st.info(f"📄 Publication reference found: DOI {reference_data['doi']}")
-            else:
-                title = reference_data['metadata'].get('title', ['Unknown'])[0]
-                st.info(f"📄 Publication reference found: {title}")
-            
-            link_reference = st.checkbox(
-                "Link publication reference with dataset?", 
-                value=True, 
-                key="link_reference",
-                help="This will add dcterms:isReferencedBy relation between the dataset and the publication"
-            )
-        else:
-            link_reference = False
-
-        submitted = st.form_submit_button("Generate DCAT Catalog")
-        if submitted:
-            # Extract basic metadata
-            title = st.session_state.dcat_title
-            description = st.session_state.dcat_description
-            identifier = ""
-            keywords = []
-            creator = []
-
-            # If publication reference exists, try to pull metadata from it
-            if reference_data:
-                if reference_method_val := reference_data.get('method'):
-                    if reference_method_val == 'DOI':
-                        identifier = reference_data.get('doi', "")
-                    
-                    # Try to extract title, keywords, and authors from the graph if possible
-                    # (Simplified for now, using reference data directly if available)
-                    if 'metadata' in reference_data:
-                        ref_meta = reference_data['metadata']
-                        # Use publication title if dataset title is default? 
-                        # Or just stick to what's provided for dataset.
-                        
-                        # DOI is already set above
-                        
-                        # Extract Authors
-                        if 'author' in ref_meta:
-                            for auth in ref_meta['author']:
-                                creator.append(f"{auth.get('family', '')}, {auth.get('given', '')}")
-
-            metadata_config = {
-                "title": title,
-                "description": description,
-                "keywords": keywords,
-                "identifier": identifier,
-                "creator": creator,
-                "access_rights": st.session_state.dcat_access_rights,
-                "contact_point": st.session_state.dcat_contact_point.strip(),
-                "publisher_name": st.session_state.dcat_publisher_name,
-                "publisher_uri": st.session_state.dcat_publisher_uri,
-                "themes": st.session_state.dcat_themes,
-                "license": st.session_state.dcat_license,
-                "link_reference": link_reference if reference_data else False,
-                "reference_data": reference_data if link_reference else None,
-            }
-
-            try:
-                # The default namespace is now sourced from the centralized config
-                format_map = {
-                    "Turtle": "turtle",
-                    "N-Quads": "nquads",
-                    "JSON-LD": "json-ld",
-                    "RDF/XML": "pretty-xml"
-                }
-                rdflib_format = format_map.get(rdf_format_display, "turtle")
-
-                dcat_catalog_trig = create_dcat_catalog(
-                    rdf_graph=rdf_graph,
-                    skos_graph=skos_graph,
-                    rdf_format=rdflib_format,
-                    data_graph_uri_str=named_graph_uri,
-                    metadata_config=metadata_config,
-                    default_namespace=default_namespace
-                )
-                st.session_state['dcat_catalog_data'] = dcat_catalog_trig
-                st.success("DCAT Catalog generated successfully!")
-            except Exception as e:
-                st.error(f"Failed to generate DCAT catalog: {e}")
-                st.exception(e)
-
-    # The preview is now handled in the main app.py to avoid nesting issues.
-    pass
+    DCAT metadata is now configured in the React/Material UI frontend and
+    generated through ``create_dcat_catalog`` in the Python backend service.
+    """
+    logging.warning("display_dcat_builder is deprecated; use the MUI RDF Generator workflow instead.")
+    return None
 
 
 def create_dcat_catalog(
@@ -178,6 +62,26 @@ def create_dcat_catalog(
     Returns:
         A string containing the full catalog in TriG format.
     """
+    catalog_trig, _metadata_ttl = create_dcat_catalog_bundle(
+        rdf_graph=rdf_graph,
+        skos_graph=skos_graph,
+        rdf_format=rdf_format,
+        data_graph_uri_str=data_graph_uri_str,
+        metadata_config=metadata_config,
+        default_namespace=default_namespace,
+    )
+    return catalog_trig
+
+
+def create_dcat_catalog_bundle(
+    rdf_graph: Graph,
+    skos_graph: Graph,
+    rdf_format: str,
+    data_graph_uri_str: str,
+    metadata_config: dict,
+    default_namespace: str
+) -> tuple[str, str]:
+    """Generate the full DCAT catalog TriG plus standalone metadata Turtle."""
     ds = Dataset()
     ds.bind("dct", DCTERMS)
     ds.bind("dcat", DCAT)
@@ -347,8 +251,7 @@ def create_dcat_catalog(
     meta_graph.add((distribution_uri, DCAT.mediaType, URIRef(f"http://www.iana.org/assignments/media-types/{distribution_media_type}")))
     meta_graph.add((distribution_uri, DCAT.byteSize, Literal(byte_size, datatype=XSD.decimal)))
 
-    # Also save the standalone DCAT metadata to session state for separate download
+    # Also return the standalone DCAT metadata for separate download
     dcat_metadata_ttl = meta_graph.serialize(format="turtle")
-    st.session_state['dcat_metadata_data'] = dcat_metadata_ttl
 
-    return ds.serialize(format="trig")
+    return ds.serialize(format="trig"), dcat_metadata_ttl

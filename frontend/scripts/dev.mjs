@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const frontendDir = path.resolve(__dirname, '..');
-const repoRoot = path.resolve(__dirname, '../../../../..');
+const repoRoot = path.resolve(__dirname, '../..');
 const backendPort = process.env.RDF4RISK_BACKEND_PORT || '8765';
 const backendHost = process.env.RDF4RISK_BACKEND_HOST || '127.0.0.1';
 const python = process.env.PYTHON || 'python';

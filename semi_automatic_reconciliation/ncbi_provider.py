@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import requests
 import time
-# import streamlit as st # Only needed if mixing logging with UI feedback
 import traceback
 import urllib.parse
 import logging # Import logging module
@@ -38,21 +37,21 @@ def _construct_ncbi_uri(db, item_id):
         return f"https://www.ncbi.nlm.nih.gov/{db}/{item_id}"
 
 
-# If running outside Streamlit or caching isn't needed, define a dummy decorator
+# Lightweight no-op cache decorator used by the backend service
 def cache_data(ttl=None):
     def decorator(func):
         return func
     return decorator
 
-@cache_data(ttl=3600) # Use dummy if no Streamlit
+@cache_data(ttl=3600)
 def query_ncbi(
     term,
     databases_to_search=['taxonomy', 'bioproject', 'gene', 'protein', 'nuccore', 'biosample', 'sra', 'pubmed'], # Expanded default databases
     limit_per_db=10, # How many IDs to fetch from ESearch per DB?
     api_key=None,    # Your NCBI API Key (STRONGLY RECOMMENDED!)
-    tool_name="StreamlitReconTool", # Your tool's name
+    tool_name="RDF4RiskReconTool", # Your tool's name
     email="user@example.com",      # Your email address (IMPORTANT!)
-    user_agent="DefaultStreamlitClient/NCBI" # User-Agent for header
+    user_agent="RDF4RiskToolkit/NCBI" # User-Agent for header
     ):
     """
     Queries NCBI E-utilities (ESearch + ESummary) to reconcile terms.

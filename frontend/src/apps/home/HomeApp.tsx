@@ -1,6 +1,5 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { Box, Card, Chip, Container, Paper, Stack, Typography, alpha } from '@mui/material';
-import { Streamlit } from 'streamlit-component-lib';
 
 type Tool = {
   step: string;
@@ -167,7 +166,6 @@ function ToolCard({ tool }: { tool: Tool }) {
 }
 
 export function HomeApp() {
-  useEffect(() => { Streamlit.setFrameHeight(); }, []);
 
   return (
     <Box sx={{ bgcolor: '#eef7fb', minHeight: '100vh', color: 'text.primary', py: { xs: 2, md: 3 } }}>
@@ -227,7 +225,7 @@ export function HomeApp() {
                 </Box>
               </Typography>
               <Typography color="text.secondary" sx={{ maxWidth: 1050, fontSize: 'clamp(1rem, 1.6vw, 1.22rem)', lineHeight: 1.75 }}>
-                A suite of workflow tools for preparing data, reconciling terms against trusted knowledge bases, generating RDF, and converting linked data back into reviewable tables. Use the sidebar to move through the workflow from matching tables to export-ready RDF documentation.
+                RDF4Risk brings together practical tools for turning tabular research data into FAIR Linked Data for risk assessment and life sciences. Prepare matching tables, reconcile terms with trusted vocabularies, generate RDF, and review or export results through one guided workflow workspace.
               </Typography>
               <Stack direction="row" flexWrap="wrap" gap={1.5} sx={{ pt: 1 }}>
                 <Chip label={<><Box component="strong" sx={{ color: '#0f766e', mr: 1 }}>5</Box> workflow services</>} sx={{ bgcolor: '#fff', border: `1px solid ${alpha('#94a3b8', 0.35)}`, boxShadow: '0 8px 22px rgba(15, 23, 42, 0.06)', color: '#334155' }} />

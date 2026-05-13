@@ -4,7 +4,11 @@
 from typing import Dict, List, Optional
 
 import pandas as pd
-import streamlit as st
+
+try:
+    from .agent_runtime_state import runtime_state
+except ImportError:
+    from agent_runtime_state import runtime_state
 
 try:
     from .agent_skos_service import normalize_mapping_type
@@ -60,12 +64,12 @@ REVIEW_MATCH_GROUP_BADGE_COLORS = {
 
 
 def _apply_review_action(source_name: str, row_index, action: str, selected_match_type: Optional[str] = None):
-    results = st.session_state.get(AGENT_RESULTS_BY_SOURCE_KEY, {})
+    results = runtime_state.get(AGENT_RESULTS_BY_SOURCE_KEY, {})
     if source_name not in results:
         return
     df = sync_matching_table_schemas(results[source_name].copy())
 
-    allow_heuristic_fallback = bool(st.session_state.get("agent_allow_heuristic_fallback", True))
+    allow_heuristic_fallback = bool(runtime_state.get("agent_allow_heuristic_fallback", True))
 
     if action == "accept":
         chosen_uri = str(df.at[row_index, "Suggested URI"])
@@ -154,11 +158,11 @@ def _apply_review_action(source_name: str, row_index, action: str, selected_matc
 
 
 def _accept_all_pending(source_name: str):
-    results = st.session_state.get(AGENT_RESULTS_BY_SOURCE_KEY, {})
+    results = runtime_state.get(AGENT_RESULTS_BY_SOURCE_KEY, {})
     if source_name not in results:
         return
     df = sync_matching_table_schemas(results[source_name].copy())
-    allow_heuristic_fallback = bool(st.session_state.get("agent_allow_heuristic_fallback", True))
+    allow_heuristic_fallback = bool(runtime_state.get("agent_allow_heuristic_fallback", True))
     pending_indices = list(
         df[
             (df.get("Suggested URI", "").astype(str).str.strip() != "") &
@@ -281,17 +285,19 @@ def _get_review_cell_value(agent_df: pd.DataFrame, row_index, column_name: str) 
 
 
 def _render_skos_match_badge(match_group: str):
+    """Return badge metadata for the MUI frontend.
+
+    Legacy Python UI rendering has been removed; callers that still import this
+    helper receive a serializable description instead of rendered HTML.
+    """
     group_key = match_group if match_group in REVIEW_MATCH_GROUP_LABELS else "no_match"
-    label = REVIEW_MATCH_GROUP_LABELS.get(group_key, "No match")
-    background_color, text_color = REVIEW_MATCH_GROUP_BADGE_COLORS.get(group_key, REVIEW_MATCH_GROUP_BADGE_COLORS["no_match"])
-    st.markdown(
-        (
-            "<div style='margin-bottom:0.4rem;'>"
-            f"<span style='display:inline-block; padding:0.2rem 0.6rem; border-radius:999px; "
-            f"background:{background_color}; color:{text_color}; font-weight:600; font-size:0.85rem;'>"
-            f"{label}"
-            "</span>"
-            "</div>"
-        ),
-        unsafe_allow_html=True,
+    background_color, text_color = REVIEW_MATCH_GROUP_BADGE_COLORS.get(
+        group_key,
+        REVIEW_MATCH_GROUP_BADGE_COLORS["no_match"],
     )
+    return {
+        "group": group_key,
+        "label": REVIEW_MATCH_GROUP_LABELS.get(group_key, "No match"),
+        "background_color": background_color,
+        "text_color": text_color,
+    }

@@ -19,17 +19,16 @@ import {
   Typography,
   alpha,
 } from '@mui/material';
-import { Streamlit } from 'streamlit-component-lib';
 import { WorkflowConfigPanel } from '../apps/agent-reconciliation/AgentReconciliationApp';
 import { HomeApp } from '../apps/home/HomeApp';
 import { MatchingTableGeneratorApp } from '../apps/matching-table-generator/MatchingTableGeneratorApp';
 import { RDFGeneratorApp } from '../apps/rdf-generator/RDFGeneratorApp';
 import { RDFToTableApp } from '../apps/rdf-to-table/RDFToTableApp';
 import { SemiAutomaticReconciliationApp } from '../apps/semi-automatic-reconciliation/SemiAutomaticReconciliationApp';
+import { setAppEventHandler, type AppEvent } from '../shared/appBridge';
 
 type ServiceId = 'home' | 'matching_table_generator' | 'semi_automatic_reconciliation' | 'agent_reconciliation' | 'rdf_generator' | 'rdf_to_table';
 type BackendPayload = { service: string; args: Record<string, unknown> };
-type AppEvent = { type: string; [key: string]: unknown };
 
 const drawerWidth = 312;
 const API_BASE = (import.meta as any).env?.VITE_RDF4RISK_API_BASE || 'http://127.0.0.1:8765';
@@ -77,7 +76,7 @@ function HomeDashboard({ onOpen }: { onOpen: (service: ServiceId) => void }) {
               RDF4Risk Toolkit
             </Typography>
             <Typography color="text.secondary" sx={{ maxWidth: 980, fontSize: '1.1rem', lineHeight: 1.75 }}>
-              The app now starts from npm with a browser-based interface. Python remains the backend for data loading, reconciliation, RDF generation, conversion, and agent orchestration.
+              RDF4Risk brings together practical tools for turning tabular research data into FAIR Linked Data for risk assessment and life sciences. Prepare matching tables, reconcile terms with trusted vocabularies, generate RDF, and review or export results through one guided workflow workspace.
             </Typography>
           </Stack>
         </Paper>
@@ -190,17 +189,13 @@ export function StandaloneApp() {
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
-  useEffect(() => {
-    const streamlit = Streamlit as any;
-    streamlit.setFrameHeight = () => undefined;
-    streamlit.setComponentValue = (event: AppEvent) => handleEventRef.current(event);
-  }, []);
+  useEffect(() => setAppEventHandler((event: AppEvent) => handleEventRef.current(event)), []);
 
   const args = payload?.args as any;
   let content: React.ReactNode = <HomeDashboard onOpen={openService} />;
-  if (activeService === 'matching_table_generator') content = <MatchingTableGeneratorApp args={args} />;
+  if (activeService === 'matching_table_generator') content = <MatchingTableGeneratorApp args={args} onEvent={emitEvent} />;
   if (activeService === 'semi_automatic_reconciliation') content = <SemiAutomaticReconciliationApp args={args} />;
-  if (activeService === 'agent_reconciliation') content = <WorkflowConfigPanel args={args} />;
+  if (activeService === 'agent_reconciliation') content = <WorkflowConfigPanel args={args} onEvent={emitEvent} />;
   if (activeService === 'rdf_generator') content = <RDFGeneratorApp args={args} />;
   if (activeService === 'rdf_to_table') content = <RDFToTableApp args={args} />;
 

@@ -28,7 +28,7 @@ def query_earthportal(
     base_url=DEFAULT_EARTHPORTAL_API_URL,
     include_fields=DEFAULT_INCLUDE_FIELDS,
     page_size=15,            # How many results max?
-    user_agent="DefaultStreamlitClient/EarthPortal"
+    user_agent="RDF4RiskToolkit/EarthPortal"
     ):
     """
     Queries the EarthPortal API (/search) to reconcile terms.
@@ -194,7 +194,7 @@ def query_earthportal(
 
 @cache_data(ttl=3600 * 24) # Cache for 24 hours as ontology list doesn't change often
 def get_available_ontologies(
-    user_agent="DefaultStreamlitClient/EarthPortal",
+    user_agent="RDF4RiskToolkit/EarthPortal",
     api_key=None,
     base_url=DEFAULT_EARTHPORTAL_API_URL
 ):

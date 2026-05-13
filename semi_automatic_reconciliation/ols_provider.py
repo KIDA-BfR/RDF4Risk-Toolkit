@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import requests
 import time
-# import streamlit as st # Only needed if mixing logging with UI feedback
 import traceback
 from urllib.parse import quote
 import logging # Import logging module
@@ -14,17 +13,13 @@ DEFAULT_INCLUDE_FIELDS = "iri,label,synonym,description,ontology_prefix"
 # Recommended sleep time between requests (seconds)
 SLEEP_TIME = 0.5
 
-# Use cache_data if Streamlit context is available and desired
-# from streamlit import cache_data
-# @cache_data(ttl=3600) # Cache results for 1 hour
-
-# If running outside Streamlit or caching isn't needed, define a dummy decorator
+# Lightweight no-op cache decorator used by the backend service
 def cache_data(ttl=None):
     def decorator(func):
         return func
     return decorator
 
-@cache_data(ttl=3600) # Use dummy if no Streamlit
+@cache_data(ttl=3600)
 def query_ols(
     term,
     ontologies=None,         # Comma-separated string or list of ontology acronyms
@@ -33,7 +28,7 @@ def query_ols(
     exact=False,             # Whether to search for exact matches only
     query_fields=DEFAULT_QUERY_FIELDS,
     field_list=DEFAULT_INCLUDE_FIELDS,
-    user_agent="DefaultStreamlitClient/OLS"
+    user_agent="RDF4RiskToolkit/OLS"
     # proxies parameter removed
     ):
     """
@@ -181,7 +176,7 @@ def query_ols(
 
 @cache_data(ttl=3600 * 24) # Cache for 24 hours as ontology list doesn't change often
 def get_available_ontologies(
-    user_agent="DefaultStreamlitClient/OLS",
+    user_agent="RDF4RiskToolkit/OLS",
     base_url=DEFAULT_OLS_API_URL
 ):
     """

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Material-UI backed Matching Table Generator.
+"""Backend service for the Material-UI Matching Table Generator.
 
-The Python module owns data loading, preprocessing, matching-table generation,
-and Streamlit session-state handoff.  The visible interaction surface is a
-React/Material-UI Streamlit component, following the same architecture as the
-agent-based reconciliation UI.
+This module owns data loading, preprocessing, matching-table generation, and
+JSON snapshot/event handling for the browser-based Material UI frontend.  It is
+intentionally free of UI framework dependencies so it can run as a plain Python
+backend service.
 """
 
 from __future__ import annotations
@@ -21,8 +21,6 @@ from io import BytesIO
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
-import streamlit as st
-import streamlit.components.v1 as components
 from dateutil.parser import parse
 
 try:  # pragma: no cover - optional speedup dependency can vary locally
@@ -89,33 +87,44 @@ class GeneratedTableResult:
     error: Optional[str] = None
 
 
+_STATE: Dict[str, Any] = {}
+
+
+def _clone_default(value: Any) -> Any:
+    if isinstance(value, pd.DataFrame):
+        return value.copy()
+    if isinstance(value, dict):
+        return value.copy()
+    if isinstance(value, list):
+        return value.copy()
+    return value
+
+
 def _init_state() -> None:
+    """Initialise backend-local state used by the MUI HTTP service."""
     for key, value in DEFAULT_STATE.items():
-        if key not in st.session_state:
-            if isinstance(value, (dict, list)):
-                st.session_state[key] = value.copy()
-            else:
-                st.session_state[key] = value
+        if key not in _STATE:
+            _STATE[key] = _clone_default(value)
 
 
 def _set_status(severity: str, text: str) -> None:
-    st.session_state[MTG_STATUS_MESSAGE_KEY] = {"severity": severity, "text": text}
+    _STATE[MTG_STATUS_MESSAGE_KEY] = {"severity": severity, "text": text}
 
 
 def _reset_data_dependent_state(clear_file: bool = False) -> None:
-    st.session_state["original_df"] = None
-    st.session_state["df_after_transformations"] = None
-    st.session_state["matching_df"] = None
-    st.session_state["prepared_split_config"] = {}
-    st.session_state["prepared_expand_config"] = {}
-    st.session_state["transformations_prepared"] = False
-    st.session_state["preprocessing_applied_in_last_run"] = False
-    st.session_state["omitted_columns_selection"] = []
-    st.session_state["similar_term_groups"] = []
-    st.session_state["user_choices_for_similar_terms"] = {}
-    st.session_state["show_consolidation_review_ui"] = False
-    st.session_state["consolidations_staged_for_generation"] = False
-    st.session_state[MTG_EXPAND_DETECTED_CODES_KEY] = []
+    _STATE["original_df"] = None
+    _STATE["df_after_transformations"] = None
+    _STATE["matching_df"] = None
+    _STATE["prepared_split_config"] = {}
+    _STATE["prepared_expand_config"] = {}
+    _STATE["transformations_prepared"] = False
+    _STATE["preprocessing_applied_in_last_run"] = False
+    _STATE["omitted_columns_selection"] = []
+    _STATE["similar_term_groups"] = []
+    _STATE["user_choices_for_similar_terms"] = {}
+    _STATE["show_consolidation_review_ui"] = False
+    _STATE["consolidations_staged_for_generation"] = False
+    _STATE[MTG_EXPAND_DETECTED_CODES_KEY] = []
     if clear_file:
         for key in (
             MTG_UPLOADED_FILE_BYTES_KEY,
@@ -123,10 +132,10 @@ def _reset_data_dependent_state(clear_file: bool = False) -> None:
             MTG_UPLOADED_FILE_SIZE_KEY,
             "uploaded_file_info",
         ):
-            st.session_state.pop(key, None)
-        st.session_state["available_sheets"] = []
-        st.session_state["selected_sheet"] = None
-        st.session_state["current_start_row"] = 1
+            _STATE.pop(key, None)
+        _STATE["available_sheets"] = []
+        _STATE["selected_sheet"] = None
+        _STATE["current_start_row"] = 1
 
 
 def _dataframe_preview_records(df: Optional[pd.DataFrame], limit: int = 8) -> List[Dict[str, Any]]:
@@ -321,28 +330,28 @@ def get_excel_sheet_names(file_bytes: bytes, filename: str) -> List[str]:
 
 
 def _load_current_uploaded_file() -> None:
-    file_bytes = st.session_state.get(MTG_UPLOADED_FILE_BYTES_KEY)
-    filename = st.session_state.get(MTG_UPLOADED_FILE_NAME_KEY)
+    file_bytes = _STATE.get(MTG_UPLOADED_FILE_BYTES_KEY)
+    filename = _STATE.get(MTG_UPLOADED_FILE_NAME_KEY)
     if not isinstance(file_bytes, bytes) or not filename:
         return
-    start_row = int(st.session_state.get("current_start_row", 1) or 1)
-    sheet = st.session_state.get("selected_sheet")
+    start_row = int(_STATE.get("current_start_row", 1) or 1)
+    sheet = _STATE.get("selected_sheet")
     df, error = load_dataframe_from_bytes(file_bytes, str(filename), start_row, str(sheet) if sheet else None)
-    st.session_state["load_error"] = error
+    _STATE["load_error"] = error
     if error:
-        st.session_state["original_df"] = None
+        _STATE["original_df"] = None
         return
-    st.session_state["original_df"] = df
-    st.session_state["df_after_transformations"] = None
-    st.session_state["matching_df"] = None
-    st.session_state["prepared_split_config"] = {}
-    st.session_state["prepared_expand_config"] = {}
-    st.session_state["transformations_prepared"] = False
-    st.session_state["preprocessing_applied_in_last_run"] = False
-    st.session_state["omitted_columns_selection"] = []
-    st.session_state["similar_term_groups"] = []
-    st.session_state["user_choices_for_similar_terms"] = {}
-    st.session_state["consolidations_staged_for_generation"] = False
+    _STATE["original_df"] = df
+    _STATE["df_after_transformations"] = None
+    _STATE["matching_df"] = None
+    _STATE["prepared_split_config"] = {}
+    _STATE["prepared_expand_config"] = {}
+    _STATE["transformations_prepared"] = False
+    _STATE["preprocessing_applied_in_last_run"] = False
+    _STATE["omitted_columns_selection"] = []
+    _STATE["similar_term_groups"] = []
+    _STATE["user_choices_for_similar_terms"] = {}
+    _STATE["consolidations_staged_for_generation"] = False
 
 
 def split_column(df: pd.DataFrame, column_name: str, delimiter: str, new_column_names: List[str]) -> pd.DataFrame:
@@ -496,7 +505,7 @@ def _apply_prepared_transformations(base_df: pd.DataFrame) -> Tuple[pd.DataFrame
     applied_expand: Dict[str, Any] = {}
     preprocessing_applied = False
 
-    for col, config in st.session_state.get("prepared_split_config", {}).items():
+    for col, config in _STATE.get("prepared_split_config", {}).items():
         if col not in df.columns:
             actions.append(f"Skipped missing split column '{col}'")
             continue
@@ -504,13 +513,13 @@ def _apply_prepared_transformations(base_df: pd.DataFrame) -> Tuple[pd.DataFrame
         applied_split[col] = config
         preprocessing_applied = True
         actions.append(f"Split '{col}' into {', '.join(config['new_names'])}")
-    if applied_split and not bool(st.session_state.get("keep_original_setting_split", True)):
+    if applied_split and not bool(_STATE.get("keep_original_setting_split", True)):
         drop_cols = [col for col in applied_split if col in df.columns]
         if drop_cols:
             df = df.drop(columns=drop_cols)
             actions.append(f"Dropped original split column(s): {', '.join(drop_cols)}")
 
-    for col, config in st.session_state.get("prepared_expand_config", {}).items():
+    for col, config in _STATE.get("prepared_expand_config", {}).items():
         if col not in df.columns:
             actions.append(f"Skipped missing expansion column '{col}'")
             continue
@@ -526,7 +535,7 @@ def _apply_prepared_transformations(base_df: pd.DataFrame) -> Tuple[pd.DataFrame
         applied_expand[col] = config
         preprocessing_applied = True
         actions.append(f"Expanded '{col}' into {len(added_cols)} indicator column(s)")
-    if applied_expand and not bool(st.session_state.get("keep_original_setting_expand", True)):
+    if applied_expand and not bool(_STATE.get("keep_original_setting_expand", True)):
         drop_cols = [col for col in applied_expand if col in df.columns]
         if drop_cols:
             df = df.drop(columns=drop_cols)
@@ -536,7 +545,7 @@ def _apply_prepared_transformations(base_df: pd.DataFrame) -> Tuple[pd.DataFrame
 
 
 def _extract_object_terms_for_consolidation(df: pd.DataFrame) -> List[str]:
-    omitted = set(st.session_state.get("omitted_columns_selection", []))
+    omitted = set(_STATE.get("omitted_columns_selection", []))
     terms = set()
     for col in df.columns:
         if col in omitted:
@@ -558,7 +567,7 @@ def _similarity_ratio(left: str, right: str) -> float:
 
 
 def find_similar_term_groups(threshold: float) -> List[List[str]]:
-    df = st.session_state.get("original_df")
+    df = _STATE.get("original_df")
     if not isinstance(df, pd.DataFrame):
         return []
     transformed, _, _, _, _ = _apply_prepared_transformations(df)
@@ -583,15 +592,15 @@ def find_similar_term_groups(threshold: float) -> List[List[str]]:
 
 def _apply_consolidations(data_entries: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
     if not (
-        st.session_state.get("consolidations_staged_for_generation")
-        and st.session_state.get("similar_term_groups")
-        and st.session_state.get("user_choices_for_similar_terms")
+        _STATE.get("consolidations_staged_for_generation")
+        and _STATE.get("similar_term_groups")
+        and _STATE.get("user_choices_for_similar_terms")
     ):
         return data_entries, 0
     current = data_entries.copy()
     modified = 0
-    choices = st.session_state.get("user_choices_for_similar_terms", {})
-    for idx, group in enumerate(st.session_state.get("similar_term_groups", [])):
+    choices = _STATE.get("user_choices_for_similar_terms", {})
+    for idx, group in enumerate(_STATE.get("similar_term_groups", [])):
         choice = choices.get(f"choice_group_{idx}")
         custom = str(choices.get(f"new_term_group_{idx}", "") or "").strip()
         replacement = custom if choice == "Use New Term" and custom else choice if choice not in {None, "Use New Term", "Keep All (No Change)"} else None
@@ -607,15 +616,15 @@ def _apply_consolidations(data_entries: pd.DataFrame) -> Tuple[pd.DataFrame, int
     if modified:
         current.drop_duplicates(inplace=True)
         current.sort_values(by=["subject_label", "Source Column"], inplace=True)
-    st.session_state["similar_term_groups"] = []
-    st.session_state["user_choices_for_similar_terms"] = {}
-    st.session_state["consolidations_staged_for_generation"] = False
-    st.session_state["show_consolidation_review_ui"] = False
+    _STATE["similar_term_groups"] = []
+    _STATE["user_choices_for_similar_terms"] = {}
+    _STATE["consolidations_staged_for_generation"] = False
+    _STATE["show_consolidation_review_ui"] = False
     return current, modified
 
 
 def generate_matching_table() -> GeneratedTableResult:
-    original_df = st.session_state.get("original_df")
+    original_df = _STATE.get("original_df")
     if not isinstance(original_df, pd.DataFrame):
         return GeneratedTableResult(None, None, False, [], error="Please upload and load a data table first.")
     try:
@@ -633,11 +642,11 @@ def generate_matching_table() -> GeneratedTableResult:
             }
         )
         unique_terms_with_source = set()
-        omitted = set(st.session_state.get("omitted_columns_selection", []))
-        original_split_cols = set(st.session_state.get("prepared_split_config", {}).keys())
-        original_expand_cols = set(st.session_state.get("prepared_expand_config", {}).keys())
-        keep_split = bool(st.session_state.get("keep_original_setting_split", True))
-        keep_expand = bool(st.session_state.get("keep_original_setting_expand", True))
+        omitted = set(_STATE.get("omitted_columns_selection", []))
+        original_split_cols = set(_STATE.get("prepared_split_config", {}).keys())
+        original_expand_cols = set(_STATE.get("prepared_expand_config", {}).keys())
+        keep_split = bool(_STATE.get("keep_original_setting_split", True))
+        keep_expand = bool(_STATE.get("keep_original_setting_expand", True))
 
         for col in df_for_matching.columns:
             if col in omitted:
@@ -688,38 +697,27 @@ def generate_matching_table() -> GeneratedTableResult:
         return GeneratedTableResult(None, None, False, [], error=f"Error generating matching table: {exc}")
 
 
-def _get_matching_component_path() -> str:
-    # Reuse the already established shared Vite/MUI Streamlit frontend bundle.
-    return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "agentic_reconciliation",
-        "components",
-        "workflow_config_panel",
-        "frontend",
-        "build",
-    )
-
-
 def _build_snapshot() -> Dict[str, Any]:
-    original_df = st.session_state.get("original_df")
-    transformed_df = st.session_state.get("df_after_transformations")
-    matching_df = st.session_state.get("matching_df")
+    """Build the JSON-safe state snapshot consumed by the MUI frontend."""
+    original_df = _STATE.get("original_df")
+    transformed_df = _STATE.get("df_after_transformations")
+    matching_df = _STATE.get("matching_df")
     columns = list(original_df.columns) if isinstance(original_df, pd.DataFrame) else []
-    filename = st.session_state.get(MTG_UPLOADED_FILE_NAME_KEY) or ""
+    filename = _STATE.get(MTG_UPLOADED_FILE_NAME_KEY) or ""
     preprocessed_df = transformed_df if isinstance(transformed_df, pd.DataFrame) else original_df
     output_base = os.path.splitext(str(filename))[0] + "_preprocessed" if filename else "data_preprocessed"
-    detected_codes = st.session_state.get(MTG_EXPAND_DETECTED_CODES_KEY, [])
+    detected_codes = _STATE.get(MTG_EXPAND_DETECTED_CODES_KEY, [])
     if not isinstance(detected_codes, list):
         detected_codes = []
 
     return {
         "file": {
             "name": filename,
-            "size": st.session_state.get(MTG_UPLOADED_FILE_SIZE_KEY, 0),
-            "available_sheets": st.session_state.get("available_sheets", []),
-            "selected_sheet": st.session_state.get("selected_sheet"),
-            "start_row": int(st.session_state.get("current_start_row", 1) or 1),
-            "load_error": st.session_state.get("load_error"),
+            "size": _STATE.get(MTG_UPLOADED_FILE_SIZE_KEY, 0),
+            "available_sheets": _STATE.get("available_sheets", []),
+            "selected_sheet": _STATE.get("selected_sheet"),
+            "start_row": int(_STATE.get("current_start_row", 1) or 1),
+            "load_error": _STATE.get("load_error"),
         },
         "data": {
             "has_table": isinstance(original_df, pd.DataFrame),
@@ -728,27 +726,27 @@ def _build_snapshot() -> Dict[str, Any]:
             "column_names": columns,
             "preview": _dataframe_preview_records(original_df, 8),
             "used_preview": _dataframe_preview_records(preprocessed_df, 8),
-            "preprocessing_applied": bool(st.session_state.get("preprocessing_applied_in_last_run", False)),
+            "preprocessing_applied": bool(_STATE.get("preprocessing_applied_in_last_run", False)),
         },
         "omission": {
-            "selected": st.session_state.get("omitted_columns_selection", []),
+            "selected": _STATE.get("omitted_columns_selection", []),
         },
         "preprocessing": {
-            "prepared_split_config": st.session_state.get("prepared_split_config", {}),
-            "prepared_expand_config": st.session_state.get("prepared_expand_config", {}),
-            "keep_original_split": bool(st.session_state.get("keep_original_setting_split", True)),
-            "keep_original_expand": bool(st.session_state.get("keep_original_setting_expand", True)),
-            "transformations_prepared": bool(st.session_state.get("transformations_prepared", False)),
+            "prepared_split_config": _STATE.get("prepared_split_config", {}),
+            "prepared_expand_config": _STATE.get("prepared_expand_config", {}),
+            "keep_original_split": bool(_STATE.get("keep_original_setting_split", True)),
+            "keep_original_expand": bool(_STATE.get("keep_original_setting_expand", True)),
+            "transformations_prepared": bool(_STATE.get("transformations_prepared", False)),
             "detected_expansion_codes": detected_codes,
-            "detected_expansion_column": st.session_state.get(MTG_EXPAND_DETECTED_COLUMN_KEY, ""),
-            "detected_expansion_delimiter": st.session_state.get(MTG_EXPAND_DETECTED_DELIMITER_KEY, ", "),
+            "detected_expansion_column": _STATE.get(MTG_EXPAND_DETECTED_COLUMN_KEY, ""),
+            "detected_expansion_delimiter": _STATE.get(MTG_EXPAND_DETECTED_DELIMITER_KEY, ", "),
         },
         "consolidation": {
-            "threshold": float(st.session_state.get("levenshtein_threshold", 0.85) or 0.85),
-            "groups": st.session_state.get("similar_term_groups", []),
-            "choices": st.session_state.get("user_choices_for_similar_terms", {}),
-            "review_visible": bool(st.session_state.get("show_consolidation_review_ui", False)),
-            "staged": bool(st.session_state.get("consolidations_staged_for_generation", False)),
+            "threshold": float(_STATE.get("levenshtein_threshold", 0.85) or 0.85),
+            "groups": _STATE.get("similar_term_groups", []),
+            "choices": _STATE.get("user_choices_for_similar_terms", {}),
+            "review_visible": bool(_STATE.get("show_consolidation_review_ui", False)),
+            "staged": bool(_STATE.get("consolidations_staged_for_generation", False)),
         },
         "matching": {
             "has_table": isinstance(matching_df, pd.DataFrame),
@@ -759,30 +757,24 @@ def _build_snapshot() -> Dict[str, Any]:
             "csv_filename": "matching_table.csv",
         },
         "downloads": {
-            "preprocessed_available": isinstance(preprocessed_df, pd.DataFrame) and bool(st.session_state.get("preprocessing_applied_in_last_run", False)),
-            "preprocessed_csv": _dataframe_csv(preprocessed_df) if bool(st.session_state.get("preprocessing_applied_in_last_run", False)) else "",
+            "preprocessed_available": isinstance(preprocessed_df, pd.DataFrame) and bool(_STATE.get("preprocessing_applied_in_last_run", False)),
+            "preprocessed_csv": _dataframe_csv(preprocessed_df) if bool(_STATE.get("preprocessing_applied_in_last_run", False)) else "",
             "preprocessed_csv_filename": f"{output_base}.csv",
-            "preprocessed_xlsx_base64": _dataframe_xlsx_base64(preprocessed_df, "PreprocessedData") if bool(st.session_state.get("preprocessing_applied_in_last_run", False)) else "",
+            "preprocessed_xlsx_base64": _dataframe_xlsx_base64(preprocessed_df, "PreprocessedData") if bool(_STATE.get("preprocessing_applied_in_last_run", False)) else "",
             "preprocessed_xlsx_filename": f"{output_base}.xlsx",
         },
-        "statusMessage": st.session_state.get(MTG_STATUS_MESSAGE_KEY),
+        "statusMessage": _STATE.get(MTG_STATUS_MESSAGE_KEY),
     }
 
 
-def _render_matching_table_mui(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    component_path = _get_matching_component_path()
-    if not os.path.exists(os.path.join(component_path, "index.html")):
-        st.error(
-            "MatchingTableGeneratorMuiApp React/Material-UI component build is missing. "
-            "Run `npm install && npm run build` in agentic_reconciliation/components/workflow_config_panel/frontend."
-        )
-        return None
-    matching_component = components.declare_component("matching_table_generator_panel", path=component_path)
-    try:
-        return matching_component(app="matching_table_generator", snapshot=snapshot, key="matching_table_generator_mui_app", default=None)
-    except Exception as exc:
-        st.error(f"MatchingTableGeneratorMuiApp React/Material-UI component could not be rendered. ({exc})")
-        return None
+def get_shared_outputs() -> Dict[str, Optional[pd.DataFrame]]:
+    """Return generated outputs for downstream backend services."""
+    matching_df = _STATE.get("shared_matching_table")
+    preprocessed_df = _STATE.get("shared_preprocessed_data")
+    return {
+        "shared_matching_table": matching_df.copy() if isinstance(matching_df, pd.DataFrame) else None,
+        "shared_preprocessed_data": preprocessed_df.copy() if isinstance(preprocessed_df, pd.DataFrame) else None,
+    }
 
 
 def _handle_upload_event(event: Dict[str, Any]) -> None:
@@ -800,19 +792,19 @@ def _handle_upload_event(event: Dict[str, Any]) -> None:
         _set_status("error", "Please upload a CSV, XLSX, or XLS file.")
         return
     _reset_data_dependent_state(clear_file=False)
-    st.session_state[MTG_UPLOADED_FILE_BYTES_KEY] = file_bytes
-    st.session_state[MTG_UPLOADED_FILE_NAME_KEY] = filename
-    st.session_state[MTG_UPLOADED_FILE_SIZE_KEY] = len(file_bytes)
-    st.session_state["uploaded_file_info"] = (filename, len(file_bytes))
-    st.session_state["current_start_row"] = max(1, int(event.get("start_row", 1) or 1))
+    _STATE[MTG_UPLOADED_FILE_BYTES_KEY] = file_bytes
+    _STATE[MTG_UPLOADED_FILE_NAME_KEY] = filename
+    _STATE[MTG_UPLOADED_FILE_SIZE_KEY] = len(file_bytes)
+    _STATE["uploaded_file_info"] = (filename, len(file_bytes))
+    _STATE["current_start_row"] = max(1, int(event.get("start_row", 1) or 1))
     sheets = get_excel_sheet_names(file_bytes, filename)
-    st.session_state["available_sheets"] = sheets
-    st.session_state["selected_sheet"] = sheets[0] if sheets else None
+    _STATE["available_sheets"] = sheets
+    _STATE["selected_sheet"] = sheets[0] if sheets else None
     _load_current_uploaded_file()
-    if st.session_state.get("load_error"):
-        _set_status("error", st.session_state["load_error"])
+    if _STATE.get("load_error"):
+        _set_status("error", _STATE["load_error"])
     else:
-        sheet_note = f" (sheet: {st.session_state['selected_sheet']})" if st.session_state.get("selected_sheet") else ""
+        sheet_note = f" (sheet: {_STATE['selected_sheet']})" if _STATE.get("selected_sheet") else ""
         _set_status("success", f"Loaded {filename}{sheet_note}.")
 
 
@@ -820,31 +812,31 @@ def _handle_mui_event(event: Any) -> bool:
     if not isinstance(event, dict):
         return False
     nonce = event.get("nonce")
-    if nonce and st.session_state.get(MTG_COMPONENT_ACTION_NONCE_KEY) == nonce:
+    if nonce and _STATE.get(MTG_COMPONENT_ACTION_NONCE_KEY) == nonce:
         return False
     if nonce:
-        st.session_state[MTG_COMPONENT_ACTION_NONCE_KEY] = nonce
+        _STATE[MTG_COMPONENT_ACTION_NONCE_KEY] = nonce
 
     event_type = str(event.get("type", "") or "")
     should_rerun = True
-    original_df = st.session_state.get("original_df")
+    original_df = _STATE.get("original_df")
 
     if event_type == "upload_file":
         _handle_upload_event(event)
     elif event_type == "set_sheet":
         selected = str(event.get("sheet", "") or "")
-        if selected in st.session_state.get("available_sheets", []):
-            st.session_state["selected_sheet"] = selected
+        if selected in _STATE.get("available_sheets", []):
+            _STATE["selected_sheet"] = selected
             _load_current_uploaded_file()
-            _set_status("success" if not st.session_state.get("load_error") else "error", st.session_state.get("load_error") or f"Loaded sheet '{selected}'.")
+            _set_status("success" if not _STATE.get("load_error") else "error", _STATE.get("load_error") or f"Loaded sheet '{selected}'.")
     elif event_type == "set_start_row":
-        st.session_state["current_start_row"] = max(1, int(event.get("start_row", 1) or 1))
+        _STATE["current_start_row"] = max(1, int(event.get("start_row", 1) or 1))
         _load_current_uploaded_file()
-        _set_status("success" if not st.session_state.get("load_error") else "error", st.session_state.get("load_error") or f"Reloaded from row {st.session_state['current_start_row']}.")
+        _set_status("success" if not _STATE.get("load_error") else "error", _STATE.get("load_error") or f"Reloaded from row {_STATE['current_start_row']}.")
     elif event_type == "set_omitted_columns":
         selected = event.get("columns", [])
         allowed = set(original_df.columns) if isinstance(original_df, pd.DataFrame) else set()
-        st.session_state["omitted_columns_selection"] = sorted([str(col) for col in selected if str(col) in allowed])
+        _STATE["omitted_columns_selection"] = sorted([str(col) for col in selected if str(col) in allowed])
         _set_status("success", "Column omission selection updated.")
     elif event_type == "add_omission_by_type":
         if not isinstance(original_df, pd.DataFrame):
@@ -866,9 +858,9 @@ def _handle_mui_event(event: Any) -> bool:
                     upper = str(col).upper()
                     if "ID" in upper or upper.startswith("ID") or upper.endswith("ID"):
                         additions.append(col)
-            current = set(st.session_state.get("omitted_columns_selection", []))
+            current = set(_STATE.get("omitted_columns_selection", []))
             current.update(additions)
-            st.session_state["omitted_columns_selection"] = sorted(current)
+            _STATE["omitted_columns_selection"] = sorted(current)
             _set_status("info" if additions else "warning", f"Added {len(additions)} {mode} column(s) to omission list." if additions else f"No {mode} columns detected.")
     elif event_type == "prepare_transformations":
         if not isinstance(original_df, pd.DataFrame):
@@ -877,59 +869,59 @@ def _handle_mui_event(event: Any) -> bool:
             try:
                 split_config = _normalize_split_config(event.get("split_config"), original_df.columns)
                 expand_config = _normalize_expand_config(event.get("expand_config"), original_df.columns)
-                st.session_state["prepared_split_config"] = split_config
-                st.session_state["prepared_expand_config"] = expand_config
-                st.session_state["keep_original_setting_split"] = bool(event.get("keep_original_split", True))
-                st.session_state["keep_original_setting_expand"] = bool(event.get("keep_original_expand", True))
-                st.session_state["transformations_prepared"] = bool(split_config or expand_config)
-                _set_status("success" if st.session_state["transformations_prepared"] else "info", "Transformation rules prepared successfully." if st.session_state["transformations_prepared"] else "No valid transformations were enabled/configured.")
+                _STATE["prepared_split_config"] = split_config
+                _STATE["prepared_expand_config"] = expand_config
+                _STATE["keep_original_setting_split"] = bool(event.get("keep_original_split", True))
+                _STATE["keep_original_setting_expand"] = bool(event.get("keep_original_expand", True))
+                _STATE["transformations_prepared"] = bool(split_config or expand_config)
+                _set_status("success" if _STATE["transformations_prepared"] else "info", "Transformation rules prepared successfully." if _STATE["transformations_prepared"] else "No valid transformations were enabled/configured.")
             except Exception as exc:
                 _set_status("error", f"Could not prepare transformations: {exc}")
     elif event_type == "clear_transformations":
-        st.session_state["prepared_split_config"] = {}
-        st.session_state["prepared_expand_config"] = {}
-        st.session_state["transformations_prepared"] = False
-        st.session_state["df_after_transformations"] = None
-        st.session_state["preprocessing_applied_in_last_run"] = False
+        _STATE["prepared_split_config"] = {}
+        _STATE["prepared_expand_config"] = {}
+        _STATE["transformations_prepared"] = False
+        _STATE["df_after_transformations"] = None
+        _STATE["preprocessing_applied_in_last_run"] = False
         _set_status("info", "Prepared transformation rules cleared.")
     elif event_type == "detect_expansion_codes":
         column = str(event.get("column", "") or "")
         delimiter = str(event.get("delimiter", ", ") or ", ")
         codes = detect_codes_for_expansion(original_df, column, delimiter)
-        st.session_state[MTG_EXPAND_DETECTED_CODES_KEY] = codes
-        st.session_state[MTG_EXPAND_DETECTED_COLUMN_KEY] = column
-        st.session_state[MTG_EXPAND_DETECTED_DELIMITER_KEY] = delimiter
+        _STATE[MTG_EXPAND_DETECTED_CODES_KEY] = codes
+        _STATE[MTG_EXPAND_DETECTED_COLUMN_KEY] = column
+        _STATE[MTG_EXPAND_DETECTED_DELIMITER_KEY] = delimiter
         _set_status("success" if codes else "warning", f"Detected {len(codes)} code(s) in '{column}'." if codes else "No codes detected for the selected column/delimiter.")
     elif event_type == "find_similar_terms":
-        threshold = max(0.0, min(1.0, float(event.get("threshold", st.session_state.get("levenshtein_threshold", 0.85)) or 0.85)))
-        st.session_state["levenshtein_threshold"] = threshold
+        threshold = max(0.0, min(1.0, float(event.get("threshold", _STATE.get("levenshtein_threshold", 0.85)) or 0.85)))
+        _STATE["levenshtein_threshold"] = threshold
         groups = find_similar_term_groups(threshold)
-        st.session_state["similar_term_groups"] = groups
-        st.session_state["show_consolidation_review_ui"] = bool(groups)
-        st.session_state["consolidations_staged_for_generation"] = False
+        _STATE["similar_term_groups"] = groups
+        _STATE["show_consolidation_review_ui"] = bool(groups)
+        _STATE["consolidations_staged_for_generation"] = False
         choices = {}
         for idx, group in enumerate(groups):
             choices[f"choice_group_{idx}"] = group[0] if group else "Keep All (No Change)"
             choices[f"new_term_group_{idx}"] = ""
-        st.session_state["user_choices_for_similar_terms"] = choices
+        _STATE["user_choices_for_similar_terms"] = choices
         _set_status("success" if groups else "info", f"Found {len(groups)} similar-term group(s)." if groups else f"No terms found with similarity >= {threshold:.2f}.")
     elif event_type == "stage_consolidations":
         choices = event.get("choices", {}) if isinstance(event.get("choices", {}), dict) else {}
-        st.session_state["user_choices_for_similar_terms"] = choices
-        st.session_state["consolidations_staged_for_generation"] = bool(st.session_state.get("similar_term_groups"))
-        st.session_state["show_consolidation_review_ui"] = False
+        _STATE["user_choices_for_similar_terms"] = choices
+        _STATE["consolidations_staged_for_generation"] = bool(_STATE.get("similar_term_groups"))
+        _STATE["show_consolidation_review_ui"] = False
         _set_status("success", "Consolidation choices staged. They will be applied when generating the matching table.")
     elif event_type == "generate_matching_table":
         result = generate_matching_table()
         if result.error:
-            st.session_state["matching_df"] = None
+            _STATE["matching_df"] = None
             _set_status("error", result.error)
         else:
-            st.session_state["matching_df"] = result.matching_df.copy() if isinstance(result.matching_df, pd.DataFrame) else None
-            st.session_state["df_after_transformations"] = result.preprocessed_df.copy() if result.preprocessing_applied and isinstance(result.preprocessed_df, pd.DataFrame) else None
-            st.session_state["preprocessing_applied_in_last_run"] = bool(result.preprocessing_applied)
-            st.session_state["shared_matching_table"] = result.matching_df.copy() if isinstance(result.matching_df, pd.DataFrame) else None
-            st.session_state["shared_preprocessed_data"] = result.preprocessed_df.copy() if isinstance(result.preprocessed_df, pd.DataFrame) else None
+            _STATE["matching_df"] = result.matching_df.copy() if isinstance(result.matching_df, pd.DataFrame) else None
+            _STATE["df_after_transformations"] = result.preprocessed_df.copy() if result.preprocessing_applied and isinstance(result.preprocessed_df, pd.DataFrame) else None
+            _STATE["preprocessing_applied_in_last_run"] = bool(result.preprocessing_applied)
+            _STATE["shared_matching_table"] = result.matching_df.copy() if isinstance(result.matching_df, pd.DataFrame) else None
+            _STATE["shared_preprocessed_data"] = result.preprocessed_df.copy() if isinstance(result.preprocessed_df, pd.DataFrame) else None
             consolidation_note = f" including {result.consolidations_applied_count} consolidation replacement(s)" if result.consolidations_applied_count else ""
             _set_status("success", f"Matching table generated successfully{consolidation_note}.")
     elif event_type == "reset_all":
@@ -942,12 +934,3 @@ def _handle_mui_event(event: Any) -> bool:
 
     return should_rerun
 
-
-def render_matching_table_generator_page() -> None:
-    """Render the Material-UI Matching Table Generator and handle its events."""
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    _init_state()
-    snapshot = _build_snapshot()
-    event = _render_matching_table_mui(snapshot)
-    if _handle_mui_event(event):
-        st.rerun()

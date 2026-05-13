@@ -1,7 +1,7 @@
 {
   "scripts": {
-    "start": "npm --prefix agentic_reconciliation/components/workflow_config_panel/frontend run start",
-    "run": "npm --prefix agentic_reconciliation/components/workflow_config_panel/frontend run start",
-    "build": "npm --prefix agentic_reconciliation/components/workflow_config_panel/frontend run build"
+    "start": "npm --prefix frontend run start",
+    "run": "npm --prefix frontend run start",
+    "build": "npm --prefix frontend run build"
   }
 }

@@ -27,10 +27,9 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { Streamlit } from 'streamlit-component-lib';
+import { emitAppEvent, notifyLayoutChanged, type AppEvent } from '../../shared/appBridge';
 
 type Severity = 'success' | 'info' | 'warning' | 'error';
-type AppEvent = { type: string; [key: string]: unknown };
 type TableRow = Record<string, unknown>;
 type Stage = 'load' | 'enrich' | 'templates' | 'model' | 'reference' | 'generate' | 'export';
 
@@ -73,7 +72,7 @@ type Snapshot = {
   dcat?: { available?: boolean; title?: string; description?: string; access_rights?: string; contact_point?: string; publisher_name?: string; publisher_uri?: string; themes?: string[]; theme_options?: string[]; license?: string; license_options?: string[]; link_reference?: boolean };
 };
 
-type StreamlitProps = { args?: { app?: string; snapshot?: Snapshot } };
+type AppProps = { args?: { app?: string; snapshot?: Snapshot } };
 
 const stages: { id: Stage; label: string; caption: string }[] = [
   { id: 'load', label: 'Load', caption: 'Data & mappings' },
@@ -93,7 +92,7 @@ const csvSeparators = [
   { label: 'Pipe (|)', value: '|' },
 ];
 
-function emit(event: AppEvent) { Streamlit.setComponentValue({ ...event, nonce: Date.now() }); window.setTimeout(() => Streamlit.setFrameHeight(), 0); }
+function emit(event: AppEvent) { emitAppEvent(event); }
 function asNumber(value: unknown, fallback: number) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : fallback; }
 function triggerDownload(content: string, filename: string, mime: string) { const blob = new Blob([content], { type: mime }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }
 async function fileToBase64(file: File) { const bytes = new Uint8Array(await file.arrayBuffer()); let binary = ''; bytes.forEach((b) => { binary += String.fromCharCode(b); }); return window.btoa(binary); }
@@ -183,11 +182,11 @@ function GeneratePage({ snapshot }: { snapshot: Snapshot }) { const dcat = snaps
 
 function ExportPage({ snapshot }: { snapshot: Snapshot }) { const out = snapshot.outputs ?? {}; const stem = out.file_stem ?? 'rdf_output'; const [tab, setTab] = useState(0); const previews = [out.previews?.rdf, out.previews?.skos, out.previews?.dcat_metadata, out.previews?.dcat_catalog, out.previews?.reference]; const labels = ['Data Graph','SKOS Vocabulary','DCAT Metadata','Full Catalog','Reference']; return <Stack spacing={2}><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2,1fr)', xl: 'repeat(5,1fr)' }, gap: 2 }}><Card variant="outlined"><CardContent><Stack spacing={1}><Typography variant="subtitle1">Data Graph</Typography><Button variant="contained" disabled={!out.rdf_data} onClick={() => triggerDownload(out.rdf_data ?? '', `${stem}_data.ttl`, 'text/turtle')}>Download Turtle</Button></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1}><Typography variant="subtitle1">SKOS Vocabulary</Typography><Button variant="contained" disabled={!out.skos_data} onClick={() => triggerDownload(out.skos_data ?? '', `${stem}_skos.ttl`, 'text/turtle')}>Download Turtle</Button></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1}><Typography variant="subtitle1">DCAT Metadata</Typography><Button variant="contained" disabled={!out.dcat_metadata_data} onClick={() => triggerDownload(out.dcat_metadata_data ?? '', `${stem}_dcat_metadata.ttl`, 'text/turtle')}>Download Turtle</Button></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1}><Typography variant="subtitle1">Full Catalog</Typography><Button variant="contained" disabled={!out.dcat_catalog_data} onClick={() => triggerDownload(out.dcat_catalog_data ?? '', `${stem}_full_catalog.trig`, 'application/trig')}>Download TriG</Button></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1}><Typography variant="subtitle1">Publication Reference</Typography><Button variant="contained" disabled={!out.reference_rdf} onClick={() => triggerDownload(out.reference_rdf ?? '', `${stem}_reference.ttl`, 'text/turtle')}>Download Turtle</Button></Stack></CardContent></Card></Box><Card variant="outlined"><CardContent><Stack spacing={1.2}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between"><Typography variant="subtitle1">Generated RDF Previews</Typography><Button variant="outlined" color="warning" onClick={() => emit({ type: 'reset_workflow' })}>Reset RDF Generator</Button></Stack><Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons="auto">{labels.map((label) => <Tab key={label} label={label} />)}</Tabs><CodePreview value={previews[tab]} language={labels[tab]} /></Stack></CardContent></Card></Stack>; }
 
-export function RDFGeneratorApp({ args }: StreamlitProps) {
+export function RDFGeneratorApp({ args }: AppProps) {
   const snapshot = args?.snapshot ?? {};
   const activeStage = (snapshot.active_stage && stages.some((s) => s.id === snapshot.active_stage) ? snapshot.active_stage : 'load') as Stage;
   useEffect(() => { window.scrollTo(0, 0); try { const mainContent = window.parent.document.querySelector('section.main'); if (mainContent) mainContent.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* ignore */ } }, [activeStage]);
-  useEffect(() => { Streamlit.setFrameHeight(); }, [snapshot, activeStage]);
+  useEffect(() => { notifyLayoutChanged(); }, [snapshot, activeStage]);
   const page = useMemo(() => {
     if (activeStage === 'load') return <LoadPage snapshot={snapshot} />;
     if (activeStage === 'enrich') return <EnrichPage snapshot={snapshot} />;

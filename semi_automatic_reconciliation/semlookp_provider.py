@@ -8,17 +8,13 @@ from urllib.parse import quote # Needed for potential IRI encoding if retrieving
 # Configure logging (basic example, adjust as needed for your app)
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Use cache_data if Streamlit context is available and desired
-# from streamlit import cache_data
-# @cache_data(ttl=3600) # Cache results for 1 hour
-
-# If running outside Streamlit or caching isn't needed, define a dummy decorator
+# Lightweight no-op cache decorator used by the backend service
 def cache_data(ttl=None):
     def decorator(func):
         return func
     return decorator
 
-@cache_data(ttl=3600) # Use dummy if no Streamlit
+@cache_data(ttl=3600)
 def query_semlookp(
     term,
     limit=7,

@@ -1,9 +1,8 @@
 """HTTP backend for the RDF4Risk web app.
 
-This module intentionally reuses the existing Python service/session-state
-bridges that previously sat behind Streamlit components.  The Streamlit UI
-files are left intact; this server only exposes JSON snapshots and event
-handlers so the browser app can use the existing Python functionality.
+This module exposes JSON snapshots and event handlers for the browser app.
+Python services own workflow state and business logic; React/Material UI owns
+all frontend rendering.
 """
 
 from __future__ import annotations
@@ -17,14 +16,13 @@ from typing import Any, Callable, Dict, Tuple
 from urllib.parse import urlparse
 
 import pandas as pd
-import streamlit as st
-
 from Matching_Table_Generator import generator as matching_service
 from RDF_Generator import app as rdf_generator_service
 from RDF_to_Table import tablegenerator as rdf_to_table_service
-from agentic_reconciliation import agent_reconciliation_ui as agent_service
+from agentic_reconciliation import agent_reconciliation_service as agent_service
+from agentic_reconciliation.agent_runtime_state import runtime_state as agent_runtime_state
 from agentic_reconciliation.agent_llm_service import get_default_model_options, get_provider_label, get_supported_llm_providers
-from semi_automatic_reconciliation import reconciliation_ui as semi_service
+from semi_automatic_reconciliation import reconciliation_service as semi_service
 
 LOGGER = logging.getLogger("rdf4risk.mui_backend")
 
@@ -38,7 +36,7 @@ SERVICE_IDS = {
 
 
 def _json_safe(value: Any) -> Any:
-    """Recursively coerce values produced by pandas/Streamlit state to JSON."""
+    """Recursively coerce values produced by pandas/backend state to JSON."""
     if value is None or isinstance(value, (str, bool, int, float)):
         return value
     if isinstance(value, (pd.Timestamp,)):
@@ -74,12 +72,12 @@ def _agent_args() -> Dict[str, Any]:
     primary_models = list(runtime_context.get("primary_models", []) or [])
     if not primary_models:
         primary_models = list(get_default_model_options(primary_provider))
-    selected_model = str(st.session_state.get("agent_model_name", config.get("model", primary_models[0] if primary_models else "gpt-5.1")) or "gpt-5.1")
+    selected_model = str(agent_runtime_state.get("agent_model_name", config.get("model", primary_models[0] if primary_models else "gpt-5.1")) or "gpt-5.1")
     for model_candidate in (
         selected_model,
-        str(st.session_state.get("agent_custom_model_override", "") or "").strip(),
-        str(st.session_state.get("agent_definition_model_name", "") or "").strip(),
-        str(st.session_state.get("agent_planner_model_name", "") or "").strip(),
+        str(agent_runtime_state.get("agent_custom_model_override", "") or "").strip(),
+        str(agent_runtime_state.get("agent_definition_model_name", "") or "").strip(),
+        str(agent_runtime_state.get("agent_planner_model_name", "") or "").strip(),
     ):
         if model_candidate and model_candidate not in primary_models:
             primary_models.append(model_candidate)
@@ -118,11 +116,11 @@ def _agent_args() -> Dict[str, Any]:
         "data_status": agent_service._build_data_status_snapshot(required_columns),
         "run_status": agent_service._build_run_status_snapshot(readiness),
         "telemetry": agent_service._build_telemetry_snapshot(),
-        "review": agent_service._build_review_snapshot(st.session_state.get(agent_service.AGENT_DATAFRAME_STATE_KEY)),
-        "exportPayload": st.session_state.get(agent_service.AGENT_SSSOM_EXPORT_PAYLOAD_KEY),
+        "review": agent_service._build_review_snapshot(agent_runtime_state.get(agent_service.AGENT_DATAFRAME_STATE_KEY)),
+        "exportPayload": agent_runtime_state.get(agent_service.AGENT_SSSOM_EXPORT_PAYLOAD_KEY),
         "ontologyOptions": ontology_options,
         "providerKind": provider_kind,
-        "statusMessage": st.session_state.get("agent_mui_status_message"),
+        "statusMessage": agent_runtime_state.get("agent_mui_status_message"),
         "codexAuthStatus": agent_service.get_codex_auth_status(),
     }
 
@@ -140,18 +138,43 @@ def _agent_event(event: Dict[str, Any]) -> None:
     agent_service._handle_agent_mui_event(event, readiness, runtime_context, provenance_defaults)
 
 
+def _sync_matching_outputs_to_legacy_state() -> None:
+    """Expose matching-generator backend outputs to services not yet refactored.
+
+    The matching table generator no longer uses UI framework state.  Some downstream
+    services still read `shared_matching_table` / `shared_preprocessed_data` from
+    their legacy state bridge, so this keeps the existing MUI workflow working
+    until those services are migrated in later refactoring steps.
+    """
+    outputs = matching_service.get_shared_outputs()
+    for key, value in outputs.items():
+        if isinstance(value, pd.DataFrame):
+            agent_runtime_state[key] = value.copy()
+        elif key in agent_runtime_state:
+            del agent_runtime_state[key]
+    semi_service.set_shared_matching_table(outputs.get("shared_matching_table"))
+
+
+def _sync_semi_outputs_to_legacy_state() -> None:
+    """Expose semi-automatic reconciliation outputs to downstream services."""
+    for key, value in semi_service.get_shared_outputs().items():
+        if isinstance(value, pd.DataFrame):
+            agent_runtime_state[key] = value.copy()
+
+
 def _service_snapshot(service_id: str) -> Dict[str, Any]:
     if service_id == "matching_table_generator":
         matching_service._init_state()
         return {"app": service_id, "snapshot": matching_service._build_snapshot()}
     if service_id == "semi_automatic_reconciliation":
-        semi_service._initialize_reconciliation_mui_state()
-        if semi_service.CONFIG is not None:
-            semi_service._ensure_ontology_options_for_queue()
-        return {"app": service_id, "snapshot": semi_service._build_reconciliation_mui_snapshot()}
+        _sync_matching_outputs_to_legacy_state()
+        semi_service.initialize_reconciliation_state()
+        return {"app": service_id, "snapshot": semi_service.build_reconciliation_snapshot()}
     if service_id == "agent_reconciliation":
+        _sync_matching_outputs_to_legacy_state()
         return _agent_args()
     if service_id == "rdf_generator":
+        _sync_matching_outputs_to_legacy_state()
         rdf_generator_service._init_rdf_mui_state()
         return {"app": service_id, "snapshot": rdf_generator_service._build_rdf_snapshot()}
     if service_id == "rdf_to_table":
@@ -165,11 +188,15 @@ def _service_event(service_id: str, event: Dict[str, Any]) -> None:
         matching_service._init_state()
         matching_service._handle_mui_event(event)
     elif service_id == "semi_automatic_reconciliation":
-        semi_service._initialize_reconciliation_mui_state()
-        semi_service._handle_reconciliation_mui_event(event)
+        _sync_matching_outputs_to_legacy_state()
+        semi_service.initialize_reconciliation_state()
+        semi_service.handle_reconciliation_event(event)
+        _sync_semi_outputs_to_legacy_state()
     elif service_id == "agent_reconciliation":
+        _sync_matching_outputs_to_legacy_state()
         _agent_event(event)
     elif service_id == "rdf_generator":
+        _sync_matching_outputs_to_legacy_state()
         rdf_generator_service._init_rdf_mui_state()
         rdf_generator_service._handle_rdf_mui_event(event)
     elif service_id == "rdf_to_table":

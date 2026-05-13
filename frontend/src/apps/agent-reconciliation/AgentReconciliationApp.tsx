@@ -29,7 +29,6 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { Streamlit } from 'streamlit-component-lib';
 import { AgentRunProgressPanel, type AgentRunWorkflow, type RunStatus } from '../../components/run/AgentRunProgressPanel';
 const AgentIcon = () => (
   <svg
@@ -237,7 +236,7 @@ type ComponentArgs = {
         [key: string]: any;
     };
 };
-type StreamlitProps = { args?: ComponentArgs };
+type AgentReconciliationAppProps = { args?: ComponentArgs; onEvent?: (event: AppEvent) => void };
 
 type AppEvent = { type: string; [key: string]: unknown };
 
@@ -599,7 +598,7 @@ function ReviewPage({ review, dataStatus, emit }: { review: ReviewState; dataSta
               <Stack>
                 <Typography variant="subtitle1">Working table preview</Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Live matching table snapshot. Accept/reject/reset actions update this table after the Streamlit event is applied.
+                  Live matching table snapshot. Accept/reject/reset actions update this table through the Python backend event handler.
                 </Typography>
               </Stack>
               <Chip size="small" label={dataStatus.has_table ? 'live table loaded' : 'no table loaded'} color={dataStatus.has_table ? 'success' : 'warning'} />
@@ -749,10 +748,10 @@ function ExportPage({ review, dataStatus, exportPayload, emit }: { review: Revie
     if (preparedDownloadUrl) window.URL.revokeObjectURL(preparedDownloadUrl);
   }, [preparedDownloadUrl]);
 
-  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' }, gap: 2 }}><Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Export Summary</Typography><SummaryRow label="Source" value={dataStatus.source_name || dataStatus.filename || '—'} /><SummaryRow label="Accepted mappings" value={review.counts?.accepted ?? 0} /><SummaryRow label="Rejected" value={review.counts?.rejected ?? 0} /><SummaryRow label="No match" value={review.counts?.no_match ?? 0} /><SummaryRow label="Pending" value={review.counts?.pending ?? 0} /></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.3}><Typography variant="subtitle1">SSSOM Export</Typography><Typography variant="body2" color="text.secondary">Download the finalized accepted mapping table as an SSSOM-oriented CSV snapshot.</Typography><Button variant="contained" onClick={() => emit({ type: 'export_sssom' })}>Prepare SSSOM Export</Button>{preparedDownloadUrl ? <><Alert severity="success" variant="outlined">SSSOM export is prepared. If your browser blocked the automatic download, use the download button below.</Alert><Button variant="contained" component="a" href={preparedDownloadUrl} download={preparedFilename}>Download Prepared SSSOM CSV</Button></> : <Alert severity="info" variant="outlined">Prepare the export first. The download button appears here after Streamlit creates the CSV snapshot.</Alert>}</Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.3}><Typography variant="subtitle1">RDF Generator Handoff</Typography><Typography variant="body2" color="text.secondary">Publish accepted mappings to Streamlit session state for the RDF Generator.</Typography><Button variant="contained" color="success" onClick={() => emit({ type: 'publish_rdf_handoff' })}>Publish to RDF Generator</Button></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.3}><Typography variant="subtitle1">Rejected / No-match Summary</Typography><Alert severity="info" variant="outlined">Rejected and no-match rows remain visible for audit and curation records; export currently finalizes accepted mappings.</Alert></Stack></CardContent></Card></Box>;
+  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' }, gap: 2 }}><Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Export Summary</Typography><SummaryRow label="Source" value={dataStatus.source_name || dataStatus.filename || '—'} /><SummaryRow label="Accepted mappings" value={review.counts?.accepted ?? 0} /><SummaryRow label="Rejected" value={review.counts?.rejected ?? 0} /><SummaryRow label="No match" value={review.counts?.no_match ?? 0} /><SummaryRow label="Pending" value={review.counts?.pending ?? 0} /></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.3}><Typography variant="subtitle1">SSSOM Export</Typography><Typography variant="body2" color="text.secondary">Download the finalized accepted mapping table as an SSSOM-oriented CSV snapshot.</Typography><Button variant="contained" onClick={() => emit({ type: 'export_sssom' })}>Prepare SSSOM Export</Button>{preparedDownloadUrl ? <><Alert severity="success" variant="outlined">SSSOM export is prepared. If your browser blocked the automatic download, use the download button below.</Alert><Button variant="contained" component="a" href={preparedDownloadUrl} download={preparedFilename}>Download Prepared SSSOM CSV</Button></> : <Alert severity="info" variant="outlined">Prepare the export first. The download button appears here after the Python backend creates the CSV snapshot.</Alert>}</Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.3}><Typography variant="subtitle1">RDF Generator Handoff</Typography><Typography variant="body2" color="text.secondary">Publish accepted mappings to the shared backend handoff for the RDF Generator.</Typography><Button variant="contained" color="success" onClick={() => emit({ type: 'publish_rdf_handoff' })}>Publish to RDF Generator</Button></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.3}><Typography variant="subtitle1">Rejected / No-match Summary</Typography><Alert severity="info" variant="outlined">Rejected and no-match rows remain visible for audit and curation records; export currently finalizes accepted mappings.</Alert></Stack></CardContent></Card></Box>;
 }
 
-export function AgentReconciliationMuiApp({ args }: StreamlitProps) {
+export function AgentReconciliationMuiApp({ args, onEvent }: AgentReconciliationAppProps) {
   const providers = args?.providers ?? [];
   const providerLabels = args?.providerLabels ?? {};
   const baseModels = args?.models ?? [];
@@ -783,7 +782,6 @@ export function AgentReconciliationMuiApp({ args }: StreamlitProps) {
         console.error("Failed to scroll parent window", e);
     }
   }, [activeStage]);
-  useEffect(() => { Streamlit.setFrameHeight(); }, [activeStage, config, readiness, dataStatus, runStatus, telemetry, review, args?.statusMessage, args?.exportPayload]);
   useEffect(() => {
     const payload = args?.exportPayload;
     const content = payload?.content ?? '';
@@ -801,7 +799,7 @@ export function AgentReconciliationMuiApp({ args }: StreamlitProps) {
     document.body.removeChild(link);
     window.setTimeout(() => window.URL.revokeObjectURL(url), 0);
   }, [args?.exportPayload]);
-  function emit(event: AppEvent) { Streamlit.setComponentValue({ ...event, nonce: Date.now() }); window.setTimeout(() => Streamlit.setFrameHeight(), 0); }
+  function emit(event: AppEvent) { onEvent?.({ ...event, nonce: Date.now() }); }
   function update(patch: Partial<WorkflowConfig>) { const next = normalizeConfig({ ...config, ...patch }, providers, modelOptions); setConfig(next); emit({ type: 'config_changed', config: next }); }
   function navigate(stage: Stage) { emit({ type: 'navigate', stage }); }
   let page: React.ReactNode;

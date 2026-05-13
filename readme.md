@@ -6,7 +6,7 @@
 
 Risk assessment is crucial for consumer health protection and food safety within the Risk Analysis framework. Performing risk assessments requires the integration and analysis of data from diverse scientific disciplines, as highlighted by initiatives such as One Health. Currently, the lack of interoperable research data often results in data silos, limiting efficient knowledge exchange and the reuse of datasets by risk assessment agencies. Therefore, improving the interoperability of research data and cross-disciplinary knowledge exchange is essential to overcome these challenges. Technologies such as Knowledge Graphs and Linked Data offer solutions by applying the FAIR principles (Findability, Accessibility, Interoperability, and Reusability) and utilizing ontologies and standards to enhance data integration and reuse. However, the practical implementation of these technologies in risk assessment and regular research faces several technical and methodological challenges. To address these challenges, we developed the RDF4RiskAssessment Toolkit within the national research project "KI- & Daten-Akzelerator (KIDA).” This toolkit includes a framework designed to transform tabular research data into Linked Data, enabling better interoperability between different scientific datasets. The toolkit enhances data accessibility, fosters cross-disciplinary collaboration, and creates a foundation for advanced data-driven applications in scientific repositories and artificial intelligence-powered decision-making systems. To demonstrate the capabilities of the toolkit, we developed the KIDA Research Data Hub, which serves as a platform for hosting, accessing, and reusing Linked Data generated with the toolkit.
 
-The Streamlit application now contains both a manual **Reconciliation** workflow and a separate **Agent-Based Reconciliation** workflow. The new page is intended for AI-assisted ontology matching while preserving the same matching-table contract that the RDF Generator already expects, and it now includes provider/model dropdowns for OpenAI, Anthropic, and Google Gemini with live model discovery where credentials are available.
+RDF4RiskAssessment Toolkit provides a guided workflow for preparing matching tables, reconciling terms with trusted knowledge bases, generating RDF, and converting Linked Data outputs into reviewable documentation formats. The toolset supports both semi-automatic and agent-assisted reconciliation workflows while keeping the transformation process transparent and reusable for risk assessment and life sciences datasets.
 
 ## Data Model
 ![DataModel](./img/DataModel_fig1.png )
@@ -22,7 +22,7 @@ The Streamlit application now contains both a manual **Reconciliation** workflow
 
 # Quick Setup Guide
 
-This guide explains how to set up a **Python environment** and **run the Streamlit apps**.
+This guide explains how to set up a **Python environment** and run the Material UI web app with the Python backend.
 
 ---
 
@@ -76,30 +76,25 @@ Make sure you are inside the activated environment. Then install all required li
 pip install -r requirements.txt
 ```
 
-This now also installs the optional LLM/agent stack used by the Agent-Based Reconciliation page.
-
 ---
 
-## 4. Run the Streamlit App
+## 4. Run the Material UI App
 
 After activating the environment and installing the dependencies:
 
-1. Make sure you are in the folder where your Streamlit script (e.g., `Home.py`, `tablegenerator.py`) is located.
-   
-2. Then run:
+1. Install frontend dependencies once:
 
 ```bash
-streamlit run Home.py
+npm --prefix frontend install
 ```
 
-> If you switched drives (e.g., from `C:` to `N:`), remember to `cd` into the correct folder first.
+2. Start the Python backend and Material UI frontend together:
 
-Example:
 ```bash
-N:
-cd Projects\MyStreamlitApp
-streamlit run Home.py
+npm run start
 ```
+
+The frontend is served by Vite and talks to `mui_backend_server.py` on `http://127.0.0.1:8765` by default.
 
 ---
 
@@ -128,10 +123,11 @@ source .venv/bin/activate # (macOS/Linux)
 # Install all required packages
 pip install -r requirements.txt
 
-# Run your Streamlit app
-streamlit run Home.py
+# Run the Material UI app with the Python backend
+npm run start
 ```
 
 Developers: 
 Michael Zarske, 
-Taras Günther 
+Taras Günther, 
+Iurii Savvateev

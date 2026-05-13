@@ -1,9 +1,9 @@
-# trig_viewer.py - TriG Data Viewer Streamlit App
+# trig_viewer.py - RDF-to-Table backend service for the Material UI frontend
 
 from __future__ import annotations
 
 import base64
-import os
+import logging
 import sys
 import tempfile
 from collections import defaultdict
@@ -11,24 +11,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-import streamlit as st
-import streamlit.components.v1 as components
+from agentic_reconciliation.agent_runtime_state import runtime_state
 
 # Add current directory to path for importing Transform_Trig_to_Excel
 sys.path.insert(0, str(Path(__file__).parent))
 
 try:
-    from Transform_Trig_to_Excel import TriGConverter
+    from .Transform_Trig_to_Excel import TriGConverter
 except ImportError as e:
-    st.error(f"Failed to import Transform_Trig_to_Excel: {e}")
-    st.stop()
+    raise RuntimeError(f"Failed to import Transform_Trig_to_Excel: {e}") from e
 
 try:
     from rdflib.namespace import RDF
 except ImportError as e:
-    st.error(f"Failed to import rdflib: {e}")
-    st.info("Please install rdflib: pip install rdflib")
-    st.stop()
+    raise RuntimeError("Failed to import rdflib. Please install rdflib: pip install rdflib") from e
 
 # --- Helper Functions ---
 
@@ -95,17 +91,20 @@ def create_preview_dataframe(converter: TriGConverter) -> pd.DataFrame:
     return df
 
 def display_named_graph(triples: list, converter: TriGConverter):
-    """Display named graph triples as organized sections."""
+    """Return named graph triples as organized sections.
+
+    This replaces the former Python UI expander rendering with backend data
+    suitable for the Material UI frontend.
+    """
     if not triples:
-        st.info("No data found in this named graph")
-        return
+        return []
 
     # Organize by subject
     by_subject = defaultdict(list)
     for s, p, o in triples:
         by_subject[str(s)].append((p, o))
 
-    # Display each subject
+    subjects = []
     for subject_uri in sorted(by_subject.keys()):
         # Find subject type
         subject_type = None
@@ -114,33 +113,31 @@ def display_named_graph(triples: list, converter: TriGConverter):
                 subject_type = converter._extract_local_name(str(o))
                 break
 
-        # Create expandable section for each subject
-        with st.expander(f"**{subject_type or 'Resource'}**: {subject_uri}", expanded=True):
-            # Create table for properties
-            props_data = []
-            for p, o in by_subject[subject_uri]:
-                if str(p) != str(RDF.type):
-                    pred_label = converter._extract_local_name(str(p))
+        props_data = []
+        for p, o in by_subject[subject_uri]:
+            if str(p) != str(RDF.type):
+                pred_label = converter._extract_local_name(str(p))
 
-                    # Format value with link if it's a URI
-                    value_str = str(o)
-                    if value_str in converter.uri_to_label:
-                        value_display = f"[{converter.uri_to_label[value_str]}]({value_str})"
-                    elif value_str.startswith('http'):
-                        # Check for external match
-                        target = converter._get_hyperlink_uri(value_str)
-                        local_name = converter._extract_local_name(value_str)
-                        value_display = f"[{local_name}]({target})"
-                    else:
-                        value_display = value_str
+                # Format value with link if it's a URI
+                value_str = str(o)
+                if value_str in converter.uri_to_label:
+                    value_display = f"[{converter.uri_to_label[value_str]}]({value_str})"
+                elif value_str.startswith('http'):
+                    # Check for external match
+                    target = converter._get_hyperlink_uri(value_str)
+                    local_name = converter._extract_local_name(value_str)
+                    value_display = f"[{local_name}]({target})"
+                else:
+                    value_display = value_str
 
-                    props_data.append({"Property": pred_label, "Value": value_display})
+                props_data.append({"Property": pred_label, "Value": value_display})
 
-            if props_data:
-                df = pd.DataFrame(props_data)
-                st.markdown(df.to_markdown(index=False))
-            else:
-                st.info("No properties found")
+        subjects.append({
+            "subject_uri": subject_uri,
+            "subject_type": subject_type or "Resource",
+            "properties": props_data,
+        })
+    return subjects
 
 def get_property_counts(converter: TriGConverter) -> dict:
     """Get usage counts for each property label."""
@@ -161,33 +158,6 @@ DCAT_GRAPH_URI = 'https://fskx-graphdb.risk-ai-cloud.com/graph/dcat-metadata'
 PUBLICATION_GRAPH_URI = 'https://fskx-graphdb.risk-ai-cloud.com/graph/publication-reference'
 
 
-def _component_path() -> str:
-    return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "agentic_reconciliation",
-        "components",
-        "workflow_config_panel",
-        "frontend",
-        "build",
-    )
-
-
-def _render_rdf_to_table_mui(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    component_path = _component_path()
-    if not os.path.exists(os.path.join(component_path, "index.html")):
-        st.error(
-            "RDFToTableApp React/Material-UI component build is missing. "
-            "Run `npm install && npm run build` in agentic_reconciliation/components/workflow_config_panel/frontend."
-        )
-        return None
-    rdf_to_table_component = components.declare_component("rdf_to_table_panel", path=component_path)
-    try:
-        return rdf_to_table_component(app="rdf_to_table", snapshot=snapshot, key="rdf_to_table_mui_app", default=None)
-    except Exception as exc:
-        st.error(f"RDFToTableApp React/Material-UI component could not be rendered. ({exc})")
-        return None
-
-
 def _init_rdf_to_table_state() -> None:
     defaults = {
         "trig_converter": None,
@@ -197,12 +167,12 @@ def _init_rdf_to_table_state() -> None:
         RDF_TABLE_DOWNLOADS_KEY: {},
     }
     for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value.copy() if isinstance(value, dict) else value
+        if key not in runtime_state:
+            runtime_state[key] = value.copy() if isinstance(value, dict) else value
 
 
 def _set_status(severity: str, text: str) -> None:
-    st.session_state[RDF_TABLE_STATUS_MESSAGE_KEY] = {"severity": severity, "text": text}
+    runtime_state[RDF_TABLE_STATUS_MESSAGE_KEY] = {"severity": severity, "text": text}
 
 
 def _preview_records(df: Optional[pd.DataFrame], limit: int = 100) -> List[Dict[str, Any]]:
@@ -219,10 +189,10 @@ def _process_trig_data(data: str, file_name: str) -> None:
             return
         converter.extract_all_data()
         converter.expand_list_values()
-        st.session_state.trig_converter = converter
-        st.session_state.trig_file_name = file_name
-        st.session_state[RDF_TABLE_DOWNLOADS_KEY] = {}
-        st.session_state["rdf_to_table_active_stage"] = "preview"
+        runtime_state["trig_converter"] = converter
+        runtime_state["trig_file_name"] = file_name
+        runtime_state[RDF_TABLE_DOWNLOADS_KEY] = {}
+        runtime_state["rdf_to_table_active_stage"] = "preview"
         _set_status("success", f"Processed {file_name}: {len(converter.graph):,} triples and {len(converter.subjects_data):,} subject rows.")
     except Exception as exc:
         import traceback
@@ -246,7 +216,7 @@ def _handle_upload(event: Dict[str, Any]) -> None:
 
 
 def _load_catalog_from_generator() -> None:
-    catalog_data = st.session_state.get('dcat_catalog_data')
+    catalog_data = runtime_state.get('dcat_catalog_data')
     if not catalog_data:
         _set_status("warning", "No generated DCAT catalog found in session. Generate one in the RDF Generator first.")
         return
@@ -323,12 +293,12 @@ def _statistics_snapshot(converter: Optional[TriGConverter]) -> Dict[str, Any]:
 
 
 def _file_stem() -> str:
-    file_name = str(st.session_state.get("trig_file_name") or "data.trig")
-    return file_name[:-5] if file_name.lower().endswith(".trig") else os.path.splitext(file_name)[0]
+    file_name = str(runtime_state.get("trig_file_name") or "data.trig")
+    return file_name[:-5] if file_name.lower().endswith(".trig") else Path(file_name).stem
 
 
 def _prepare_downloads() -> None:
-    converter = st.session_state.get("trig_converter")
+    converter = runtime_state.get("trig_converter")
     if not isinstance(converter, TriGConverter):
         _set_status("warning", "Load TriG data before preparing downloads.")
         return
@@ -353,7 +323,7 @@ def _prepare_downloads() -> None:
         md_path.unlink(missing_ok=True)
     except Exception as exc:
         downloads["markdown_error"] = str(exc)
-    st.session_state[RDF_TABLE_DOWNLOADS_KEY] = downloads
+    runtime_state[RDF_TABLE_DOWNLOADS_KEY] = downloads
     if downloads.get("excel_error") or downloads.get("markdown_error"):
         _set_status("warning", "Downloads were prepared, but at least one format reported an error.")
     else:
@@ -361,17 +331,17 @@ def _prepare_downloads() -> None:
 
 
 def _build_snapshot() -> Dict[str, Any]:
-    converter = st.session_state.get("trig_converter")
+    converter = runtime_state.get("trig_converter")
     if not isinstance(converter, TriGConverter):
         converter = None
     preview_df = create_preview_dataframe(converter) if converter else pd.DataFrame()
     return {
-        "active_stage": st.session_state.get("rdf_to_table_active_stage", "load"),
-        "statusMessage": st.session_state.get(RDF_TABLE_STATUS_MESSAGE_KEY),
+        "active_stage": runtime_state.get("rdf_to_table_active_stage", "load"),
+        "statusMessage": runtime_state.get(RDF_TABLE_STATUS_MESSAGE_KEY),
         "source": {
             "has_data": converter is not None,
-            "filename": st.session_state.get("trig_file_name") or "",
-            "catalog_available": bool(st.session_state.get('dcat_catalog_data')),
+            "filename": runtime_state.get("trig_file_name") or "",
+            "catalog_available": bool(runtime_state.get('dcat_catalog_data')),
         },
         "data": {
             "rows": len(preview_df) if isinstance(preview_df, pd.DataFrame) else 0,
@@ -380,7 +350,7 @@ def _build_snapshot() -> Dict[str, Any]:
         },
         "metadata": _metadata_snapshot(converter),
         "statistics": _statistics_snapshot(converter),
-        "downloads": st.session_state.get(RDF_TABLE_DOWNLOADS_KEY, {}),
+        "downloads": runtime_state.get(RDF_TABLE_DOWNLOADS_KEY, {}),
     }
 
 
@@ -388,14 +358,14 @@ def _handle_mui_event(event: Any) -> bool:
     if not isinstance(event, dict):
         return False
     nonce = event.get("nonce")
-    if nonce and st.session_state.get(RDF_TABLE_COMPONENT_ACTION_NONCE_KEY) == nonce:
+    if nonce and runtime_state.get(RDF_TABLE_COMPONENT_ACTION_NONCE_KEY) == nonce:
         return False
     if nonce:
-        st.session_state[RDF_TABLE_COMPONENT_ACTION_NONCE_KEY] = nonce
+        runtime_state[RDF_TABLE_COMPONENT_ACTION_NONCE_KEY] = nonce
     event_type = str(event.get("type", "") or "")
     should_rerun = True
     if event_type == "navigate":
-        st.session_state["rdf_to_table_active_stage"] = str(event.get("stage", "load") or "load")
+        runtime_state["rdf_to_table_active_stage"] = str(event.get("stage", "load") or "load")
     elif event_type == "upload_trig":
         _handle_upload(event)
     elif event_type == "load_catalog":
@@ -403,10 +373,10 @@ def _handle_mui_event(event: Any) -> bool:
     elif event_type == "prepare_downloads":
         _prepare_downloads()
     elif event_type == "reset_workflow":
-        st.session_state.trig_converter = None
-        st.session_state.trig_file_name = None
-        st.session_state[RDF_TABLE_DOWNLOADS_KEY] = {}
-        st.session_state["rdf_to_table_active_stage"] = "load"
+        runtime_state["trig_converter"] = None
+        runtime_state["trig_file_name"] = None
+        runtime_state[RDF_TABLE_DOWNLOADS_KEY] = {}
+        runtime_state["rdf_to_table_active_stage"] = "load"
         _set_status("info", "RDF-to-Table workflow reset.")
     elif event_type == "download_ack":
         should_rerun = False
@@ -416,16 +386,15 @@ def _handle_mui_event(event: Any) -> bool:
 
 
 def main():
-    """Render the RDF-to-Table service through a Material-UI component.
+    """Entry point kept for direct execution guidance.
 
-    Streamlit is now only the backend/session-state bridge. The React/MUI
-    component owns upload, preview, metadata, statistics, and download views.
+    This module is a backend service only. Run ``python mui_backend_server.py``
+    and the Material UI frontend instead of launching this file directly.
     """
-    _init_rdf_to_table_state()
-    snapshot = _build_snapshot()
-    event = _render_rdf_to_table_mui(snapshot)
-    if _handle_mui_event(event):
-        st.rerun()
+    raise SystemExit(
+        "RDF_to_Table.tablegenerator is a backend service. Start the app with `npm start` "
+        "or run `python mui_backend_server.py` alongside the Material UI frontend."
+    )
 
 if __name__ == "__main__":
     main()

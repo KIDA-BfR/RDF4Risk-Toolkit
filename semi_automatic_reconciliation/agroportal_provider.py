@@ -28,7 +28,7 @@ def query_agroportal(
     base_url=DEFAULT_AGROPORTAL_API_URL,
     include_fields=DEFAULT_INCLUDE_FIELDS,
     page_size=15,            # How many results max?
-    user_agent="DefaultStreamlitClient/AgroPortal"
+    user_agent="RDF4RiskToolkit/AgroPortal"
     ):
     """
     Queries the AgroPortal API (/search) to reconcile terms.
@@ -194,7 +194,7 @@ def query_agroportal(
 
 @cache_data(ttl=3600 * 24) # Cache for 24 hours as ontology list doesn't change often
 def get_available_ontologies(
-    user_agent="DefaultStreamlitClient/AgroPortal",
+    user_agent="RDF4RiskToolkit/AgroPortal",
     api_key=None,
     base_url=DEFAULT_AGROPORTAL_API_URL
 ):

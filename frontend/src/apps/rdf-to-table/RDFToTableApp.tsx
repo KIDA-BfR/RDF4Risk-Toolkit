@@ -18,10 +18,9 @@ import {
   Tabs,
   Typography,
 } from '@mui/material';
-import { Streamlit } from 'streamlit-component-lib';
+import { emitAppEvent, notifyLayoutChanged, type AppEvent } from '../../shared/appBridge';
 
 type Severity = 'success' | 'info' | 'warning' | 'error';
-type AppEvent = { type: string; [key: string]: unknown };
 type TableRow = Record<string, unknown>;
 type Stage = 'load' | 'preview' | 'metadata' | 'statistics' | 'export';
 
@@ -56,7 +55,7 @@ type Snapshot = {
   };
 };
 
-type StreamlitProps = { args?: { app?: string; snapshot?: Snapshot } };
+type AppProps = { args?: { app?: string; snapshot?: Snapshot } };
 
 const stages: { id: Stage; label: string; caption: string }[] = [
   { id: 'load', label: 'Load', caption: 'TriG input' },
@@ -66,7 +65,7 @@ const stages: { id: Stage; label: string; caption: string }[] = [
   { id: 'export', label: 'Export', caption: 'Downloads' },
 ];
 
-function emit(event: AppEvent) { Streamlit.setComponentValue({ ...event, nonce: Date.now() }); window.setTimeout(() => Streamlit.setFrameHeight(), 0); }
+function emit(event: AppEvent) { emitAppEvent(event); }
 
 async function fileToBase64(file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -181,11 +180,11 @@ function ExportPage({ snapshot }: { snapshot: Snapshot }) {
   return <Stack spacing={2}><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'repeat(3,1fr)' }, gap: 2 }}><Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Excel Workbook</Typography><Typography variant="body2" color="text.secondary">RDF Data and Property Mappings sheets with safe HYPERLINK formulas.</Typography>{downloads.excel_error && <Alert severity="warning">{downloads.excel_error}</Alert>}<Button variant="contained" disabled={!downloads.excel_base64} onClick={() => triggerBase64Download(downloads.excel_base64 ?? '', downloads.excel_filename ?? 'rdf_table_output.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}>Download Excel</Button></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">CSV</Typography><Typography variant="body2" color="text.secondary">Simple comma-separated subject table for downstream processing.</Typography><Button variant="contained" disabled={!downloads.csv} onClick={() => triggerDownload(downloads.csv ?? '', downloads.csv_filename ?? 'rdf_table_output.csv', 'text/csv;charset=utf-8')}>Download CSV</Button></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Markdown Metadata</Typography><Typography variant="body2" color="text.secondary">Human-readable metadata, references, namespace, and property documentation.</Typography>{downloads.markdown_error && <Alert severity="warning">{downloads.markdown_error}</Alert>}<Button variant="contained" disabled={!downloads.markdown} onClick={() => triggerDownload(downloads.markdown ?? '', downloads.markdown_filename ?? 'rdf_table_metadata.md', 'text/markdown;charset=utf-8')}>Download Markdown</Button></Stack></CardContent></Card></Box><Card variant="outlined"><CardContent><Stack spacing={1.2}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="subtitle1">Prepare Exports</Typography><Typography variant="body2" color="text.secondary">Export generation happens in Python so Excel and Markdown exactly match the converter backend.</Typography></Stack><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><Button variant="contained" disabled={!snapshot.source?.has_data} onClick={() => emit({ type: 'prepare_downloads' })}>Prepare / Refresh Downloads</Button><Button variant="outlined" color="warning" onClick={() => emit({ type: 'reset_workflow' })}>Reset RDF to Table</Button></Stack></Stack><Alert severity="info" variant="outlined">Excel uses HYPERLINK formulas to bypass Excel’s native 65,536 hyperlink limit.</Alert></Stack></CardContent></Card></Stack>;
 }
 
-export function RDFToTableApp({ args }: StreamlitProps) {
+export function RDFToTableApp({ args }: AppProps) {
   const snapshot = args?.snapshot ?? {};
   const activeStage = (snapshot.active_stage && stages.some((stage) => stage.id === snapshot.active_stage) ? snapshot.active_stage : 'load') as Stage;
   useEffect(() => { window.scrollTo(0, 0); try { const mainContent = window.parent.document.querySelector('section.main'); if (mainContent) mainContent.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* ignore */ } }, [activeStage]);
-  useEffect(() => { Streamlit.setFrameHeight(); }, [snapshot, activeStage]);
+  useEffect(() => { notifyLayoutChanged(); }, [snapshot, activeStage]);
   const page = useMemo(() => {
     if (activeStage === 'load') return <LoadPage snapshot={snapshot} />;
     if (activeStage === 'preview') return <PreviewPage snapshot={snapshot} />;

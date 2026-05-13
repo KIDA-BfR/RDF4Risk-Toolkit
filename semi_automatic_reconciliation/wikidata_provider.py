@@ -1,26 +1,21 @@
 # -*- coding: utf-8 -*-
 import requests
 import time
-# import streamlit as st # Only needed if mixing logging with UI feedback
 import traceback
 import logging # Import logging module
 
-# Use cache_data if Streamlit context is available and desired
-# from streamlit import cache_data
-# @cache_data(ttl=3600) # Cache results for 1 hour
-
-# If running outside Streamlit or caching isn't needed, define a dummy decorator
+# Lightweight no-op cache decorator used by the backend service
 def cache_data(ttl=None):
     def decorator(func):
         return func
     return decorator
 
-@cache_data(ttl=3600) # Use dummy if no Streamlit
+@cache_data(ttl=3600)
 def query_wikidata(
     term,
     limit=7,
     api_url="https://www.wikidata.org/w/api.php",
-    user_agent="DefaultStreamlitClient/Wikidata"
+    user_agent="RDF4RiskToolkit/Wikidata"
     # proxies parameter removed
     ):
     """

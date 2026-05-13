@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import requests
 import time
-# import streamlit as st # Only needed if mixing logging with UI feedback
 import traceback
 from urllib.parse import urlparse, quote
 import logging # Import logging module
@@ -14,17 +13,13 @@ DEFAULT_INCLUDE_FIELDS = "prefLabel,synonym,definition"
 # Recommended sleep time between requests (seconds)
 SLEEP_TIME = 1.0
 
-# Use cache_data if Streamlit context is available and desired
-# from streamlit import cache_data
-# @cache_data(ttl=3600) # Cache results for 1 hour
-
-# If running outside Streamlit or caching isn't needed, define a dummy decorator
+# Lightweight no-op cache decorator used by the backend service
 def cache_data(ttl=None):
     def decorator(func):
         return func
     return decorator
 
-@cache_data(ttl=3600) # Use dummy if no Streamlit
+@cache_data(ttl=3600)
 def query_bioportal(
     term,
     api_key,                 # API Key is required
@@ -32,7 +27,7 @@ def query_bioportal(
     base_url=DEFAULT_BIOPORTAL_API_URL,
     include_fields=DEFAULT_INCLUDE_FIELDS,
     page_size=15,            # How many results max?
-    user_agent="DefaultStreamlitClient/BioPortal"
+    user_agent="RDF4RiskToolkit/BioPortal"
     # proxies parameter removed
     ):
     """
@@ -58,7 +53,6 @@ def query_bioportal(
         return []
     if not api_key:
         logging.error("BioPortal API Key is required but was not provided.")
-        # Optionally add st.error here if Streamlit context is guaranteed
         return []
 
     search_url = f"{base_url}/search"
@@ -205,7 +199,7 @@ def query_bioportal(
 
 @cache_data(ttl=3600 * 24) # Cache for 24 hours as ontology list doesn't change often
 def get_available_ontologies(
-    user_agent="DefaultStreamlitClient/BioPortal",
+    user_agent="RDF4RiskToolkit/BioPortal",
     api_key=None,
     base_url=DEFAULT_BIOPORTAL_API_URL
 ):

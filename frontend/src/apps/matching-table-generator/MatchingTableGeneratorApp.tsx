@@ -23,7 +23,6 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { Streamlit } from 'streamlit-component-lib';
 
 type Severity = 'success' | 'info' | 'warning' | 'error';
 type AppEvent = { type: string; [key: string]: unknown };
@@ -83,7 +82,10 @@ type Snapshot = {
   statusMessage?: { severity?: Severity; text?: string } | null;
 };
 
-type StreamlitProps = { args?: { app?: string; snapshot?: Snapshot } };
+type MatchingTableGeneratorProps = {
+  args?: { app?: string; snapshot?: Snapshot };
+  onEvent?: (event: AppEvent) => void;
+};
 
 type Stage = 'load' | 'omit' | 'preprocess' | 'consolidate' | 'generate' | 'export';
 
@@ -403,15 +405,14 @@ function ExportPage({ snapshot, emit }: { snapshot: Snapshot; emit: (event: AppE
   return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' }, gap: 2 }}>
     <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">6. Matching Table Export</Typography><Typography variant="body2" color="text.secondary">Download the strict SSSOM matching table for reconciliation workflows.</Typography><SummaryRow label="Rows" value={matching.rows ?? 0} /><Button variant="contained" disabled={!matching.csv} onClick={() => { triggerDownload(matching.csv ?? '', matching.csv_filename ?? 'matching_table.csv', 'text/csv;charset=utf-8'); emit({ type: 'download_ack' }); }}>Download Matching Table (CSV)</Button></Stack></CardContent></Card>
     <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">7. Preprocessed Data Export</Typography><Typography variant="body2" color="text.secondary">Available after generation if transformations were applied. Use this as input for RDF generation.</Typography><Alert severity={downloads.preprocessed_available ? 'success' : 'info'} variant="outlined">{downloads.preprocessed_available ? 'Preprocessed data is ready for download.' : snapshot.preprocessing?.transformations_prepared ? 'Generate first to apply prepared transformations.' : 'No preprocessing was applied in the last run.'}</Alert><Button variant="contained" disabled={!downloads.preprocessed_csv} onClick={() => triggerDownload(downloads.preprocessed_csv ?? '', downloads.preprocessed_csv_filename ?? 'data_preprocessed.csv', 'text/csv;charset=utf-8')}>Download Preprocessed Data as CSV</Button><Button variant="outlined" disabled={!downloads.preprocessed_xlsx_base64} onClick={() => triggerBase64Download(downloads.preprocessed_xlsx_base64 ?? '', downloads.preprocessed_xlsx_filename ?? 'data_preprocessed.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}>Download Preprocessed Data as Excel (XLSX)</Button></Stack></CardContent></Card>
-    <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Session handoff</Typography><Typography variant="body2" color="text.secondary">Generated outputs are also stored in Streamlit session state as <code>shared_matching_table</code> and <code>shared_preprocessed_data</code> for downstream reconciliation and RDF generator pages.</Typography><Chip label={matching.has_table ? 'handoff ready' : 'handoff pending'} color={matching.has_table ? 'success' : 'warning'} /></Stack></CardContent></Card>
+    <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Backend handoff</Typography><Typography variant="body2" color="text.secondary">Generated outputs are stored in the Python backend service for downstream reconciliation and RDF generator workflows.</Typography><Chip label={matching.has_table ? 'handoff ready' : 'handoff pending'} color={matching.has_table ? 'success' : 'warning'} /></Stack></CardContent></Card>
     <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Reset workflow</Typography><Typography variant="body2" color="text.secondary">Clear uploaded data, transformations, generated tables, and handoff state.</Typography><Button variant="outlined" color="warning" onClick={() => emit({ type: 'reset_all' })}>Reset Matching Table Generator</Button></Stack></CardContent></Card>
   </Box>;
 }
 
-export function MatchingTableGeneratorApp({ args }: StreamlitProps) {
+export function MatchingTableGeneratorApp({ args, onEvent }: MatchingTableGeneratorProps) {
   const snapshot = args?.snapshot ?? {};
   const [activeStage, setActiveStage] = useState<Stage>('load');
-  useEffect(() => { Streamlit.setFrameHeight(); }, [activeStage, snapshot]);
   useEffect(() => {
     try {
       const mainContent = window.parent.document.querySelector('section.main');
@@ -420,7 +421,7 @@ export function MatchingTableGeneratorApp({ args }: StreamlitProps) {
       // ignore cross-frame scroll issues
     }
   }, [activeStage]);
-  function emit(event: AppEvent) { Streamlit.setComponentValue({ ...event, nonce: Date.now() }); window.setTimeout(() => Streamlit.setFrameHeight(), 0); }
+  function emit(event: AppEvent) { onEvent?.({ ...event, nonce: Date.now() }); }
   const goNext = () => {
     const idx = stages.findIndex((stage) => stage.id === activeStage);
     setActiveStage(stages[Math.min(stages.length - 1, idx + 1)].id);

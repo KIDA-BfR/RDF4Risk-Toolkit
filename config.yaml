@@ -1,10 +1,10 @@
 app_version: PoC
-user_agent_template: 'StreamlitReconciliationApp/0.9 (Contact: Michael.Zarske@bfr.bund.de)
+user_agent_template: 'RDF4RiskToolkit/0.9 (Contact: Michael.Zarske@bfr.bund.de)
   requests/python'
 wikidata:
   api_url: https://www.wikidata.org/w/api.php
 ncbi:
-  tool_name: MyStreamlitReconTool
+  tool_name: RDF4RiskReconTool
   eutils_base_url: https://eutils.ncbi.nlm.nih.gov/entrez/eutils/
   default_databases:
   - taxonomy

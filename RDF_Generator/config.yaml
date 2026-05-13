@@ -2,7 +2,7 @@
 
 # --- General Settings ---
 app_version: "PoC"
-user_agent_template: "StreamlitReconciliationApp/{version}"
+user_agent_template: "RDF4RiskToolkit/{version}"
 default_namespace: "https://fskx-graphdb.risk-ai-cloud.com/"
 
 
@@ -145,7 +145,7 @@ api_specs:
       param_name: "api_key"
       env_var: "NCBI_API_KEY"
     params:
-      tool: "MyStreamlitReconTool"
+      tool: "RDF4RiskReconTool"
       retmode: "json"
     default_databases: ['taxonomy', 'bioproject', 'gene']
     default_retmax: 10

@@ -17,7 +17,6 @@ ENV/
 pip-wheel-metadata/
 
 # Test, lint, type-check, and coverage outputs
-tests/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -41,8 +40,6 @@ htmlcov/
 *.local
 *.key
 *.pem
-.streamlit/secrets.toml
-**/.streamlit/secrets.toml
 codex_credentials.json
 codex_tokens.json
 *credentials*.json

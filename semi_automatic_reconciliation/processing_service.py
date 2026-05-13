@@ -4,9 +4,9 @@ import time
 import logging
 from SPARQLWrapper import SPARQLWrapper, JSON, SPARQLExceptions
 try:
-    from .reconciliation_utils import calculate_levenshtein_score, CUSTOM_SPARQL_PROVIDER_NAME # Import from utils
+    from .reconciliation_core import calculate_levenshtein_score, CUSTOM_SPARQL_PROVIDER_NAME
 except ImportError:
-    from reconciliation_utils import calculate_levenshtein_score, CUSTOM_SPARQL_PROVIDER_NAME # Direct import fallback
+    from reconciliation_core import calculate_levenshtein_score, CUSTOM_SPARQL_PROVIDER_NAME
 
 # --- Custom Provider Modules ---
 # Import modules directly. If an import fails, Python will raise ImportError,
