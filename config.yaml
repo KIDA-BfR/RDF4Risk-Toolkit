@@ -1,5 +1,5 @@
 app_version: PoC
-user_agent_template: 'RDF4RiskToolkit/0.9 (Contact: Michael.Zarske@bfr.bund.de)
+user_agent_template: 'RDF4RiskToolkit/1.0'
   requests/python'
 wikidata:
   api_url: https://www.wikidata.org/w/api.php
@@ -76,13 +76,12 @@ agent_reconciliation:
   openai_compatible_model_registry:
   - qwen3.5-4b
   provenance_defaults:
-    author_id: https://orcid.org/0000-0003-4691-0483
-    author_label: Michael Zarske
-    reviewer_id: https://orcid.org/0000-0003-4691-0483
-    reviewer_label: Michael Zarske
+    author_id:
+    author_label:
+    reviewer_id:
+    reviewer_label:
     creator_id: ''
     creator_label: ''
     mapping_tool: RDF4Risk Agent-Based Reconciliation
     mapping_tool_version: '1.0'
-    mapping_date: '2026-04-23'
     publication_date: ''
