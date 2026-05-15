@@ -134,6 +134,8 @@ AGENT_WORKING_COLUMNS = [
     "Suggested LLM Confidence",
     "Suggested Decision Source",
     "Suggested Fallback Reason",
+    "Agent Decision Status",
+    "Agent Trace Metadata",
     "Auto Accepted",
     "Auto Acceptance Score",
     "Auto Accept Reason",

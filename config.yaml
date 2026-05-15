@@ -1,6 +1,5 @@
 app_version: PoC
 user_agent_template: 'RDF4RiskToolkit/1.0'
-  requests/python'
 wikidata:
   api_url: https://www.wikidata.org/w/api.php
 ncbi:
