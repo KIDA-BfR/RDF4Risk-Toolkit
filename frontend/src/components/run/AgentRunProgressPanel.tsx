@@ -279,21 +279,15 @@ export function AgentRunProgressPanel({
                     : `Activity cycle ${activityQueuePosition} / ${totalCount} queued terms`}
                 </Typography>
               ) : (
-                <Typography variant="body2" color="text.secondary">Progress will update when processed terms are reported.</Typography>
+                <Typography variant="body2" color="text.secondary">Waiting for the first processed term.</Typography>
               )}
             </Stack>
             <LinearProgress
-              variant="determinate"
-              value={hasReportedProgress ? progress ?? 0 : 0}
+              variant={hasRealProgress ? 'determinate' : 'indeterminate'}
+              value={hasRealProgress ? progress ?? 0 : undefined}
               sx={{ height: 10, borderRadius: 999 }}
             />
           </Box>
-
-          {!hasReportedProgress && (
-            <Alert severity="info" variant="outlined" sx={{ width: '100%', borderRadius: 3, bgcolor: 'rgba(255,255,255,.72)' }}>
-              Live completed-term counts are not reported while the synchronous backend run is blocking. The progress bar becomes determinate only when real processed counts arrive.
-            </Alert>
-          )}
 
           {runStatus.last_activity && (
             <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'stretch' }}>

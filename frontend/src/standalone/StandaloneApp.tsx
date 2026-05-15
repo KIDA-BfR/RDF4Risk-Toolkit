@@ -149,21 +149,21 @@ export function StandaloneApp() {
     window.location.hash = service === 'home' ? '' : service;
   }, []);
 
-  const refresh = useCallback(async (service = activeService) => {
+  const refresh = useCallback(async (service = activeService, options?: { quiet?: boolean }) => {
     activeServiceRef.current = service;
     if (service === 'home') {
       setPayload(null);
       setError(null);
       return;
     }
-    setLoading(true);
+    if (!options?.quiet) setLoading(true);
     setError(null);
     try {
       setPayload(await fetchSnapshot(service));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (!options?.quiet) setLoading(false);
     }
   }, [activeService]);
 
@@ -183,6 +183,15 @@ export function StandaloneApp() {
 
   useEffect(() => { handleEventRef.current = emitEvent; }, [emitEvent]);
   useEffect(() => { activeServiceRef.current = activeService; refresh(activeService); }, [activeService, refresh]);
+  const runStatus = (payload?.args as any)?.run_status;
+  const shouldPollActiveRun = activeService !== 'home' && Boolean(runStatus?.running);
+  useEffect(() => {
+    if (!shouldPollActiveRun) return undefined;
+    const timer = window.setInterval(() => {
+      refresh(activeServiceRef.current, { quiet: true });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [refresh, shouldPollActiveRun]);
   useEffect(() => {
     const onHashChange = () => setActiveService(serviceFromHash());
     window.addEventListener('hashchange', onHashChange);

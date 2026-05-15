@@ -36,6 +36,7 @@ def _build_cascade_trace_snapshot(state) -> pd.DataFrame:
     for event in list(getattr(state, "term_events", []) or []):
         if not isinstance(event, dict):
             continue
+        trace_metadata = event.get("trace_metadata", {}) if isinstance(event.get("trace_metadata"), dict) else {}
         rows.append(
             {
                 "Source": event.get("file", ""),
@@ -49,11 +50,18 @@ def _build_cascade_trace_snapshot(state) -> pd.DataFrame:
                 "Status": event.get("status", ""),
                 "Suggested URI": event.get("suggested_uri", ""),
                 "Elapsed (ms)": event.get("elapsed_ms", None),
-                "Planner Calls Used": (event.get("trace_metadata", {}) or {}).get("planner_calls_used", 0) if isinstance(event.get("trace_metadata"), dict) else 0,
-                "Tool Actions Used": (event.get("trace_metadata", {}) or {}).get("tool_actions_used", 0) if isinstance(event.get("trace_metadata"), dict) else 0,
-                "LLM Calls Used": (event.get("trace_metadata", {}) or {}).get("total_llm_calls_used", 0) if isinstance(event.get("trace_metadata"), dict) else 0,
-                "Best Confidence": (event.get("trace_metadata", {}) or {}).get("best_confidence", 0) if isinstance(event.get("trace_metadata"), dict) else 0,
-                "Agentic Stop Reason": (event.get("trace_metadata", {}) or {}).get("agentic_stop_reason", "") if isinstance(event.get("trace_metadata"), dict) else "",
+                "Provider Escalation": bool(trace_metadata.get("provider_escalation_used", False)),
+                "Escalation From": trace_metadata.get("provider_escalation_from", ""),
+                "Escalation To": trace_metadata.get("provider_escalation_to", ""),
+                "Escalation Reason": trace_metadata.get("provider_escalation_reason", ""),
+                "Wikidata Second Pass Status": trace_metadata.get("wikidata_second_pass_status", ""),
+                "Wikidata Candidate Found": bool(trace_metadata.get("wikidata_second_pass_has_candidate", False)),
+                "Review Mode": trace_metadata.get("candidate_review_mode", ""),
+                "Planner Calls Used": trace_metadata.get("planner_calls_used", 0),
+                "Tool Actions Used": trace_metadata.get("tool_actions_used", 0),
+                "LLM Calls Used": trace_metadata.get("total_llm_calls_used", 0),
+                "Best Confidence": trace_metadata.get("best_confidence", 0),
+                "Agentic Stop Reason": trace_metadata.get("agentic_stop_reason", ""),
             }
         )
     return pd.DataFrame(rows)

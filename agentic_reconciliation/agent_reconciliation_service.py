@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
+import threading
 import time
 from datetime import date, datetime
 from typing import Dict, List, Optional
@@ -62,6 +64,7 @@ AGENT_WORKFLOW_CONFIG_STATE_KEY = "agent_workflow_config_json"
 AGENT_ACTIVE_STEP_KEY = "agent_reconciliation_active_step"
 AGENT_WORKFLOW_COMPONENT_ACTION_NONCE_KEY = "agent_workflow_component_action_nonce"
 AGENT_RUN_STATUS_STATE_KEY = "agent_reconciliation_run_status"
+AGENT_RUN_THREAD_STATE_KEY = "agent_reconciliation_run_thread"
 AGENT_SSSOM_EXPORT_PAYLOAD_KEY = "agent_reconciliation_sssom_export_payload"
 API_KEY_PLACEHOLDERS = {"", "yourapikey", "your_api_key", "replace-with-api-key", "replace_with_api_key", "replace-me", "changeme", "none", "null", "<api_key>"}
 OPENAI_CODEX_PROVIDER = "openai_codex"
@@ -710,6 +713,12 @@ def _ensure_models_for_provider(provider: str, api_key_env: Optional[str] = None
 def _build_run_config_from_state() -> AgentRunConfig:
     agent_cfg = (CONFIG or {}).get("agent_reconciliation", {})
     agentic_expert_mode = bool(runtime_state.get("agent_agentic_expert_mode", False))
+    candidate_review_mode = str(
+        runtime_state.get("agent_candidate_review_mode", agent_cfg.get("candidate_review_mode", "conservative"))
+        or "conservative"
+    ).strip().lower()
+    if candidate_review_mode not in {"conservative", "exploratory"}:
+        candidate_review_mode = "conservative"
 
     model_provider = runtime_state.get("agent_model_provider", "openai")
     definition_model_provider = model_provider
@@ -890,6 +899,7 @@ def _build_run_config_from_state() -> AgentRunConfig:
         if bool(runtime_state.get("agent_use_langsmith_monitoring", False))
         else None,
         allow_heuristic_fallback=allow_heuristic_fallback,
+        candidate_review_mode=candidate_review_mode,
     )
 
 def _initialize_agent_reconciliation_state():
@@ -991,6 +1001,9 @@ def _build_workflow_config_from_state(defaults: Optional[Dict[str, object]] = No
         "langsmith": bool(runtime_state.get("agent_use_langsmith_monitoring", False)),
         "langsmith_project": runtime_state.get("agent_langsmith_project", agent_cfg.get("langsmith_project", "")),
         "expert_mode": bool(runtime_state.get("agent_agentic_expert_mode", False)),
+        "candidate_review_mode": str(runtime_state.get("agent_candidate_review_mode", agent_cfg.get("candidate_review_mode", "conservative")) or "conservative").strip().lower()
+        if str(runtime_state.get("agent_candidate_review_mode", agent_cfg.get("candidate_review_mode", "conservative")) or "conservative").strip().lower() in {"conservative", "exploratory"}
+        else "conservative",
         "allow_heuristic_fallback": bool(runtime_state.get("agent_allow_heuristic_fallback", agent_cfg.get("allow_heuristic_fallback", True))),
         "use_different_models": bool(runtime_state.get("agent_use_different_models", False)),
         "definition_model": runtime_state.get("agent_definition_model_name", runtime_state.get("agent_model_name", defaults.get("default_model", "gpt-5.1"))),
@@ -1073,6 +1086,9 @@ def _apply_workflow_config_to_runtime_state(config: Optional[Dict[str, object]])
     _set("agent_use_langsmith_monitoring", bool(config.get("langsmith", False)))
     _set("agent_langsmith_project", str(config.get("langsmith_project", "") or ""))
     _set("agent_agentic_expert_mode", bool(config.get("expert_mode", False)))
+    candidate_review_mode = str(config.get("candidate_review_mode", "") or "").strip().lower()
+    if candidate_review_mode in {"conservative", "exploratory"}:
+        _set("agent_candidate_review_mode", candidate_review_mode)
     _set("agent_allow_heuristic_fallback", bool(config.get("allow_heuristic_fallback", True)))
     _set("agent_use_different_models", bool(config.get("use_different_models", False)))
     definition_model = str(config.get("definition_model", "") or "").strip()
@@ -1411,12 +1427,15 @@ def _normalize_review_status_for_mui(agent_df: pd.DataFrame, row_index) -> str:
         return raw_status
     if raw_status in {"no_match", "timeout"}:
         return "no_match"
+    decision_status = _get_review_cell_value(agent_df, row_index, "Agent Decision Status").strip().lower()
+    if decision_status in {"matched", "candidate_suggested", "no_match"}:
+        return decision_status
     return "pending"
 
 def _build_review_snapshot(agent_df: Optional[pd.DataFrame]) -> Dict[str, object]:
     selected_source = runtime_state.get(AGENT_SELECTED_SOURCE_KEY) or "agent_reconciliation"
     items: List[Dict[str, object]] = []
-    counts = {"pending": 0, "accepted": 0, "rejected": 0, "no_match": 0}
+    counts = {"pending": 0, "matched": 0, "candidate_suggested": 0, "accepted": 0, "rejected": 0, "no_match": 0}
     if isinstance(agent_df, pd.DataFrame):
         candidate_indices = set(_get_reviewable_agent_result_indices(agent_df))
         if "Review Status" in agent_df.columns:
@@ -1448,6 +1467,15 @@ def _build_review_snapshot(agent_df: Optional[pd.DataFrame]) -> Dict[str, object
                     "A low-confidence candidate was inspected but rejected by the workflow. "
                     "It is kept only for audit/details and cannot be accepted as a mapping."
                 )
+            trace_metadata = {}
+            trace_raw = _get_review_cell_value(agent_df, idx, "Agent Trace Metadata")
+            if trace_raw:
+                try:
+                    parsed_trace = json.loads(trace_raw)
+                    if isinstance(parsed_trace, dict):
+                        trace_metadata = parsed_trace
+                except Exception:
+                    trace_metadata = {}
             items.append(
                 {
                     "mapping_id": f"{selected_source}::{idx}",
@@ -1469,6 +1497,8 @@ def _build_review_snapshot(agent_df: Optional[pd.DataFrame]) -> Dict[str, object
                     "confidence": confidence_value,
                     "decision_source": _get_review_cell_value(agent_df, idx, "Suggested Decision Source"),
                     "fallback_reason": _get_review_cell_value(agent_df, idx, "Suggested Fallback Reason"),
+                    "trace_metadata": trace_metadata,
+                    "review_mode": trace_metadata.get("candidate_review_mode", ""),
                     "explanation": _get_review_cell_value(agent_df, idx, "Agent Explanation"),
                     "auto_accept_reason": _get_review_cell_value(agent_df, idx, "Auto Accept Reason"),
                 }
@@ -1705,6 +1735,16 @@ def _execute_agent_reconciliation_run(input_tables, missing_provider_keys, prima
     except Exception as exc:
         if _is_openai_compatible_provider(primary_provider) and is_openai_compatible_auth_required_error(exc):
             env_name = effective_primary_env or get_default_api_key_env(OPENAI_COMPATIBLE_PROVIDER)
+            runtime_state[AGENT_RUN_STATUS_STATE_KEY] = {
+                **runtime_state.get(AGENT_RUN_STATUS_STATE_KEY, {}),
+                "running": False,
+                "finished": False,
+                "error": f"OpenAI-compatible endpoint rejected unauthenticated requests. Set {env_name} and run again.",
+                "stage": "preparing_review",
+                "message": f"Agent-based reconciliation failed: set {env_name} and run again.",
+                "elapsed_seconds": time.perf_counter() - run_started_perf if "run_started_perf" in locals() else None,
+                "last_activity": f"Run failed: missing or rejected {env_name}.",
+            }
             runtime_state["agent_mui_status_message"] = {"severity": "error", "text": f"OpenAI-compatible endpoint rejected unauthenticated requests. Set {env_name} and run again."}
             return
         monitoring_state = runtime_state.get(AGENT_MONITORING_STATE_KEY, {})
@@ -1727,6 +1767,68 @@ def _execute_agent_reconciliation_run(input_tables, missing_provider_keys, prima
             "last_activity": f"Run failed: {exc}",
         }
         runtime_state["agent_mui_status_message"] = {"severity": "error", "text": f"Agent-based reconciliation failed: {exc}"}
+
+def _start_agent_reconciliation_run_async(input_tables, missing_provider_keys, primary_provider, effective_primary_env) -> bool:
+    """Launch a reconciliation run without blocking the HTTP event response."""
+    existing_thread = runtime_state.get(AGENT_RUN_THREAD_STATE_KEY)
+    live_status = runtime_state.get(AGENT_RUN_STATUS_STATE_KEY, {})
+    if bool(isinstance(live_status, dict) and live_status.get("running")) or (
+        isinstance(existing_thread, threading.Thread) and existing_thread.is_alive()
+    ):
+        runtime_state["agent_mui_status_message"] = {"severity": "info", "text": "Agent-based reconciliation is already running."}
+        return False
+
+    started_iso = datetime.now().isoformat()
+    runtime_state[AGENT_RUN_STATUS_STATE_KEY] = {
+        "running": True,
+        "finished": False,
+        "error": None,
+        "stage": "validating_input",
+        "message": "Starting agent-based reconciliation",
+        "current_term": None,
+        "processed_count": 0,
+        "total_count": None,
+        "started_at": started_iso,
+        "elapsed_seconds": 0,
+        "estimated_remaining_seconds": None,
+        "last_activity": "Run queued; backend worker is starting.",
+    }
+    previous_monitoring = runtime_state.get(AGENT_MONITORING_STATE_KEY, {})
+    previous_langsmith = (
+        previous_monitoring.get("langsmith", {})
+        if isinstance(previous_monitoring, dict) and isinstance(previous_monitoring.get("langsmith"), dict)
+        else {}
+    )
+    runtime_state[AGENT_MONITORING_STATE_KEY] = {
+        "enabled": bool(runtime_state.get("agent_use_langsmith_monitoring", False)),
+        "run_id": None,
+        "started_at": started_iso,
+        "finished_at": None,
+        "duration_sec": None,
+        "total_terms": 0,
+        "processed_terms": 0,
+        "failed_terms": 0,
+        "stop_reason": None,
+        "stop_event": {},
+        "events_df": pd.DataFrame(),
+        "llm_interactions_df": pd.DataFrame(),
+        "cascade_trace_df": pd.DataFrame(),
+        "raw_term_events": [],
+        "total_cost_usd": 0.0,
+        "langsmith": {**previous_langsmith, "run_url": None},
+    }
+    runtime_state[AGENT_RUN_MESSAGES_KEY] = []
+    runtime_state["agent_mui_status_message"] = {"severity": "info", "text": "Agent-based reconciliation run started."}
+
+    thread = threading.Thread(
+        target=_execute_agent_reconciliation_run,
+        args=(input_tables, missing_provider_keys, primary_provider, effective_primary_env),
+        name="agent-reconciliation-run",
+        daemon=True,
+    )
+    runtime_state[AGENT_RUN_THREAD_STATE_KEY] = thread
+    thread.start()
+    return True
 
 def _handle_agent_mui_event(event: object, readiness_state: Dict[str, object], runtime_context: Dict[str, object], provenance_defaults_cfg: Dict[str, str]) -> bool:
     if not isinstance(event, dict):
@@ -1798,7 +1900,7 @@ def _handle_agent_mui_event(event: object, readiness_state: Dict[str, object], r
     elif event_type in {"codex_auth_refresh", "codex_auth_refresh_pending"}:
         should_rerun = True
     elif event_type == "start_run":
-        _execute_agent_reconciliation_run(
+        _start_agent_reconciliation_run_async(
             runtime_state.get(AGENT_INPUT_TABLES_KEY, []),
             runtime_context.get("missing_provider_keys", []),
             runtime_context.get("primary_provider", "openai"),

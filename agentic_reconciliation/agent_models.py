@@ -92,13 +92,14 @@ class AgentRunConfig:
     planner_model_api_key_env: Optional[str] = None
     enforce_verified_match: bool = False
     verified_match_require_exact: bool = True
-    verified_match_min_confidence: float = 0.80
+    verified_match_min_confidence: float = 0.65
     verified_match_min_confidence_exact: Optional[float] = None
     verified_match_min_confidence_close: Optional[float] = None
     verified_match_min_confidence_related: Optional[float] = None
     verified_match_require_llm_decision: bool = False
     verified_match_require_no_fallback: bool = False
     allow_unverified_candidate_suggestions: bool = True
+    candidate_review_mode: str = "conservative"
     allow_heuristic_fallback: bool = True
     reasoning_effort: str = "none"
     stop_on_llm_error: bool = True
@@ -111,6 +112,10 @@ class AgentRunConfig:
             and (not str(self.model_api_key_env).strip() or self.model_api_key_env == "OPENAI_API_KEY")
         ):
             self.model_api_key_env = str(self.openai_api_key_env).strip()
+        review_mode = str(self.candidate_review_mode or "conservative").strip().lower()
+        if review_mode not in {"conservative", "exploratory"}:
+            review_mode = "conservative"
+        self.candidate_review_mode = review_mode
 
 
 @dataclass
@@ -150,6 +155,7 @@ class CandidateScore:
     from_fallback: bool
     explanation: str = ""
     skos_decision: Optional[SKOSDecision] = None
+    trace_metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
