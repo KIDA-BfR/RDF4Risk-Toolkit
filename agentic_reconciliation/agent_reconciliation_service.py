@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -18,7 +19,7 @@ import yaml
 try:
     from .agent_runtime_state import runtime_state
     from .agent_codex_subscription_service import clear_codex_credentials, get_codex_auth_status, is_codex_authenticated, start_codex_authorization_flow
-    from .agent_definition_service import build_definition_lookup, prepare_used_definitions_df
+    from .agent_definition_service import build_definition_lookup, extract_reference_publication_text, normalize_uploaded_definitions, prepare_used_definitions_df
     from .agent_llm_service import generate_text_completion, fetch_available_model_catalog, get_default_api_key_env, get_default_model_options, get_provider_label, is_openai_compatible_auth_required_error, get_supported_llm_providers
     from .agent_pricing_service import fetch_all_pricing
     from .agent_file_service import make_input_table
@@ -34,7 +35,7 @@ try:
 except ImportError:  # pragma: no cover
     from agent_runtime_state import runtime_state
     from agent_codex_subscription_service import clear_codex_credentials, get_codex_auth_status, is_codex_authenticated, start_codex_authorization_flow
-    from agent_definition_service import build_definition_lookup, prepare_used_definitions_df
+    from agent_definition_service import build_definition_lookup, extract_reference_publication_text, normalize_uploaded_definitions, prepare_used_definitions_df
     from agent_llm_service import generate_text_completion, fetch_available_model_catalog, get_default_api_key_env, get_default_model_options, get_provider_label, is_openai_compatible_auth_required_error, get_supported_llm_providers
     from agent_pricing_service import fetch_all_pricing
     from agent_file_service import make_input_table
@@ -78,6 +79,46 @@ LEGACY_AGENT_MODEL_CONFIG_KEYS = ("model_provider", "model_name", "definition_mo
 REASONING_EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh"]
 _STAGE_TO_COMPONENT = {"Setup": "setup", "Run": "run", "Review": "review", "Export": "export"}
 _COMPONENT_TO_STAGE = {value: key for key, value in _STAGE_TO_COMPONENT.items()}
+
+
+def _decode_uploaded_file_bytes(event: Dict[str, object]) -> bytes:
+    content_base64 = event.get("content_base64")
+    if isinstance(content_base64, str) and content_base64.strip():
+        try:
+            return base64.b64decode(content_base64, validate=True)
+        except Exception as exc:
+            raise ValueError("Uploaded file payload is not valid base64.") from exc
+
+    content = event.get("content")
+    if isinstance(content, str):
+        return content.encode("utf-8")
+
+    raise ValueError("Uploaded file payload is missing.")
+
+
+def _read_uploaded_definitions_sheet(filename: str, file_bytes: bytes) -> pd.DataFrame:
+    lower = filename.lower()
+    if lower.endswith(".csv"):
+        dataframe = pd.read_csv(io.BytesIO(file_bytes)).fillna("")
+    elif lower.endswith((".xlsx", ".xls")):
+        dataframe = pd.read_excel(io.BytesIO(file_bytes)).fillna("")
+    else:
+        raise ValueError("Please upload a CSV or Excel definitions sheet.")
+    return normalize_uploaded_definitions(dataframe)
+
+
+def _extract_reference_publication_text_from_bytes(filename: str, file_bytes: bytes) -> str:
+    uploaded = io.BytesIO(file_bytes)
+    uploaded.name = filename
+    return extract_reference_publication_text(uploaded)
+
+
+def _get_uploaded_definitions_count() -> int:
+    definitions_by_source = runtime_state.get(AGENT_DEFINITIONS_BY_SOURCE_KEY, {})
+    if not isinstance(definitions_by_source, dict):
+        return 0
+    uploaded_definitions = definitions_by_source.get("__uploaded_sheet__")
+    return len(uploaded_definitions) if isinstance(uploaded_definitions, pd.DataFrame) else 0
 
 
 def _get_reconciliation_config_path() -> str:
@@ -918,6 +959,8 @@ def _initialize_agent_reconciliation_state():
         AGENT_UPLOADED_SOURCE_SIGNATURE_KEY: None,
         AGENT_ACTIVE_STEP_KEY: "Setup",
         "agent_reference_publication_text": "",
+        "agent_reference_publication_filename": "",
+        "agent_uploaded_definitions_filename": "",
         "agent_workflow_select": "wikidata_deep_agent",
     }
     for key, default_value in defaults.items():
@@ -1015,6 +1058,11 @@ def _build_workflow_config_from_state(defaults: Optional[Dict[str, object]] = No
         "definition_preparation": bool(runtime_state.get("agent_enable_definition_preparation", False)),
         "definition_strategy": runtime_state.get("agent_definition_strategy", "generate_single_shot"),
         "definition_context_text": runtime_state.get("agent_definition_context_text", ""),
+        "definition_uploaded_filename": runtime_state.get("agent_uploaded_definitions_filename", ""),
+        "definition_uploaded_count": _get_uploaded_definitions_count(),
+        "definition_reference_filename": runtime_state.get("agent_reference_publication_filename", ""),
+        "definition_reference_text": runtime_state.get("agent_reference_publication_text", ""),
+        "definition_reference_char_count": len(str(runtime_state.get("agent_reference_publication_text", "") or "")),
         "advanced": advanced,
         "provenance": {
             "enabled": bool(runtime_state.get("agent_enable_provenance_metadata", False)),
@@ -1871,6 +1919,40 @@ def _handle_agent_mui_event(event: object, readiness_state: Dict[str, object], r
                 runtime_state["agent_mui_status_message"] = {"severity": "success", "text": f"CSV matching table '{filename}' loaded into the agent workflow."}
             except Exception as exc:
                 runtime_state["agent_mui_status_message"] = {"severity": "error", "text": f"Failed to parse uploaded CSV file: {exc}"}
+        should_rerun = True
+    elif event_type == "upload_definitions_sheet":
+        filename = str(event.get("filename", "") or "definitions.csv").strip() or "definitions.csv"
+        try:
+            normalized_definitions = _read_uploaded_definitions_sheet(filename, _decode_uploaded_file_bytes(event))
+            definitions_by_source = runtime_state.get(AGENT_DEFINITIONS_BY_SOURCE_KEY)
+            if not isinstance(definitions_by_source, dict):
+                definitions_by_source = {}
+            definitions_by_source["__uploaded_sheet__"] = normalized_definitions
+            runtime_state[AGENT_DEFINITIONS_BY_SOURCE_KEY] = definitions_by_source
+            runtime_state["agent_uploaded_definitions_filename"] = filename
+            runtime_state["agent_enable_definition_preparation"] = True
+            runtime_state["agent_definition_strategy"] = "uploaded_sheet"
+            runtime_state["agent_mui_status_message"] = {
+                "severity": "success",
+                "text": f"Definitions sheet '{filename}' loaded with {len(normalized_definitions)} definition(s).",
+            }
+        except Exception as exc:
+            runtime_state["agent_mui_status_message"] = {"severity": "error", "text": f"Failed to load definitions sheet: {exc}"}
+        should_rerun = True
+    elif event_type == "upload_reference_publication":
+        filename = str(event.get("filename", "") or "reference_publication").strip() or "reference_publication"
+        try:
+            reference_text = _extract_reference_publication_text_from_bytes(filename, _decode_uploaded_file_bytes(event))
+            runtime_state["agent_reference_publication_text"] = reference_text
+            runtime_state["agent_reference_publication_filename"] = filename
+            runtime_state["agent_enable_definition_preparation"] = True
+            runtime_state["agent_definition_strategy"] = "reference_publication"
+            runtime_state["agent_mui_status_message"] = {
+                "severity": "success",
+                "text": f"Reference publication '{filename}' loaded with {len(reference_text)} extracted character(s).",
+            }
+        except Exception as exc:
+            runtime_state["agent_mui_status_message"] = {"severity": "error", "text": f"Failed to load reference publication: {exc}"}
         should_rerun = True
     elif event_type == "load_shared_table":
         shared_df = runtime_state.get("shared_matching_table")

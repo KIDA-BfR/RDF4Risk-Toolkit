@@ -135,6 +135,11 @@ type WorkflowConfig = {
   definition_preparation?: boolean;
   definition_strategy?: string;
   definition_context_text?: string;
+  definition_uploaded_filename?: string;
+  definition_uploaded_count?: number;
+  definition_reference_filename?: string;
+  definition_reference_text?: string;
+  definition_reference_char_count?: number;
   agentic_trigger_policy?: string;
   planner_provider?: string;
   planner_model?: string;
@@ -352,6 +357,12 @@ function unique(values: string[]): string[] {
 function splitCsv(value: string): string[] {
   return unique(value.split(',').map((part) => part.trim().toUpperCase()));
 }
+async function fileToBase64(file: File) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return window.btoa(binary);
+}
 function normalizeStage(value: unknown): Stage {
   const lower = String(value || '').trim().toLowerCase();
   return ['setup', 'run', 'review', 'export'].includes(lower) ? (lower as Stage) : 'setup';
@@ -388,6 +399,11 @@ function normalizeConfig(raw: Partial<WorkflowConfig> | undefined, providers: st
     definition_preparation: raw?.definition_preparation ?? false,
     definition_strategy: raw?.definition_strategy || 'generate_single_shot',
     definition_context_text: raw?.definition_context_text || '',
+    definition_uploaded_filename: raw?.definition_uploaded_filename || '',
+    definition_uploaded_count: raw?.definition_uploaded_count ?? 0,
+    definition_reference_filename: raw?.definition_reference_filename || '',
+    definition_reference_text: raw?.definition_reference_text || '',
+    definition_reference_char_count: raw?.definition_reference_char_count ?? 0,
     agentic_trigger_policy: raw?.agentic_trigger_policy || 'no_exact_or_low_confidence',
     planner_provider: raw?.planner_provider || raw?.provider || providers[0] || 'openai',
     planner_model: raw?.planner_model || raw?.model || models[0] || 'gpt-5.1',
@@ -589,8 +605,88 @@ function WorkflowConfigPanelInner({ config, providers, providerLabels, modelOpti
   </Stack></CardContent></Card>;
 }
 
-function DefinitionPreparationPanel({ config, update }: { config: WorkflowConfig; update: (patch: Partial<WorkflowConfig>) => void }) {
-  return <Card variant="outlined"><CardContent><Stack spacing={1.5}><Stack direction="row" justifyContent="space-between"><Stack><Typography variant="subtitle1">Definition Preparation</Typography><Typography variant="body2" color="text.secondary">Optional contextual definitions for ambiguous terms.</Typography></Stack><Switch checked={Boolean(config.definition_preparation)} onChange={(e) => update({ definition_preparation: e.target.checked })} /></Stack><Collapse in={Boolean(config.definition_preparation)}><Stack spacing={1.2}><FormControl fullWidth size="small"><InputLabel>Definition strategy</InputLabel><Select label="Definition strategy" value={config.definition_strategy} onChange={(e) => update({ definition_strategy: String(e.target.value) })}><MenuItem value="uploaded_sheet">Upload definitions sheet (backend bridge)</MenuItem><MenuItem value="generate_single_shot">Generate from context</MenuItem><MenuItem value="reference_publication">Reference publication (backend bridge)</MenuItem></Select></FormControl><TextField label="Context text for definition generation" multiline minRows={4} value={config.definition_context_text} onChange={(e) => update({ definition_context_text: e.target.value })} /></Stack></Collapse></Stack></CardContent></Card>;
+function DefinitionPreparationPanel({ config, update, emit }: { config: WorkflowConfig; update: (patch: Partial<WorkflowConfig>) => void; emit: (event: AppEvent) => void }) {
+  const [uploadError, setUploadError] = useState('');
+  const strategy = config.definition_strategy || 'generate_single_shot';
+
+  async function handleDefinitionsUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    setUploadError('');
+    if (!file) return;
+    if (!/\.(csv|xlsx|xls)$/i.test(file.name)) {
+      setUploadError('Choose a CSV or Excel sheet with Term and Definition columns.');
+      return;
+    }
+    try {
+      emit({ type: 'upload_definitions_sheet', filename: file.name, content_base64: await fileToBase64(file) });
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : 'Unable to read the selected definitions sheet.');
+    }
+  }
+
+  async function handleReferenceUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    setUploadError('');
+    if (!file) return;
+    if (!/\.(pdf|doc|docx)$/i.test(file.name)) {
+      setUploadError('Choose a PDF, DOC, or DOCX reference publication.');
+      return;
+    }
+    try {
+      emit({ type: 'upload_reference_publication', filename: file.name, content_base64: await fileToBase64(file) });
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : 'Unable to read the selected reference publication.');
+    }
+  }
+
+  return <Card variant="outlined"><CardContent><Stack spacing={1.5}>
+    <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={2}>
+      <Stack><Typography variant="subtitle1">Definition Preparation</Typography><Typography variant="body2" color="text.secondary">Optional contextual definitions for ambiguous terms.</Typography></Stack>
+      <Switch checked={Boolean(config.definition_preparation)} onChange={(e) => update({ definition_preparation: e.target.checked })} />
+    </Stack>
+    <Collapse in={Boolean(config.definition_preparation)}>
+      <Stack spacing={1.3} sx={{ pt: .5 }}>
+        <FormControl fullWidth size="small"><InputLabel>Definition strategy</InputLabel><Select label="Definition strategy" value={strategy} onChange={(e) => { setUploadError(''); update({ definition_strategy: String(e.target.value) }); }}><MenuItem value="uploaded_sheet">Upload definitions sheet</MenuItem><MenuItem value="generate_single_shot">Generate from context</MenuItem><MenuItem value="reference_publication">Reference publication</MenuItem></Select></FormControl>
+        {strategy === 'uploaded_sheet' && (
+          <Paper variant="outlined" sx={{ p: 2, borderStyle: 'dashed', borderRadius: 3, bgcolor: '#f8fafc' }}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
+              <Stack spacing={.4}>
+                <Typography variant="subtitle2">Definitions sheet</Typography>
+                <Typography variant="body2" color="text.secondary">CSV or Excel with Term and Definition columns.</Typography>
+                {config.definition_uploaded_filename && <Chip size="small" color="success" sx={{ alignSelf: 'flex-start' }} label={`${config.definition_uploaded_filename} - ${config.definition_uploaded_count ?? 0} definitions`} />}
+              </Stack>
+              <Button component="label" variant="contained">
+                Choose sheet
+                <input hidden type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={handleDefinitionsUpload} />
+              </Button>
+            </Stack>
+          </Paper>
+        )}
+        {strategy === 'reference_publication' && (
+          <Stack spacing={1}>
+            <Paper variant="outlined" sx={{ p: 2, borderStyle: 'dashed', borderRadius: 3, bgcolor: '#f8fafc' }}>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
+                <Stack spacing={.4}>
+                  <Typography variant="subtitle2">Reference publication</Typography>
+                  <Typography variant="body2" color="text.secondary">PDF, DOC, or DOCX. Extracted text becomes the definition context.</Typography>
+                  {config.definition_reference_filename && <Chip size="small" color="success" sx={{ alignSelf: 'flex-start' }} label={`${config.definition_reference_filename} - ${config.definition_reference_char_count ?? 0} characters`} />}
+                </Stack>
+                <Button component="label" variant="contained">
+                  Choose publication
+                  <input hidden type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={handleReferenceUpload} />
+                </Button>
+              </Stack>
+            </Paper>
+            <TextField label="Extracted reference text" multiline minRows={4} value={config.definition_reference_text || ''} InputProps={{ readOnly: true }} placeholder="Upload a reference publication to preview extracted text." />
+          </Stack>
+        )}
+        {strategy === 'generate_single_shot' && <TextField label="Context text for definition generation" multiline minRows={4} value={config.definition_context_text} onChange={(e) => update({ definition_context_text: e.target.value })} />}
+        {uploadError && <Alert severity="warning" variant="outlined">{uploadError}</Alert>}
+      </Stack>
+    </Collapse>
+  </Stack></CardContent></Card>;
 }
 
 function ProvenancePanel({ config, update, emit }: { config: WorkflowConfig; update: (patch: Partial<WorkflowConfig>) => void; emit: (event: AppEvent) => void }) {
@@ -600,7 +696,7 @@ function ProvenancePanel({ config, update, emit }: { config: WorkflowConfig; upd
 }
 
 function SetupPage(props: { config: WorkflowConfig; dataStatus: DataStatus; readiness: ReadinessState; providers: string[]; providerLabels: Record<string, string>; modelOptions: string[]; modelLabels: Record<string, string>; modelDetails?: string | null; reasoningOptions: string[]; ontologyOptions: string[]; providerKind: string; codexAuthStatus?: { authenticated: boolean; pending_auth_url: string | null; [key: string]: any }; update: (patch: Partial<WorkflowConfig>) => void; emit: (event: AppEvent) => void }) {
-  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: 'minmax(0, 1fr) 360px' }, gap: 2 }}><Stack spacing={2}><FileUploadPanel dataStatus={props.dataStatus} emit={props.emit} /><DefinitionPreparationPanel config={props.config} update={props.update} /><WorkflowConfigPanelInner {...props} /><ProvenancePanel config={props.config} update={props.update} emit={props.emit} /></Stack><Stack spacing={2}><RunPrerequisitesPanel readiness={props.readiness} /><RunSummaryPanel readiness={props.readiness} config={props.config} /><Button variant="contained" size="large" disabled={!props.readiness.ready} onClick={() => props.emit({ type: 'navigate', stage: 'run' })}>Continue to Run</Button><Button variant="outlined" onClick={() => props.emit({ type: 'save_configuration' })}>Save Configuration</Button></Stack></Box>;
+  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: 'minmax(0, 1fr) 360px' }, gap: 2 }}><Stack spacing={2}><FileUploadPanel dataStatus={props.dataStatus} emit={props.emit} /><DefinitionPreparationPanel config={props.config} update={props.update} emit={props.emit} /><WorkflowConfigPanelInner {...props} /><ProvenancePanel config={props.config} update={props.update} emit={props.emit} /></Stack><Stack spacing={2}><RunPrerequisitesPanel readiness={props.readiness} /><RunSummaryPanel readiness={props.readiness} config={props.config} /><Button variant="contained" size="large" disabled={!props.readiness.ready} onClick={() => props.emit({ type: 'navigate', stage: 'run' })}>Continue to Run</Button><Button variant="outlined" onClick={() => props.emit({ type: 'save_configuration' })}>Save Configuration</Button></Stack></Box>;
 }
 function RunPrerequisitesPanel({ readiness }: { readiness: ReadinessState }) { return <Card variant="outlined"><CardContent><Stack spacing={1.2}><Stack direction="row" justifyContent="space-between"><Typography variant="subtitle1">Run Prerequisites</Typography><Chip size="small" color={readiness.ready ? 'success' : 'warning'} label={readiness.ready ? 'All Good' : 'Action Needed'} /></Stack>{(readiness.checks ?? []).map((c) => <Stack key={c.key} direction="row" spacing={1}><Box sx={{ color: c.ok ? 'success.main' : 'warning.main' }}>{c.ok ? '●' : '▲'}</Box><Stack><Typography variant="body2" sx={{ fontWeight: 750 }}>{c.label}</Typography><Typography variant="caption" color="text.secondary">{c.detail}</Typography></Stack></Stack>)}</Stack></CardContent></Card>; }
 function RunSummaryPanel({ readiness, config }: { readiness: ReadinessState; config: WorkflowConfig }) { const summary = readiness.summary ?? {}; return <Card variant="outlined"><CardContent><Stack spacing={1.1}><Typography variant="subtitle1">Run Summary</Typography><SummaryRow label="Workflow" value={summary.Workflow || config.workflow} /><SummaryRow label="Model" value={summary.Model || config.model} /><SummaryRow label="SKOS Matching" value={summary['SKOS Matching'] || (config.skos_matching ? 'Enabled' : 'Disabled')} /><SummaryRow label="Auto-accept" value={summary['Auto-accept'] || (config.auto_accept ? 'Enabled' : 'Disabled')} /><SummaryRow label="Batch Size" value={summary['Batch Size'] || String(config.advanced.batch_size)} /><SummaryRow label="Max Workers" value={summary['Max Workers'] || String(config.advanced.max_workers)} /><SummaryRow label="Est. Runtime" value={summary['Est. Runtime'] || 'n/a'} /><SummaryRow label="Est. Cost" value={summary['Est. Cost'] || 'Available after run telemetry'} /></Stack></CardContent></Card>; }
