@@ -25,15 +25,30 @@ try:
     from .ols_provider import get_available_ontologies as get_ols_ontologies
     from .semlookp_provider import get_available_ontologies as get_semlookp_ontologies
     from .agroportal_provider import get_available_ontologies as get_agroportal_ontologies
+    from .snapshot_utils import dataframe_records as _records, json_safe_value as _json_safe
     from .reconciliation_core import (
         NO_MATCH_URI,
         NO_MATCH_DISPLAY,
         CUSTOM_SPARQL_PROVIDER_NAME,
-        DEFAULT_SPARQL_QUERY_TEMPLATE,
         CONFIG,
         USER_AGENT,
         format_suggestion_display,
         get_combined_and_sorted_suggestions,
+    )
+    from .reconciliation_mui_config import (
+        DEFAULT_SPARQL_QUERY_TEMPLATE,
+        LOOKUP_ONTOLOGY_PROVIDERS,
+        ONTOLOGY_FAVORITE_CONFIG_FIELDS,
+        ONTOLOGY_PROVIDER_CONFIG_KEYS,
+        PROVIDER_TOOLTIPS,
+        RECONCILIATION_MUI_ACTIVE_STAGE_KEY,
+        RECONCILIATION_MUI_EVENT_NONCE_KEY,
+        RECONCILIATION_MUI_STATUS_MESSAGE_KEY,
+        RECONCILIATION_STAGES,
+        RECONCILIATION_UPLOADED_SOURCE_SIGNATURE_KEY,
+        SKOS_MATCH_TYPES,
+        STANDARD_RECONCILIATION_PROVIDERS,
+        build_default_reconciliation_state,
     )
     from .shared_table_io import (
         LEXICAL_MAPPING_JUSTIFICATION,
@@ -54,15 +69,30 @@ except ImportError:  # pragma: no cover - direct script fallback
     from ols_provider import get_available_ontologies as get_ols_ontologies
     from semlookp_provider import get_available_ontologies as get_semlookp_ontologies
     from agroportal_provider import get_available_ontologies as get_agroportal_ontologies
+    from snapshot_utils import dataframe_records as _records, json_safe_value as _json_safe
     from reconciliation_core import (
         NO_MATCH_URI,
         NO_MATCH_DISPLAY,
         CUSTOM_SPARQL_PROVIDER_NAME,
-        DEFAULT_SPARQL_QUERY_TEMPLATE,
         CONFIG,
         USER_AGENT,
         format_suggestion_display,
         get_combined_and_sorted_suggestions,
+    )
+    from reconciliation_mui_config import (
+        DEFAULT_SPARQL_QUERY_TEMPLATE,
+        LOOKUP_ONTOLOGY_PROVIDERS,
+        ONTOLOGY_FAVORITE_CONFIG_FIELDS,
+        ONTOLOGY_PROVIDER_CONFIG_KEYS,
+        PROVIDER_TOOLTIPS,
+        RECONCILIATION_MUI_ACTIVE_STAGE_KEY,
+        RECONCILIATION_MUI_EVENT_NONCE_KEY,
+        RECONCILIATION_MUI_STATUS_MESSAGE_KEY,
+        RECONCILIATION_STAGES,
+        RECONCILIATION_UPLOADED_SOURCE_SIGNATURE_KEY,
+        SKOS_MATCH_TYPES,
+        STANDARD_RECONCILIATION_PROVIDERS,
+        build_default_reconciliation_state,
     )
     from shared_table_io import (
         LEXICAL_MAPPING_JUSTIFICATION,
@@ -104,122 +134,10 @@ def _prefill_best_matches_for_backend() -> None:
 # ---------------------------------------------------------------------------
 # Material-UI reconciliation application bridge
 # ---------------------------------------------------------------------------
-RECONCILIATION_MUI_ACTIVE_STAGE_KEY = "reconciliation_mui_active_stage"
-RECONCILIATION_MUI_EVENT_NONCE_KEY = "reconciliation_mui_event_nonce"
-RECONCILIATION_MUI_STATUS_MESSAGE_KEY = "reconciliation_mui_status_message"
-RECONCILIATION_UPLOADED_SOURCE_SIGNATURE_KEY = "reconciliation_mui_uploaded_source_signature"
-
-RECONCILIATION_STAGES = {"load", "configure", "run", "reconcile", "export"}
-STANDARD_RECONCILIATION_PROVIDERS = [
-    "Wikidata",
-    "NCBI",
-    "BioPortal",
-    "OLS (EBI)",
-    "AgroPortal",
-    "EarthPortal",
-    "SemLookP",
-    "QUDT",
-    "Local Ontology",
-]
-LOOKUP_ONTOLOGY_PROVIDERS = ["BioPortal", "OLS (EBI)", "SemLookP", "AgroPortal", "EarthPortal"]
-SKOS_MATCH_TYPES = ["", "skos:exactMatch", "skos:closeMatch", "skos:broadMatch", "skos:narrowMatch", "skos:relatedMatch"]
-
-ONTOLOGY_PROVIDER_CONFIG_KEYS = {
-    "BioPortal": ("bioportal",),
-    "OLS (EBI)": ("ols",),
-    "SemLookP": ("semlookp",),
-    "AgroPortal": ("agroportal",),
-    "EarthPortal": ("earthportal",),
-}
-
-ONTOLOGY_FAVORITE_CONFIG_FIELDS = (
-    "preferred_ontologies",
-    "favorite_ontologies",
-    "favourite_ontologies",
-    "default_ontologies",
-)
-
-
-PROVIDER_TOOLTIPS = {
-    "Wikidata": "A large, collaboratively edited multilingual knowledge graph. Good for general concepts, people, places and organizations.",
-    "NCBI": "National Center for Biotechnology Information. Biomedical and genomic databases. Requires API key.",
-    "BioPortal": "Stanford BioPortal biomedical ontology repository. Requires API key.",
-    "OLS (EBI)": "Ontology Lookup Service from EMBL-EBI.",
-    "SemLookP": "Semantic Lookup Platform for Life Sciences.",
-    "AgroPortal": "Agricultural and food-domain ontology portal. Requires API key.",
-    "EarthPortal": "Earth system and environmental science semantic artifact repository.",
-    "QUDT": "Units of Measure, Quantity Kinds and Dimensions via SPARQL.",
-    "Local Ontology": "Uploaded OWL/OBO/RDF/TTL/JSON-LD/CSV/TSV/XLSX resources indexed locally.",
-    CUSTOM_SPARQL_PROVIDER_NAME: "Custom SPARQL endpoint configured by endpoint URL, query template and result variables.",
-}
-
-
 def _initialize_reconciliation_mui_state():
-    defaults = {
-        "df": None,
-        "suggestions": {},
-        "selected_uris": {},
-        "last_uploaded_filename": None,
-        "provider_queue": [],
-        "local_resources": [],
-        "local_backend": "auto",
-        "provider_status": {},
-        "total_indices_to_process": [],
-        "display_provider": None,
-        "display_mixed_results": False,
-        "provider_has_results": set(),
-        "processing_active": False,
-        "stop_processing_requested": False,
-        "processed_terms_count": 0,
-        "current_term_index_processing": 0,
-        "custom_sparql_enabled": False,
-        "custom_sparql_endpoint": "",
-        "custom_sparql_query_template": DEFAULT_SPARQL_QUERY_TEMPLATE,
-        "custom_sparql_var_uri": "uri",
-        "custom_sparql_var_label": "label",
-        "custom_sparql_var_description": "description",
-        "csv_load_error_message": None,
-        "data_source_message": None,
-        "linked_preprocessed_data_df": None,
-        "ncbi_selected_databases": ['taxonomy', 'bioproject', 'gene', 'protein', 'nuccore', 'biosample', 'sra', 'pubmed'],
-        "custom_search_terms": {},
-        "custom_search_results": {},
-        "custom_search_summaries": {},
-        "active_reconciliation_index": None,
-        "matching_strategy_radio": "API Ranking",
-        "suggestion_slider": 10,
-        "levenshtein_threshold_slider": 0.7,
-        "show_only_matched_terms": False,
-        "show_only_unreconciled_terms": False,
-        "items_per_page": 10,
-        "current_page": 1,
-        "skos_matching_enabled": False,
-        "available_ontologies_by_provider": {},
-        "selected_ontologies_by_provider": {},
-        "ontology_loading_status": {},
-        RECONCILIATION_MUI_ACTIVE_STAGE_KEY: "load",
-    }
-    for key, default in defaults.items():
+    for key, default in build_default_reconciliation_state().items():
         if key not in STATE:
             STATE[key] = default
-
-
-def _json_safe(value: object):
-    try:
-        if pd.isna(value):
-            return ""
-    except (TypeError, ValueError):
-        pass
-    if isinstance(value, pd.Timestamp):
-        return value.isoformat()
-    return value
-
-
-def _records(df: pd.DataFrame | None, limit: int = 50) -> list[dict[str, object]]:
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return []
-    preview = df.head(limit).copy().where(pd.notna(df.head(limit).copy()), "")
-    return [{str(k): _json_safe(v) for k, v in row.items()} for row in preview.to_dict(orient="records")]
 
 
 def _read_matching_table_payload(event: dict) -> tuple[pd.DataFrame, str]:

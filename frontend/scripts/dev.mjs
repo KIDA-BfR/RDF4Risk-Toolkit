@@ -7,6 +7,7 @@ const frontendDir = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(__dirname, '../..');
 const backendPort = process.env.RDF4RISK_BACKEND_PORT || '8765';
 const backendHost = process.env.RDF4RISK_BACKEND_HOST || '127.0.0.1';
+const frontendHost = process.env.RDF4RISK_FRONTEND_HOST || '127.0.0.1';
 const python = process.env.PYTHON || 'python';
 
 const children = [];
@@ -38,7 +39,7 @@ start('python backend', python, ['mui_backend_server.py', '--host', backendHost,
 start(
   'vite frontend',
   process.platform === 'win32' ? 'npm.cmd' : 'npm',
-  ['run', 'start:frontend', '--', '--host', '0.0.0.0'],
+  ['run', 'start:frontend', '--', '--host', frontendHost],
   {
     cwd: frontendDir,
     env: {

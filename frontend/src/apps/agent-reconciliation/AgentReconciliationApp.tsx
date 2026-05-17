@@ -29,7 +29,43 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
+import LoginIcon from '@mui/icons-material/Login';
+import LogoutIcon from '@mui/icons-material/Logout';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import SaveIcon from '@mui/icons-material/Save';
 import { AgentRunProgressPanel, type AgentRunWorkflow, type RunStatus } from '../../components/run/AgentRunProgressPanel';
+import type {
+  AgentReconciliationAppProps,
+  AppEvent,
+  DataStatus,
+  ExportPayload,
+  ReadinessState,
+  ReviewItem,
+  ReviewState,
+  Stage,
+  StopEvent,
+  Telemetry,
+  WorkflowConfig,
+} from './types';
+import {
+  asNumber,
+  editableSkosMatchTypes,
+  formatReviewMode,
+  matchTypes,
+  normalizeCandidateReviewMode,
+  normalizeConfig,
+  normalizeEditableSkosMatchType,
+  normalizeStage,
+  reviewStatuses,
+  reviewStatusChipSx,
+  skosChipSx,
+  splitCsv,
+  stages,
+  statusLabel,
+  unique,
+  workflows,
+} from './utils';
 const AgentIcon = () => (
   <svg
     width="64"
@@ -76,365 +112,11 @@ const AgentIcon = () => (
   </svg>
 );
 
-type Stage = 'setup' | 'run' | 'review' | 'export';
-
-type AdvancedConfig = {
-  timeout_s: number;
-  max_iterations: number;
-  batch_size: number;
-  max_workers: number;
-  agentic_min_confidence_to_skip_refinement?: number;
-  agentic_max_planner_calls?: number;
-  agentic_max_tool_actions?: number;
-  agentic_total_llm_call_budget?: number;
-  agentic_max_candidate_rescore?: number;
-  candidate_pool_limit?: number;
-};
-
-type AutoAcceptPolicy = {
-  min_confidence: number;
-  require_exact_match: boolean;
-  require_llm_decision: boolean;
-  require_no_fallback: boolean;
-  trusted_ontologies_only: boolean;
-};
-
-type ProvenanceConfig = {
-  enabled: boolean;
-  author_id?: string;
-  author_label?: string;
-  reviewer_id?: string;
-  reviewer_label?: string;
-  creator_id?: string;
-  creator_label?: string;
-  mapping_tool?: string;
-  mapping_tool_version?: string;
-  mapping_date?: string;
-  publication_date?: string;
-};
-
-type WorkflowConfig = {
-  workflow: string;
-  provider: string;
-  model: string;
-  reasoning_effort: string;
-  candidate_review_mode: 'conservative' | 'exploratory';
-  custom_model_override?: string;
-  provider_api_key_env?: string;
-  openai_compatible_base_url?: string;
-  openai_compatible_api_key?: string;
-  skos_matching: boolean;
-  auto_accept: boolean;
-  auto_accept_policy: AutoAcceptPolicy;
-  langsmith: boolean;
-  langsmith_project?: string;
-  expert_mode: boolean;
-  allow_heuristic_fallback?: boolean;
-  use_different_models?: boolean;
-  definition_model?: string;
-  definition_preparation?: boolean;
-  definition_strategy?: string;
-  definition_context_text?: string;
-  definition_uploaded_filename?: string;
-  definition_uploaded_count?: number;
-  definition_reference_filename?: string;
-  definition_reference_text?: string;
-  definition_reference_char_count?: number;
-  agentic_trigger_policy?: string;
-  planner_provider?: string;
-  planner_model?: string;
-  trusted_ontologies?: string[];
-  bioportal_ontologies?: string[];
-  advanced: AdvancedConfig;
-  provenance?: ProvenanceConfig;
-};
-
-type DataStatus = {
-  has_table?: boolean;
-  filename?: string;
-  source_name?: string;
-  rows?: number;
-  columns?: number;
-  loaded_sources?: number;
-  required_columns_detected?: boolean;
-  schema_message?: string;
-  upload_bridge_available?: boolean;
-  shared_table_available?: boolean;
-  preview?: Record<string, unknown>[];
-};
-
-type ReadinessCheck = { key: string; label: string; ok: boolean; detail?: string };
-type ReadinessState = { ready?: boolean; checks?: ReadinessCheck[]; summary?: Record<string, string> };
-type Telemetry = {
-  enabled?: boolean;
-  run_id?: string | null;
-  started_at?: string | null;
-  finished_at?: string | null;
-  duration_sec?: number | null;
-  total_terms?: number;
-  processed_terms?: number;
-  failed_terms?: number;
-  total_cost_usd?: number;
-  langsmith_url?: string | null;
-  langsmith_project_url?: string | null;
-  langsmith_message?: string | null;
-  llm_calls?: Record<string, unknown>[];
-  events?: Record<string, unknown>[];
-  cascade?: Record<string, unknown>[];
-  logs?: string[];
-};
-type ReviewCounts = {
-  pending: number;
-  matched?: number;
-  candidate_suggested?: number;
-  accepted: number;
-  rejected: number;
-  no_match: number;
-};
-type ExportPayload = {
-  nonce?: number | string;
-  filename?: string;
-  content?: string;
-  mime_type?: string;
-};
-type ReviewItem = {
-  mapping_id: string;
-  row_index?: number;
-  source_name?: string;
-  term?: string;
-  definition?: string;
-  status?: string;
-  suggested_uri?: string;
-  suggested_label?: string;
-  suggested_description?: string;
-  candidate_uri?: string;
-  candidate_label?: string;
-  candidate_description?: string;
-  can_accept?: boolean;
-  no_match_note?: string;
-  match_type?: string;
-  provider?: string;
-  confidence?: number | string;
-  decision_source?: string;
-  fallback_reason?: string;
-  trace_metadata?: Record<string, unknown>;
-  review_mode?: string;
-  explanation?: string;
-  auto_accept_reason?: string;
-  input_uri?: string;
-  accepted_match_type?: string;
-  subject_label?: string;
-};
-type ReviewState = { items?: ReviewItem[]; counts?: ReviewCounts; selected_source?: string | null };
-type ComponentArgs = {
-  active_stage?: Stage;
-  activeStage?: string;
-  config?: Partial<WorkflowConfig>;
-  providers?: string[];
-  providerLabels?: Record<string, string>;
-  models?: string[];
-  modelLabels?: Record<string, string>;
-  modelDetails?: string | null;
-  reasoningOptions?: string[];
-  readiness?: ReadinessState;
-  run_status?: RunStatus;
-  data_status?: DataStatus;
-  telemetry?: Telemetry;
-  review?: ReviewState;
-  exportPayload?: ExportPayload | null;
-  ontologyOptions?: string[];
-    providerKind?: 'codex' | 'openai_compatible' | 'standard';
-    statusMessage?: { severity?: 'success' | 'info' | 'warning' | 'error'; text?: string } | null;
-    codexAuthStatus?: {
-        authenticated: boolean;
-        pending_auth_url: string | null;
-        [key: string]: any;
-    };
-};
-type AgentReconciliationAppProps = { args?: ComponentArgs; onEvent?: (event: AppEvent) => void };
-
-type AppEvent = { type: string; [key: string]: unknown };
-
-const workflows = [
-  { id: 'wikidata_deep_agent', title: 'Wikidata Deep Agent', badge: 'FAST & BROAD', badgeColor: '#2563eb', description: 'Searches Wikidata only. Optimized for general-purpose entities and high-speed reconciliation.', bullets: ['Broad coverage', 'Fast execution', 'General purpose'] },
-  { id: 'bioportal_wikidata_multiagent', title: 'BioPortal + Wikidata', badge: 'DOMAIN FOCUS', badgeColor: '#059669', description: 'Prioritizes domain-specific ontologies via BioPortal, using Wikidata as a fallback.', bullets: ['Domain-aware', 'Scientific/medical data', 'Expert terminology'] },
-];
-const stages: { id: Stage; label: string; caption: string }[] = [
-  { id: 'setup', label: 'Setup', caption: 'Data & config' },
-  { id: 'run', label: 'Run', caption: 'Execute agents' },
-  { id: 'review', label: 'Review', caption: 'Curate mappings' },
-  { id: 'export', label: 'Export', caption: 'SSSOM & handoff' },
-];
-const reviewStatuses = ['all', 'matched', 'candidate_suggested', 'pending', 'accepted', 'rejected', 'no_match'] as const;
-const editableSkosMatchTypes = ['skos:exactMatch', 'skos:closeMatch', 'skos:relatedMatch'] as const;
-const matchTypes = ['all', 'skos:exactMatch', 'skos:closeMatch', 'skos:relatedMatch', 'no_match'] as const;
-
-function normalizeCandidateReviewMode(value: unknown): 'conservative' | 'exploratory' {
-  return String(value || '').trim().toLowerCase() === 'exploratory' ? 'exploratory' : 'conservative';
-}
-
-function formatReviewMode(value?: string) {
-  return normalizeCandidateReviewMode(value) === 'exploratory' ? 'Exploratory' : 'Conservative';
-}
-
-function statusLabel(status?: string) {
-  const value = String(status || '').trim();
-  if (value === 'matched') return 'Matched';
-  if (value === 'candidate_suggested') return 'Review suggested candidate';
-  if (value === 'no_match') return 'No match';
-  if (value === 'pending') return 'Pending review';
-  if (value === 'accepted') return 'Accepted';
-  if (value === 'rejected') return 'Rejected';
-  return value || 'Pending review';
-}
-
-function normalizeEditableSkosMatchType(matchType?: string): typeof editableSkosMatchTypes[number] {
-  const value = String(matchType || '').trim();
-  return editableSkosMatchTypes.includes(value as typeof editableSkosMatchTypes[number])
-    ? (value as typeof editableSkosMatchTypes[number])
-    : 'skos:closeMatch';
-}
-
-function skosChipSx(matchType?: string) {
-  const value = String(matchType || '').trim();
-
-  if (value === 'skos:exactMatch') {
-    return { bgcolor: '#dbeafe', color: '#1d4ed8', fontWeight: 700 };
-  }
-
-  if (value === 'skos:closeMatch') {
-    return { bgcolor: '#dcfce7', color: '#166534', fontWeight: 700 };
-  }
-
-  if (value === 'skos:relatedMatch') {
-    return { bgcolor: '#ffedd5', color: '#9a3412', fontWeight: 700 };
-  }
-
-  if (value === 'no_match') {
-    return { bgcolor: '#f3f4f6', color: '#374151', fontWeight: 700 };
-  }
-
-  return { bgcolor: '#f3f4f6', color: '#374151', fontWeight: 700 };
-}
-
-function reviewStatusChipSx(status?: string) {
-  const value = String(status || '').trim();
-
-  if (value === 'matched') {
-    return { bgcolor: '#dcfce7', color: '#166534', fontWeight: 700 };
-  }
-
-  if (value === 'candidate_suggested') {
-    return { bgcolor: '#e0f2fe', color: '#075985', fontWeight: 700 };
-  }
-
-  if (value === 'pending') {
-    return { bgcolor: '#fef3c7', color: '#92400e', fontWeight: 700 };
-  }
-
-  if (value === 'accepted') {
-    return { bgcolor: '#dcfce7', color: '#166534', fontWeight: 700 };
-  }
-
-  if (value === 'rejected') {
-    return { bgcolor: '#fee2e2', color: '#991b1b', fontWeight: 700 };
-  }
-
-  if (value === 'no_match') {
-    return { bgcolor: '#f3f4f6', color: '#374151', fontWeight: 700 };
-  }
-
-  return { bgcolor: '#f3f4f6', color: '#374151', fontWeight: 700 };
-}
-
-function asNumber(value: unknown, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-function unique(values: string[]): string[] {
-  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
-}
-function splitCsv(value: string): string[] {
-  return unique(value.split(',').map((part) => part.trim().toUpperCase()));
-}
 async function fileToBase64(file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = '';
   bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
   return window.btoa(binary);
-}
-function normalizeStage(value: unknown): Stage {
-  const lower = String(value || '').trim().toLowerCase();
-  return ['setup', 'run', 'review', 'export'].includes(lower) ? (lower as Stage) : 'setup';
-}
-function normalizeConfig(raw: Partial<WorkflowConfig> | undefined, providers: string[], models: string[]): WorkflowConfig {
-  const advanced = raw?.advanced ?? ({} as AdvancedConfig);
-  const policy = raw?.auto_accept_policy ?? ({} as AutoAcceptPolicy);
-  const provenance = raw?.provenance ?? ({} as ProvenanceConfig);
-  return {
-    workflow: raw?.workflow || 'wikidata_deep_agent',
-    provider: raw?.provider || providers[0] || 'openai',
-    model: raw?.model || models[0] || 'gpt-5.1',
-    reasoning_effort: raw?.reasoning_effort || 'none',
-    candidate_review_mode: normalizeCandidateReviewMode(raw?.candidate_review_mode),
-    custom_model_override: raw?.custom_model_override || '',
-    provider_api_key_env: raw?.provider_api_key_env || '',
-    openai_compatible_base_url: raw?.openai_compatible_base_url || '',
-    openai_compatible_api_key: raw?.openai_compatible_api_key || '',
-    skos_matching: raw?.skos_matching ?? true,
-    auto_accept: raw?.auto_accept ?? false,
-    auto_accept_policy: {
-      min_confidence: asNumber(policy.min_confidence, 0.8),
-      require_exact_match: policy.require_exact_match ?? true,
-      require_llm_decision: policy.require_llm_decision ?? true,
-      require_no_fallback: policy.require_no_fallback ?? true,
-      trusted_ontologies_only: policy.trusted_ontologies_only ?? false,
-    },
-    langsmith: raw?.langsmith ?? false,
-    langsmith_project: raw?.langsmith_project || '',
-    expert_mode: raw?.expert_mode ?? false,
-    allow_heuristic_fallback: raw?.allow_heuristic_fallback ?? true,
-    use_different_models: raw?.use_different_models ?? false,
-    definition_model: raw?.definition_model || raw?.model || models[0] || 'gpt-5.1',
-    definition_preparation: raw?.definition_preparation ?? false,
-    definition_strategy: raw?.definition_strategy || 'generate_single_shot',
-    definition_context_text: raw?.definition_context_text || '',
-    definition_uploaded_filename: raw?.definition_uploaded_filename || '',
-    definition_uploaded_count: raw?.definition_uploaded_count ?? 0,
-    definition_reference_filename: raw?.definition_reference_filename || '',
-    definition_reference_text: raw?.definition_reference_text || '',
-    definition_reference_char_count: raw?.definition_reference_char_count ?? 0,
-    agentic_trigger_policy: raw?.agentic_trigger_policy || 'no_exact_or_low_confidence',
-    planner_provider: raw?.planner_provider || raw?.provider || providers[0] || 'openai',
-    planner_model: raw?.planner_model || raw?.model || models[0] || 'gpt-5.1',
-    trusted_ontologies: raw?.trusted_ontologies || ['MESH', 'NCIT', 'LOINC', 'FOODON', 'NCBITAXON'],
-    bioportal_ontologies: raw?.bioportal_ontologies || ['NCIT', 'NIFSTD', 'BERO', 'OCHV', 'SNOMEDCT'],
-    advanced: {
-      timeout_s: asNumber(advanced.timeout_s, 180),
-      max_iterations: asNumber(advanced.max_iterations, 10),
-      batch_size: asNumber(advanced.batch_size, 10),
-      max_workers: asNumber(advanced.max_workers, 4),
-      agentic_min_confidence_to_skip_refinement: asNumber(advanced.agentic_min_confidence_to_skip_refinement, 0.8),
-      agentic_max_planner_calls: asNumber(advanced.agentic_max_planner_calls, 1),
-      agentic_max_tool_actions: asNumber(advanced.agentic_max_tool_actions, 6),
-      agentic_total_llm_call_budget: asNumber(advanced.agentic_total_llm_call_budget, 14),
-      agentic_max_candidate_rescore: asNumber(advanced.agentic_max_candidate_rescore, 8),
-      candidate_pool_limit: asNumber(advanced.candidate_pool_limit, 30),
-    },
-    provenance: {
-      enabled: provenance.enabled ?? false,
-      author_id: provenance.author_id || '',
-      author_label: provenance.author_label || '',
-      reviewer_id: provenance.reviewer_id || '',
-      reviewer_label: provenance.reviewer_label || '',
-      creator_id: provenance.creator_id || '',
-      creator_label: provenance.creator_label || '',
-      mapping_tool: provenance.mapping_tool || 'RDF4Risk Agent-Based Reconciliation',
-      mapping_tool_version: provenance.mapping_tool_version || 'PoC',
-      mapping_date: provenance.mapping_date || '',
-      publication_date: provenance.publication_date || '',
-    },
-  };
 }
 
 function DataTable({ rows, empty }: { rows?: Record<string, unknown>[]; empty: string }) {
@@ -571,25 +253,25 @@ function WorkflowConfigPanelInner({ config, providers, providerLabels, modelOpti
       <FormControl fullWidth size="small"><InputLabel>Reasoning</InputLabel><Select label="Reasoning" value={config.reasoning_effort} onChange={(e) => update({ reasoning_effort: String(e.target.value) })}>{reasoningOptions.map((r) => <MenuItem key={r} value={r}>{r}</MenuItem>)}</Select></FormControl>
     </Box>
     {modelDetails && <Alert severity="info" variant="outlined">{modelDetails}</Alert>}
-    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr auto auto' }, gap: 1.2 }}><TextField label="Custom Model Override" value={config.custom_model_override} onChange={(e) => update({ custom_model_override: e.target.value })} />{providerKind === 'openai_compatible' && <Button variant="outlined" onClick={() => emit({ type: 'register_local_model' })}>Register model</Button>}<Button variant="outlined" onClick={() => emit({ type: 'reload_models' })}>Reload models & pricing</Button></Box>
+    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr auto auto' }, gap: 1.2 }}><TextField label="Custom Model Override" value={config.custom_model_override} onChange={(e) => update({ custom_model_override: e.target.value })} />{providerKind === 'openai_compatible' && <Button variant="outlined" startIcon={<SaveIcon />} onClick={() => emit({ type: 'register_local_model' })}>Register model</Button>}<Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => emit({ type: 'reload_models' })}>Reload models & pricing</Button></Box>
     {providerKind === 'openai_compatible' ? <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.2 }}><TextField label="OpenAI-compatible base URL" value={config.openai_compatible_base_url} onChange={(e) => update({ openai_compatible_base_url: e.target.value })} /><TextField label="OpenAI-compatible API key" type="password" value={config.openai_compatible_api_key} onChange={(e) => update({ openai_compatible_api_key: e.target.value })} /></Box> : providerKind === 'codex' ? (
       <Box sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 3, bgcolor: 'background.paper' }}>
         <Typography variant="subtitle2" sx={{ mb: 1 }}>ChatGPT Subscription Auth</Typography>
         {codexAuthStatus?.authenticated ? (
             <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
                 <Alert severity="success" sx={{ flexGrow: 1, py: 0 }}>Connected</Alert>
-                <Button variant="outlined" onClick={() => emit({ type: 'codex_auth_refresh' })}>Refresh</Button>
-                <Button variant="outlined" color="error" onClick={() => emit({ type: 'codex_auth_signout' })}>Sign out</Button>
+                <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => emit({ type: 'codex_auth_refresh' })}>Refresh</Button>
+                <Button variant="outlined" color="error" startIcon={<LogoutIcon />} onClick={() => emit({ type: 'codex_auth_signout' })}>Sign out</Button>
             </Box>
         ) : (
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                 <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                    <Button variant="contained" onClick={() => emit({ type: 'codex_auth_signin' })}>Sign in with ChatGPT</Button>
-                    <Button variant="outlined" onClick={() => emit({ type: 'codex_auth_refresh_pending' })}>I completed login</Button>
+                    <Button variant="contained" startIcon={<LoginIcon />} onClick={() => emit({ type: 'codex_auth_signin' })}>Sign in with ChatGPT</Button>
+                    <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => emit({ type: 'codex_auth_refresh_pending' })}>I completed login</Button>
                 </Box>
                 {codexAuthStatus?.pending_auth_url && (
                     <Alert severity="info">
-                        Please complete sign in: <a href={codexAuthStatus.pending_auth_url} target="_blank" rel="noreferrer">Login Link</a>
+                        Please complete sign in: <OpenInNewIcon sx={{ fontSize: 16, verticalAlign: 'text-bottom' }} /> <a href={codexAuthStatus.pending_auth_url} target="_blank" rel="noreferrer">Login Link</a>
                     </Alert>
                 )}
             </Box>
@@ -713,7 +395,33 @@ function workflowForRunPanel(workflow: string): AgentRunWorkflow { return workfl
 function RunStartPanel({ readiness, running, runStatus, onStart, onBack }: { readiness: ReadinessState; running: boolean; runStatus: RunStatus; onStart: () => void; onBack: () => void }) { return <Card variant="outlined"><CardContent><Stack spacing={1.5}><Typography variant="subtitle1">Run Agent-Based Reconciliation</Typography><Alert severity={readiness.ready ? 'success' : 'warning'} variant="outlined">{runStatus.message || (readiness.ready ? 'Ready to run' : 'Resolve prerequisites before running.')}</Alert><Button variant="contained" disabled={!readiness.ready || running} onClick={onStart}>Start Reconciliation</Button><Button variant="outlined" onClick={onBack}>Back to Setup</Button></Stack></CardContent></Card>; }
 function RunSuccessPanel({ runStatus, telemetry, onContinue }: { runStatus: RunStatus; telemetry: Telemetry; onContinue: () => void }) { const processed = runStatus.processed_count ?? telemetry.processed_terms ?? 0; const total = runStatus.total_count ?? telemetry.total_terms ?? 0; const duration = telemetry.duration_sec ?? runStatus.elapsed_seconds; return <Card variant="outlined" sx={{ borderRadius: 4, borderColor: 'success.light', bgcolor: 'rgba(240,253,244,.72)' }}><CardContent><Stack spacing={1.5}><Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h6" sx={{ fontWeight: 900 }}>Run completed successfully</Typography><Chip color="success" label="Success" /></Stack><Alert severity="success" variant="outlined">Agent-based reconciliation completed. Review the generated mapping suggestions next.</Alert><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 1 }}><SummaryRow label="Processed" value={total ? `${processed} / ${total}` : processed} /><SummaryRow label="Duration" value={typeof duration === 'number' ? `${duration.toFixed(1)}s` : '—'} /><SummaryRow label="Cost" value={`$${(telemetry.total_cost_usd ?? 0).toFixed(4)}`} /></Box><LinearProgress variant="determinate" value={100} sx={{ height: 10, borderRadius: 999 }} /><Button variant="contained" color="success" onClick={onContinue}>Continue to Review</Button></Stack></CardContent></Card>; }
 function RunErrorPanel({ error, onBack, onRetry }: { error: string; onBack: () => void; onRetry: () => void }) { return <Card variant="outlined" sx={{ borderRadius: 4, borderColor: 'error.light', bgcolor: 'rgba(254,242,242,.72)' }}><CardContent><Stack spacing={1.5}><Typography variant="h6" sx={{ fontWeight: 900 }}>Run failed</Typography><Alert severity="error" variant="outlined">{error}</Alert><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><Button variant="contained" color="error" onClick={onRetry}>Retry Reconciliation</Button><Button variant="outlined" onClick={onBack}>Back to Setup</Button></Stack></Stack></CardContent></Card>; }
-function RunPage({ config, readiness, runStatus, telemetry, dataStatus, emit }: { config: WorkflowConfig; readiness: ReadinessState; runStatus: RunStatus; telemetry: Telemetry; dataStatus: DataStatus; emit: (event: AppEvent) => void }) { const [optimisticRunning, setOptimisticRunning] = useState(false); const [optimisticStartedAt, setOptimisticStartedAt] = useState<string | null>(null); const optimisticTotalCount = runStatus.total_count ?? telemetry.total_terms ?? dataStatus.rows ?? null; useEffect(() => { if (runStatus.finished || runStatus.error || runStatus.running) { setOptimisticRunning(false); if (runStatus.finished || runStatus.error) setOptimisticStartedAt(null); } }, [runStatus.finished, runStatus.error, runStatus.running]); const running = Boolean(runStatus.running || optimisticRunning); const panelStatus = optimisticRunning && !runStatus.running ? { ...runStatus, running: true, finished: false, error: null, progress: null, started_at: runStatus.started_at ?? optimisticStartedAt, message: runStatus.message || null, total_count: runStatus.total_count ?? telemetry.total_terms ?? dataStatus.rows ?? null } : runStatus; const startRun = () => { setOptimisticStartedAt(new Date().toISOString()); setOptimisticRunning(true); emit({ type: 'start_run' }); }; return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: running ? 'minmax(0, 1fr)' : '360px minmax(0,1fr)' }, gap: 2 }}><Stack spacing={2}>{running ? <AgentRunProgressPanel runStatus={panelStatus} workflow={workflowForRunPanel(config.workflow)} optimisticTotalCount={optimisticTotalCount} /> : runStatus.error ? <RunErrorPanel error={runStatus.error} onRetry={startRun} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /> : runStatus.finished ? <RunSuccessPanel runStatus={runStatus} telemetry={telemetry} onContinue={() => emit({ type: 'navigate', stage: 'review' })} /> : <><RunPrerequisitesPanel readiness={readiness} /><RunSummaryPanel readiness={readiness} config={config} /><RunStartPanel readiness={readiness} running={running} runStatus={runStatus} onStart={startRun} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /></>}</Stack><MonitoringPanel telemetry={telemetry} runStatus={panelStatus} /></Box>; }
+function RunStoppedPanel({ runStatus, telemetry, onResume, onRestart, onBack }: { runStatus: RunStatus; telemetry: Telemetry; onResume: () => void; onRestart: () => void; onBack: () => void }) {
+  const processed = runStatus.processed_count ?? telemetry.processed_terms ?? 0;
+  const total = runStatus.total_count ?? telemetry.total_terms ?? 0;
+  const stopEvent = (runStatus.stop_event ?? {}) as StopEvent;
+  const nextTerm = total ? Math.min(total, Number(processed) + 1) : null;
+  return <Card variant="outlined" sx={{ borderRadius: 4, borderColor: 'error.light', bgcolor: 'rgba(254,242,242,.72)' }}><CardContent><Stack spacing={1.5}><Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h6" sx={{ fontWeight: 900 }}>Run stopped</Typography><Chip color="error" label="Stopped" /></Stack><Alert severity="warning" variant="outlined">{runStatus.message || 'The run was stopped by the user.'}</Alert><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 1 }}><SummaryRow label="Processed" value={total ? `${processed} / ${total}` : processed} /><SummaryRow label="Next resume step" value={nextTerm ? `${nextTerm} / ${total}` : '—'} /><SummaryRow label="Stopped at" value={stopEvent.term || 'Last completed term'} /></Box><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><Button variant="contained" color="error" disabled={!runStatus.can_resume} onClick={onResume}>Continue from Stopped Point</Button><Button variant="outlined" color="error" onClick={onRestart}>Rerun from Start</Button><Button variant="outlined" onClick={onBack}>Back to Setup</Button></Stack></Stack></CardContent></Card>;
+}
+function RunPage({ config, readiness, runStatus, telemetry, dataStatus, emit }: { config: WorkflowConfig; readiness: ReadinessState; runStatus: RunStatus; telemetry: Telemetry; dataStatus: DataStatus; emit: (event: AppEvent) => void }) {
+  const [optimisticRunning, setOptimisticRunning] = useState(false);
+  const [optimisticStartedAt, setOptimisticStartedAt] = useState<string | null>(null);
+  const optimisticTotalCount = runStatus.total_count ?? telemetry.total_terms ?? dataStatus.rows ?? null;
+  useEffect(() => {
+    if (runStatus.finished || runStatus.error || runStatus.running || runStatus.stopped) {
+      setOptimisticRunning(false);
+      if (runStatus.finished || runStatus.error || runStatus.stopped) setOptimisticStartedAt(null);
+    }
+  }, [runStatus.finished, runStatus.error, runStatus.running, runStatus.stopped]);
+  const running = Boolean(runStatus.running || optimisticRunning);
+  const panelStatus = optimisticRunning && !runStatus.running ? { ...runStatus, running: true, stopped: false, finished: false, error: null, progress: null, started_at: runStatus.started_at ?? optimisticStartedAt, message: runStatus.message || null, total_count: runStatus.total_count ?? telemetry.total_terms ?? dataStatus.rows ?? null } : runStatus;
+  const startRun = (resumePrevious = false) => {
+    setOptimisticStartedAt(new Date().toISOString());
+    setOptimisticRunning(true);
+    emit({ type: 'start_run', resume_previous: resumePrevious });
+  };
+  const stopRun = () => emit({ type: 'stop_run' });
+  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: running ? 'minmax(0, 1fr)' : '360px minmax(0,1fr)' }, gap: 2 }}><Stack spacing={2}>{running ? <AgentRunProgressPanel runStatus={panelStatus} workflow={workflowForRunPanel(config.workflow)} optimisticTotalCount={optimisticTotalCount} onStop={stopRun} /> : runStatus.stopped ? <RunStoppedPanel runStatus={runStatus} telemetry={telemetry} onResume={() => startRun(true)} onRestart={() => startRun(false)} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /> : runStatus.error ? <RunErrorPanel error={runStatus.error} onRetry={() => startRun(false)} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /> : runStatus.finished ? <RunSuccessPanel runStatus={runStatus} telemetry={telemetry} onContinue={() => emit({ type: 'navigate', stage: 'review' })} /> : <><RunPrerequisitesPanel readiness={readiness} /><RunSummaryPanel readiness={readiness} config={config} /><RunStartPanel readiness={readiness} running={running} runStatus={runStatus} onStart={() => startRun(false)} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /></>}</Stack><MonitoringPanel telemetry={telemetry} runStatus={panelStatus} /></Box>;
+}
 function ReviewPage({ review, dataStatus, emit }: { review: ReviewState; dataStatus: DataStatus; emit: (event: AppEvent) => void }) {
   const [status, setStatus] = useState('all');
   const [matchType, setMatchType] = useState('all');
@@ -924,6 +632,7 @@ export function AgentReconciliationMuiApp({ args, onEvent }: AgentReconciliation
   const downloadedExportNonceRef = useRef<number | string | null>(null);
   const [config, setConfig] = useState<WorkflowConfig>(() => normalizeConfig(args?.config, providers, baseModels));
   useEffect(() => setConfig(normalizeConfig(args?.config, providers, baseModels)), [args?.config, providers, baseModels]);
+  const providerOptions = useMemo(() => unique([...providers, config.provider, config.planner_provider || '']), [providers, config.provider, config.planner_provider]);
   const modelOptions = useMemo(() => unique([...baseModels, config.custom_model_override || '', config.model, config.definition_model || '', config.planner_model || '']), [baseModels, config.custom_model_override, config.model, config.definition_model, config.planner_model]);
   const activeStage = normalizeStage(args?.active_stage ?? args?.activeStage);
   useEffect(() => {
@@ -957,10 +666,10 @@ export function AgentReconciliationMuiApp({ args, onEvent }: AgentReconciliation
     window.setTimeout(() => window.URL.revokeObjectURL(url), 0);
   }, [args?.exportPayload]);
   function emit(event: AppEvent) { onEvent?.({ ...event, nonce: Date.now() }); }
-  function update(patch: Partial<WorkflowConfig>) { const next = normalizeConfig({ ...config, ...patch }, providers, modelOptions); setConfig(next); emit({ type: 'config_changed', config: next }); }
+  function update(patch: Partial<WorkflowConfig>) { const next = normalizeConfig({ ...config, ...patch }, providerOptions, modelOptions); setConfig(next); emit({ type: 'config_changed', config: next }); }
   function navigate(stage: Stage) { emit({ type: 'navigate', stage }); }
   let page: React.ReactNode;
-  if (activeStage === 'setup') page = <SetupPage config={config} dataStatus={dataStatus} readiness={readiness} providers={providers} providerLabels={providerLabels} modelOptions={modelOptions} modelLabels={modelLabels} modelDetails={args?.modelDetails} reasoningOptions={reasoningOptions} ontologyOptions={ontologyOptions} providerKind={providerKind} codexAuthStatus={args?.codexAuthStatus} update={update} emit={emit} />;
+  if (activeStage === 'setup') page = <SetupPage config={config} dataStatus={dataStatus} readiness={readiness} providers={providerOptions} providerLabels={providerLabels} modelOptions={modelOptions} modelLabels={modelLabels} modelDetails={args?.modelDetails} reasoningOptions={reasoningOptions} ontologyOptions={ontologyOptions} providerKind={providerKind} codexAuthStatus={args?.codexAuthStatus} update={update} emit={emit} />;
   else if (activeStage === 'run') page = <RunPage config={config} readiness={readiness} runStatus={runStatus} telemetry={telemetry} dataStatus={dataStatus} emit={emit} />;
   else if (activeStage === 'review') page = <ReviewPage review={review} dataStatus={dataStatus} emit={emit} />;
   else page = <ExportPage review={review} dataStatus={dataStatus} exportPayload={args?.exportPayload} emit={emit} />;

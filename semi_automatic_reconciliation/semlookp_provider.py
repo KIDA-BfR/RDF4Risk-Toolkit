@@ -5,14 +5,13 @@ import traceback
 import logging # Import logging module
 from urllib.parse import quote # Needed for potential IRI encoding if retrieving single terms later
 
+try:
+    from .cache_utils import cache_data
+except ImportError:  # pragma: no cover - legacy direct module execution
+    from cache_utils import cache_data
+
 # Configure logging (basic example, adjust as needed for your app)
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Lightweight no-op cache decorator used by the backend service
-def cache_data(ttl=None):
-    def decorator(func):
-        return func
-    return decorator
 
 @cache_data(ttl=3600)
 def query_semlookp(

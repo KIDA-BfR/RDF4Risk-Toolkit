@@ -639,7 +639,6 @@ def fetch_available_model_catalog(
                     model_id = name.split("/", 1)[1] if name.startswith("models/") else name
 
                 reasoning_meta: Dict[str, Any] = {"supports_reasoning": False}
-                version = item.get("version", "")
                 if model_id.startswith("gemini-3"):
                     reasoning_meta = {"supports_reasoning": True, "reasoning_mode": "thinkingLevel"}
                 elif model_id.startswith("gemini-2.5"):

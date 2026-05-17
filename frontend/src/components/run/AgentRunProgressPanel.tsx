@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
+  Button,
   Card,
   CardContent,
   Chip,
@@ -9,6 +10,7 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
+import StopCircleIcon from '@mui/icons-material/StopCircle';
 import { AnimatePresence, motion } from 'motion/react';
 
 const agentLoaderMp4 = new URL('../../assets/animations/agent-loader.mp4', import.meta.url).href;
@@ -27,6 +29,7 @@ export type RunStage =
 export type RunStatus = {
   ready?: boolean;
   running?: boolean;
+  stopped?: boolean;
   finished?: boolean;
   error?: string | null;
   progress?: number | null;
@@ -40,12 +43,18 @@ export type RunStatus = {
   elapsed_seconds?: number | null;
   estimated_remaining_seconds?: number | null;
   last_activity?: string | null;
+  stop_requested?: boolean;
+  stop_reason?: string | null;
+  stop_event?: Record<string, unknown>;
+  can_resume?: boolean;
+  can_restart?: boolean;
 };
 
 export type AgentRunProgressPanelProps = {
   runStatus: RunStatus;
   workflow?: AgentRunWorkflow;
   optimisticTotalCount?: number | null;
+  onStop?: () => void;
 };
 
 const stageLabels: Record<string, string> = {
@@ -123,6 +132,7 @@ export function AgentRunProgressPanel({
   runStatus,
   workflow = 'bioportal_wikidata',
   optimisticTotalCount = null,
+  onStop,
 }: AgentRunProgressPanelProps) {
   const workflowMessages = useMemo(() => {
     return workflow === 'wikidata_deep_agent'
@@ -192,7 +202,22 @@ export function AgentRunProgressPanel({
     >
       <CardContent sx={{ p: { xs: 3, md: 4 } }}>
         <Stack spacing={2.5} alignItems="center">
-          <Chip label="Run in progress" color="primary" variant="outlined" sx={{ fontWeight: 800 }} />
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems="center" justifyContent="center" sx={{ width: '100%' }}>
+            <Chip label={runStatus.stop_requested ? 'Stopping run' : 'Run in progress'} color={runStatus.stop_requested ? 'warning' : 'primary'} variant="outlined" sx={{ fontWeight: 800 }} />
+            {onStop && (
+              <Button
+                variant="contained"
+                color="error"
+                size="large"
+                startIcon={<StopCircleIcon />}
+                onClick={onStop}
+                disabled={Boolean(runStatus.stop_requested)}
+                sx={{ fontWeight: 900, px: 3, boxShadow: '0 10px 24px rgba(220,38,38,.22)' }}
+              >
+                {runStatus.stop_requested ? 'Stopping...' : 'Stop Run'}
+              </Button>
+            )}
+          </Stack>
 
           <Box
             component="video"

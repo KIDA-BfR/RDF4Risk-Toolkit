@@ -13,6 +13,7 @@ import pandas as pd
 
 from . import agent_reconciliation_service as _service
 from .agent_models import AgentInputTable
+from .agent_runtime_state import runtime_hooks
 from .agent_reconciliation_ui_monitoring import _build_cascade_trace_snapshot, _build_monitoring_event_snapshot
 from .agent_reconciliation_ui_review import (
     REVIEW_MATCH_GROUP_BADGE_COLORS,
@@ -67,6 +68,7 @@ for _name in dir(_service):
 
 _service.pd = pd
 _service.AgentInputTable = AgentInputTable
+_service.runtime_hooks = runtime_hooks
 _service.REVIEW_MATCH_GROUP_ORDER = REVIEW_MATCH_GROUP_ORDER
 _service.REVIEW_MATCH_TYPE_OPTIONS = REVIEW_MATCH_TYPE_OPTIONS
 _service.REVIEW_MATCH_GROUP_LABELS = REVIEW_MATCH_GROUP_LABELS

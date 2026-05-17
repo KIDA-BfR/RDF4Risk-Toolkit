@@ -29,9 +29,9 @@ except Exception:  # pragma: no cover
     Levenshtein = None
 
 try:
-    from semi_automatic_reconciliation.shared_table_io import sync_matching_table_schemas
+    from semi_automatic_reconciliation.shared_table_io import SSSOM_MATCHING_TABLE_COLUMNS, sync_matching_table_schemas
 except ImportError:  # pragma: no cover - direct execution fallback
-    from semi_automatic_reconciliation.shared_table_io import sync_matching_table_schemas
+    from semi_automatic_reconciliation.shared_table_io import SSSOM_MATCHING_TABLE_COLUMNS, sync_matching_table_schemas
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,14 +44,7 @@ MTG_EXPAND_DETECTED_CODES_KEY = "mtg_expand_detected_codes"
 MTG_EXPAND_DETECTED_COLUMN_KEY = "mtg_expand_detected_column"
 MTG_EXPAND_DETECTED_DELIMITER_KEY = "mtg_expand_detected_delimiter"
 
-REQUIRED_MATCHING_COLUMNS = [
-    "subject_id",
-    "subject_label",
-    "predicate_id",
-    "object_id",
-    "object_label",
-    "mapping_justification",
-]
+REQUIRED_MATCHING_COLUMNS = SSSOM_MATCHING_TABLE_COLUMNS.copy()
 
 DEFAULT_STATE: Dict[str, Any] = {
     "original_df": None,
@@ -933,4 +926,3 @@ def _handle_mui_event(event: Any) -> bool:
         should_rerun = False
 
     return should_rerun
-

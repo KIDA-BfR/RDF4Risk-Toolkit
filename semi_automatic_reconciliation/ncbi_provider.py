@@ -5,6 +5,11 @@ import traceback
 import urllib.parse
 import logging # Import logging module
 
+try:
+    from .cache_utils import cache_data
+except ImportError:  # pragma: no cover - legacy direct module execution
+    from cache_utils import cache_data
+
 # --- Constants ---
 EUTILS_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
 ESEARCH_URL = EUTILS_BASE_URL + "esearch.fcgi"
@@ -36,12 +41,6 @@ def _construct_ncbi_uri(db, item_id):
     else:
         return f"https://www.ncbi.nlm.nih.gov/{db}/{item_id}"
 
-
-# Lightweight no-op cache decorator used by the backend service
-def cache_data(ttl=None):
-    def decorator(func):
-        return func
-    return decorator
 
 @cache_data(ttl=3600)
 def query_ncbi(

@@ -5,6 +5,11 @@ import traceback
 from urllib.parse import urlparse, quote
 import logging
 
+try:
+    from .cache_utils import cache_data
+except ImportError:  # pragma: no cover - legacy direct module execution
+    from cache_utils import cache_data
+
 # --- Constants ---
 # Default base URL for EarthPortal
 DEFAULT_EARTHPORTAL_API_URL = "https://data.earthportal.eu"
@@ -14,11 +19,6 @@ DEFAULT_INCLUDE_FIELDS = "prefLabel,synonym,definition"
 SLEEP_TIME = 1.0
 # Increased timeout for requests (seconds)
 REQUEST_TIMEOUT = 60.0
-
-def cache_data(ttl=None):
-    def decorator(func):
-        return func
-    return decorator
 
 @cache_data(ttl=3600)
 def query_earthportal(

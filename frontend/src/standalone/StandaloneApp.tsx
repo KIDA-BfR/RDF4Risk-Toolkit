@@ -19,6 +19,10 @@ import {
   Typography,
   alpha,
 } from '@mui/material';
+import LoginIcon from '@mui/icons-material/Login';
+import LogoutIcon from '@mui/icons-material/Logout';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import { WorkflowConfigPanel } from '../apps/agent-reconciliation/AgentReconciliationApp';
 import { HomeApp } from '../apps/home/HomeApp';
 import { MatchingTableGeneratorApp } from '../apps/matching-table-generator/MatchingTableGeneratorApp';
@@ -26,43 +30,10 @@ import { RDFGeneratorApp } from '../apps/rdf-generator/RDFGeneratorApp';
 import { RDFToTableApp } from '../apps/rdf-to-table/RDFToTableApp';
 import { SemiAutomaticReconciliationApp } from '../apps/semi-automatic-reconciliation/SemiAutomaticReconciliationApp';
 import { setAppEventHandler, type AppEvent } from '../shared/appBridge';
-
-type ServiceId = 'home' | 'matching_table_generator' | 'semi_automatic_reconciliation' | 'agent_reconciliation' | 'rdf_generator' | 'rdf_to_table';
-type BackendPayload = { service: string; args: Record<string, unknown> };
+import { fetchSnapshot, postEvent, type BackendPayload } from './backendClient';
+import { serviceFromHash, services, type ServiceId } from './services';
 
 const drawerWidth = 312;
-const API_BASE = (import.meta as any).env?.VITE_RDF4RISK_API_BASE || 'http://127.0.0.1:8765';
-
-const services: Array<{ id: ServiceId; step: string; title: string; short: string; description: string; accent: string }> = [
-  { id: 'home', step: '00', title: 'Home', short: 'Toolkit overview', description: 'Start page with direct links to all RDF4Risk workflow services.', accent: '#0f172a' },
-  { id: 'matching_table_generator', step: '01', title: 'Matching Table Service', short: 'Prepare mappings', description: 'Load tabular data, preprocess values, consolidate terms, and generate SSSOM-ready matching tables.', accent: '#2563eb' },
-  { id: 'semi_automatic_reconciliation', step: '02', title: 'Reconciliation Service', short: 'Manual curation', description: 'Use provider queues, ontology filters, and custom searches to reconcile terms against external authorities.', accent: '#0891b2' },
-  { id: 'agent_reconciliation', step: '03', title: 'Agent-Based Reconciliation', short: 'AI-assisted matching', description: 'Run LLM-assisted semantic reconciliation with review, telemetry, SSSOM export, and ChatGPT subscription auth status.', accent: '#7c3aed' },
-  { id: 'rdf_generator', step: '04', title: 'RDF Generator Service', short: 'Generate RDF', description: 'Combine data and mapping tables, enrich URI context, apply schema templates, and generate RDF/SKOS/DCAT outputs.', accent: '#14b8a6' },
-  { id: 'rdf_to_table', step: '05', title: 'RDF to Table Service', short: 'Inspect RDF', description: 'Load TriG catalogs, inspect named graphs and statistics, then export CSV, Excel, and Markdown documentation.', accent: '#f59e0b' },
-];
-
-function serviceFromHash(): ServiceId {
-  const raw = window.location.hash.replace(/^#\/?/, '') as ServiceId;
-  return services.some((service) => service.id === raw) ? raw : 'home';
-}
-
-async function fetchSnapshot(service: ServiceId): Promise<BackendPayload | null> {
-  if (service === 'home') return null;
-  const response = await fetch(`${API_BASE}/api/services/${service}/snapshot`);
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
-}
-
-async function postEvent(service: ServiceId, event: AppEvent): Promise<BackendPayload> {
-  const response = await fetch(`${API_BASE}/api/services/${service}/event`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(event),
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
-}
 
 function HomeDashboard({ onOpen }: { onOpen: (service: ServiceId) => void }) {
   const workflowServices = services.filter((service) => service.id !== 'home');
@@ -120,14 +91,14 @@ function AgentSidebarInfo({ args, onEvent }: { args?: Record<string, any>; onEve
         <Alert severity={auth?.authenticated ? 'success' : 'warning'} variant="outlined" sx={{ py: 0.5 }}>
           {auth?.authenticated ? 'Connected' : 'Not connected'}
         </Alert>
-        {auth?.pending_auth_url && <Button size="small" href={auth.pending_auth_url} target="_blank" variant="outlined">Open login link</Button>}
+        {auth?.pending_auth_url && <Button size="small" href={auth.pending_auth_url} target="_blank" variant="outlined" startIcon={<OpenInNewIcon fontSize="small" />}>Open login link</Button>}
         <Stack direction="row" spacing={1}>
           {auth?.authenticated ? (
-            <Button size="small" color="error" variant="outlined" onClick={() => onEvent({ type: 'codex_auth_signout' })}>Log out</Button>
+            <Button size="small" color="error" variant="outlined" startIcon={<LogoutIcon fontSize="small" />} onClick={() => onEvent({ type: 'codex_auth_signout' })}>Log out</Button>
           ) : (
-            <Button size="small" variant="contained" onClick={() => onEvent({ type: 'codex_auth_signin' })}>Log in</Button>
+            <Button size="small" variant="contained" startIcon={<LoginIcon fontSize="small" />} onClick={() => onEvent({ type: 'codex_auth_signin' })}>Log in</Button>
           )}
-          <Button size="small" variant="outlined" onClick={() => onEvent({ type: 'codex_auth_refresh' })}>Refresh</Button>
+          <Button size="small" variant="outlined" startIcon={<RefreshIcon fontSize="small" />} onClick={() => onEvent({ type: 'codex_auth_refresh' })}>Refresh</Button>
         </Stack>
       </Stack>
     </Box>
@@ -226,7 +197,7 @@ export function StandaloneApp() {
         <Box sx={{ mt: 'auto' }}>
           {activeService === 'agent_reconciliation' && <AgentSidebarInfo args={args} onEvent={emitEvent} />}
           <Box sx={{ px: 2, pb: 2 }}>
-            <Button fullWidth variant="outlined" onClick={() => refresh()} disabled={loading || activeService === 'home'}>Refresh service</Button>
+            <Button fullWidth variant="outlined" startIcon={<RefreshIcon />} onClick={() => refresh()} disabled={loading || activeService === 'home'}>Refresh service</Button>
           </Box>
         </Box>
       </Drawer>

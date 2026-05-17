@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
-import re
-import threading
 import time
 import uuid
 from dataclasses import asdict, replace
@@ -22,6 +20,37 @@ from .agent_bioportal_service import (
     search_bioportal_candidates,
 )
 from .agent_llm_service import generate_structured_completion
+from . import agent_orchestrator_workflows as _workflow_impl
+from .agent_orchestrator_runtime import (
+    _WorkflowAdmissionController,
+    _chunked,
+    _coerce_positive_int,
+    _is_valid_qid,
+    _resolve_model_api_key_env,
+    _resolve_planner_api_key_env,
+    _resolve_planner_model,
+    _resolve_planner_provider,
+    run_with_timeout,
+)
+from .agent_candidate_scoring import (
+    VERIFIED_THRESHOLDS,
+    _apply_provider_signal_boost,
+    _build_no_match_decision,
+    _compute_auto_acceptance_score,
+    _evaluate_auto_accept,
+    _finalize_best_candidate,
+    _mapping_priority,
+    _merge_candidate_trace_metadata,
+    _normalize_mapping_type,
+    _normalize_provider_token,
+    _provider_is_trusted,
+    _safe_confidence,
+    _score_meets_suggestion_policy,
+    _score_meets_verified_policy,
+    _semantic_justification_for_decision,
+    _string_similarity,
+    _token_overlap_ratio,
+)
 from .agent_models import (
     AgentCandidate,
     AgentDecision,
@@ -53,1403 +82,92 @@ from semi_automatic_reconciliation.shared_table_io import (
 
 
 MAX_BATCH_WORKERS = 16
-VERIFIED_THRESHOLDS = {"exact": 0.65, "close": 0.70, "related": 0.80}
-CONSERVATIVE_SUGGESTION_THRESHOLDS = {"exact": 0.50, "close": 0.45, "related": 0.40}
-EXPLORATORY_SUGGESTION_THRESHOLDS = {"exact": 0.30, "close": 0.25, "related": 0.15}
+_WORKFLOW_RUN_WIKIDATA_IMPL = _workflow_impl.run_wikidata_deep_agent
 
 
-def run_with_timeout(func, timeout: int, *args, **kwargs):
-    """Run a function with a timeout.
-
-    Returns a tuple: (timed_out: bool, result: Any)
-
-    Notes:
-    - This enforces a *caller* timeout boundary and returns promptly when the
-      deadline is exceeded.
-    - It does not force-kill already running work inside `func` (Python threads
-      cannot be preemptively terminated safely). Downstream providers should
-      still use request-level timeouts and cooperative cancellation where
-      possible.
-    """
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(func, *args, **kwargs)
-    try:
-        return False, future.result(timeout=timeout)
-    except concurrent.futures.TimeoutError:
-        # Best-effort cancellation for not-yet-started work.
-        future.cancel()
-        return True, None
-    finally:
-        # Do not wait on timeout: waiting would defeat the timeout boundary.
-        executor.shutdown(wait=False, cancel_futures=True)
-
-
-class _WorkflowAdmissionController:
-    """Stagger per-term workflow starts while still allowing bounded parallel work.
-
-    The provider modules already enforce request-level timeouts and, for
-    Wikidata, endpoint-specific throttling/backoff. This controller adds a
-    second safety layer at the orchestration boundary: parallel workers may run
-    concurrently, but their externally-chatty workflows are admitted with a
-    configurable minimum spacing so a batch cannot create an initial request
-    burst against Wikidata, BioPortal, or LLM endpoints.
-    """
-
-    def __init__(self, min_interval_seconds: float = 0.0):
-        try:
-            interval = float(min_interval_seconds)
-        except Exception:
-            interval = 0.0
-        self.min_interval_seconds = max(0.0, interval)
-        self._lock = threading.Lock()
-        self._next_start_at = 0.0
-
-    def wait_for_turn(self) -> None:
-        if self.min_interval_seconds <= 0:
-            return
-
-        with self._lock:
-            now = time.monotonic()
-            wait_seconds = max(0.0, self._next_start_at - now)
-            self._next_start_at = max(now, self._next_start_at) + self.min_interval_seconds
-
-        if wait_seconds > 0:
-            time.sleep(wait_seconds)
-
-
-def _coerce_positive_int(value: Any, default: int, *, upper_bound: Optional[int] = None) -> int:
-    try:
-        coerced = int(value)
-    except Exception:
-        coerced = int(default)
-    coerced = max(1, coerced)
-    if upper_bound is not None:
-        coerced = min(coerced, int(upper_bound))
-    return coerced
-
-
-def _chunked(items: List[Any], chunk_size: int) -> Iterable[List[Any]]:
-    for start in range(0, len(items), max(1, int(chunk_size))):
-        yield items[start : start + max(1, int(chunk_size))]
-
-
-def _mapping_priority(mapping_type: str) -> int:
-    normalized = (mapping_type or "none").lower()
-    return {"exact": 3, "close": 2, "related": 1, "none": 0}.get(normalized, 0)
-
-
-def _resolve_model_api_key_env(config: AgentRunConfig) -> str:
-    candidate = getattr(config, "model_api_key_env", None)
-    if candidate and str(candidate).strip():
-        return str(candidate).strip()
-    legacy = getattr(config, "openai_api_key_env", None)
-    if legacy and str(legacy).strip():
-        return str(legacy).strip()
-    return "OPENAI_API_KEY"
-
-
-def _resolve_planner_provider(config: AgentRunConfig) -> str:
-    provider = str(config.planner_model_provider or "").strip()
-    return provider or config.model_provider
-
-
-def _resolve_planner_model(config: AgentRunConfig) -> str:
-    model_name = str(config.planner_model_name or "").strip()
-    return model_name or config.model_name
-
-
-def _resolve_planner_api_key_env(config: AgentRunConfig) -> str:
-    planner_env = str(config.planner_model_api_key_env or "").strip()
-    return planner_env or _resolve_model_api_key_env(config)
-
-
-def _is_valid_qid(value: str) -> bool:
-    return bool(re.fullmatch(r"Q\d+", str(value or "").strip().upper()))
-
-
-def _safe_confidence(value: Any, default: float = 0.0) -> float:
-    try:
-        score = float(value)
-    except Exception:
-        score = float(default)
-    return max(0.0, min(1.0, score))
-
-
-def _apply_provider_signal_boost(score: Optional[CandidateScore], term: str) -> Optional[CandidateScore]:
-    if score is None:
-        return None
-
-    original_confidence = _safe_confidence(getattr(score, "confidence", 0.0), default=0.0)
-    mapping_type = _normalize_mapping_type(getattr(score, "mapping_type", ""))
-    candidate_label = str(getattr(getattr(score, "candidate", None), "label", "") or "")
-    lexical_exact = candidate_label.strip().lower() == str(term or "").strip().lower()
-    boosted_confidence = original_confidence
-    reason = ""
-
-    if mapping_type == "exact" and lexical_exact:
-        boosted_confidence = max(original_confidence, 0.85)
-        reason = "exact_mapping_and_lexical_label_match"
-    elif mapping_type == "exact":
-        boosted_confidence = max(original_confidence, 0.70)
-        reason = "exact_mapping"
-
-    score.confidence = _safe_confidence(boosted_confidence, default=original_confidence)
-    if getattr(score, "skos_decision", None) is not None:
-        score.skos_decision.confidence = score.confidence
-
-    metadata = {
-        "provider_signal_boost_applied": bool(reason and score.confidence > original_confidence),
-        "confidence_before_boost": original_confidence,
-        "confidence_after_boost": score.confidence,
-    }
-    if reason:
-        metadata["provider_signal_boost_reason"] = reason
-    score.trace_metadata.update(metadata)
-    return score
-
-
-def _merge_candidate_trace_metadata(score: Optional[CandidateScore], trace_metadata: Dict[str, Any]) -> None:
-    if score is None:
-        return
-    candidate_trace = getattr(score, "trace_metadata", {}) or {}
-    if isinstance(candidate_trace, dict):
-        trace_metadata.update(candidate_trace)
-
-
-def _score_meets_verified_policy(score: Optional[CandidateScore], config: AgentRunConfig) -> bool:
-    """Return whether a candidate score satisfies strict verified-match policy gates."""
-    if score is None:
-        return False
-
-    mapping_type = _normalize_mapping_type(getattr(score, "mapping_type", ""))
-    if mapping_type == "none":
-        return False
-
-    confidence = _safe_confidence(getattr(score, "confidence", 0.0), default=0.0)
-    decision_source = str(getattr(score, "explanation_source", "") or "").strip().lower()
-    from_fallback = bool(getattr(score, "from_fallback", False))
-
-    if bool(getattr(config, "verified_match_require_exact", True)) and mapping_type != "exact":
-        return False
-
-    relation_specific_threshold = getattr(config, f"verified_match_min_confidence_{mapping_type}", None)
-    configured_default = getattr(config, "verified_match_min_confidence", VERIFIED_THRESHOLDS.get(mapping_type, 0.80))
-    min_confidence = _safe_confidence(
-        relation_specific_threshold
-        if relation_specific_threshold is not None
-        else VERIFIED_THRESHOLDS.get(mapping_type, configured_default),
-        default=VERIFIED_THRESHOLDS.get(mapping_type, 0.80),
-    )
-    if confidence < min_confidence:
-        return False
-
-    if bool(getattr(config, "verified_match_require_llm_decision", False)) and decision_source != "llm":
-        return False
-
-    if bool(getattr(config, "verified_match_require_no_fallback", False)) and from_fallback:
-        return False
-
-    return True
-
-
-def _score_meets_suggestion_policy(score: Optional[CandidateScore], config: AgentRunConfig) -> bool:
-    """Return whether a candidate is suitable to show for manual review.
-
-    Verified policy remains the stricter auto/real-match gate. This suggestion
-    policy is deliberately separate so provider-specific agents can surface a
-    useful candidate and the multi-agent layer can decide whether to show it.
-    """
-    if score is None:
-        return False
-
-    mapping_type = _normalize_mapping_type(getattr(score, "mapping_type", ""))
-    if mapping_type == "none":
-        return False
-
-    confidence = _safe_confidence(getattr(score, "confidence", 0.0), default=0.0)
-    from_fallback = bool(getattr(score, "from_fallback", False))
-    mode = str(getattr(config, "candidate_review_mode", "conservative") or "conservative").strip().lower()
-
-    if mode == "exploratory":
-        thresholds = EXPLORATORY_SUGGESTION_THRESHOLDS
-        allow_fallback = True
-    else:
-        thresholds = CONSERVATIVE_SUGGESTION_THRESHOLDS
-        allow_fallback = False
-
-    if confidence < thresholds.get(mapping_type, 1.0):
-        return False
-    if not allow_fallback and from_fallback:
-        return False
-    return True
-
-
-def _build_no_match_decision(
-    term: str,
-    definition: str,
-    source_name: str,
-    run_id: str,
-    reason: str,
-    *,
-    workflow: str,
-    trace_metadata: Optional[Dict[str, Any]] = None,
-) -> AgentDecision:
-    """Create a normalized no-match decision with optional trace metadata."""
-    explanation = str(reason or "No matching candidate passed verification.").strip()
-    return AgentDecision(
-        term=term,
-        definition=definition,
-        candidate=None,
-        skos=None,
-        status="no_match",
-        explanation=explanation,
-        run_id=run_id,
-        source_name=source_name,
-        trace_metadata={**(trace_metadata or {}), "workflow": workflow, "status": "no_match"},
+def _sync_workflow_dependencies() -> None:
+    for name in (
+        "WikidataEntityDetails",
+        "WikidataRateLimitError",
+        "classify_skos_match",
+        "dedupe_candidates",
+        "find_best_definition",
+        "find_term_in_ontology",
+        "find_term_in_ontology_with_definition",
+        "generate_structured_completion",
+        "load_candidate_by_qid",
+        "normalize_mapping_type",
+        "recommend_ontology_acronyms",
+        "search_bioportal_candidates",
+        "search_wikidata_candidates",
+        "search_wikidata_candidates_multiquery",
+        "search_wikidata_candidates_with_options",
+    ):
+        setattr(_workflow_impl, name, globals()[name])
+    patched_wikidata = globals()["run_wikidata_deep_agent"]
+    _workflow_impl.run_wikidata_deep_agent = (
+        patched_wikidata
+        if patched_wikidata is not _ORCHESTRATOR_RUN_WIKIDATA_WRAPPER
+        else _WORKFLOW_RUN_WIKIDATA_IMPL
     )
 
 
-def _semantic_justification_for_decision(decision: AgentDecision, config: AgentRunConfig) -> str:
-    """Return SSSOM mapping_justification value for semantic workflows.
+def _score_candidate(*args, **kwargs):
+    _sync_workflow_dependencies()
+    return _workflow_impl._score_candidate(*args, **kwargs)
 
-    Guide alignment:
-    - semantic similarity threshold-based matching should use
-      ``semapv:SemanticSimilarityThresholdMatching`` when a score-driven semantic
-      process made the mapping decision;
-    - manual review/curation actions may override this later in UI flows.
-    """
-    skos = getattr(decision, "skos", None)
-    if skos is None:
-        return SEMANTIC_MAPPING_JUSTIFICATION
 
-    fallback_reason = str(getattr(skos, "fallback_reason", "") or "").strip().lower()
-    decision_source = str(getattr(skos, "decision_source", "") or "").strip().lower()
-    confidence = _safe_confidence(getattr(skos, "confidence", None), default=0.0)
-    auto_threshold = _safe_confidence(getattr(config, "auto_accept_min_confidence", 0.95), default=0.95)
+def _merge_and_trim_candidate_pool(*args, **kwargs):
+    _sync_workflow_dependencies()
+    return _workflow_impl._merge_and_trim_candidate_pool(*args, **kwargs)
 
-    if decision_source == "heuristic_fallback" and fallback_reason in {"heuristic_similarity", "llm_error"}:
-        if not bool(getattr(config, "allow_heuristic_fallback", True)):
-            return "semapv:MappingReview"
-        return SEMANTIC_MAPPING_JUSTIFICATION
 
-    if confidence > 0.0:
-        return SEMANTIC_MAPPING_JUSTIFICATION
+def _build_baseline_candidate_pool(*args, **kwargs):
+    _sync_workflow_dependencies()
+    return _workflow_impl._build_baseline_candidate_pool(*args, **kwargs)
 
-    # Conservative default for semantic agent workflow.
-    _ = auto_threshold
-    return SEMANTIC_MAPPING_JUSTIFICATION
 
+def _should_trigger_agentic_refinement(*args, **kwargs):
+    _sync_workflow_dependencies()
+    return _workflow_impl._should_trigger_agentic_refinement(*args, **kwargs)
 
-def _normalize_mapping_type(mapping_type: Any) -> str:
-    normalized = str(mapping_type or "").strip().lower()
-    if normalized in {"exact", "skos:exactmatch"}:
-        return "exact"
-    if normalized in {"close", "skos:closematch"}:
-        return "close"
-    if normalized in {"related", "skos:relatedmatch"}:
-        return "related"
-    return "none"
 
+def _generate_agentic_plan(*args, **kwargs):
+    _sync_workflow_dependencies()
+    return _workflow_impl._generate_agentic_plan(*args, **kwargs)
 
-def _normalize_provider_token(value: Any) -> str:
-    return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
 
+def _execute_agentic_plan_actions(*args, **kwargs):
+    _sync_workflow_dependencies()
+    return _workflow_impl._execute_agentic_plan_actions(*args, **kwargs)
 
-def _provider_is_trusted(provider: Any, config: AgentRunConfig) -> bool:
-    provider_token = _normalize_provider_token(provider)
-    if not provider_token:
-        return False
-    trusted_tokens = {
-        _normalize_provider_token(item)
-        for item in (getattr(config, "trusted_ontologies", None) or [])
-        if str(item or "").strip()
-    }
-    if not trusted_tokens:
-        return False
-    if provider_token in trusted_tokens:
-        return True
-    return any(token and token in provider_token for token in trusted_tokens)
 
+def _derive_llm_error_fix_suggestion(*args, **kwargs):
+    _sync_workflow_dependencies()
+    return _workflow_impl._derive_llm_error_fix_suggestion(*args, **kwargs)
 
-def _token_overlap_ratio(text_a: str, text_b: str) -> float:
-    tokens_a = {token for token in str(text_a or "").strip().lower().split() if token}
-    tokens_b = {token for token in str(text_b or "").strip().lower().split() if token}
-    if not tokens_a or not tokens_b:
-        return 0.0
-    return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
 
+def _candidate_to_decision(*args, **kwargs):
+    _sync_workflow_dependencies()
+    return _workflow_impl._candidate_to_decision(*args, **kwargs)
 
-def _string_similarity(term: str, label: str) -> float:
-    left = str(term or "").strip().lower()
-    right = str(label or "").strip().lower()
-    if not left or not right:
-        return 0.0
-    if left == right:
-        return 1.0
-    return _token_overlap_ratio(left, right)
 
+def _build_notebook_faithful_multiagent_config(*args, **kwargs):
+    _sync_workflow_dependencies()
+    return _workflow_impl._build_notebook_faithful_multiagent_config(*args, **kwargs)
 
-def _compute_auto_acceptance_score(
-    *,
-    term: str,
-    candidate_label: str,
-    mapping_type: str,
-    confidence: float,
-    decision_source: str,
-    fallback_reason: str,
-    provider: str,
-    config: AgentRunConfig,
-) -> float:
-    normalized_mapping = _normalize_mapping_type(mapping_type)
-    mapping_component = {
-        "exact": 1.0,
-        "close": 0.6,
-        "related": 0.3,
-        "none": 0.0,
-    }.get(normalized_mapping, 0.0)
-    lexical_similarity = _string_similarity(term, candidate_label)
-    llm_component = 1.0 if str(decision_source or "").strip().lower() == "llm" else 0.0
-    fallback_component = 1.0 if not str(fallback_reason or "").strip() else 0.0
-    trusted_component = 1.0 if _provider_is_trusted(provider, config) else 0.0
 
-    composite = (
-        0.55 * _safe_confidence(confidence, default=0.0)
-        + 0.20 * mapping_component
-        + 0.15 * lexical_similarity
-        + 0.05 * llm_component
-        + 0.05 * fallback_component
-    )
-    if getattr(config, "auto_accept_trusted_ontologies_only", False):
-        composite = 0.90 * composite + 0.10 * trusted_component
-    else:
-        composite = 0.95 * composite + 0.05 * trusted_component
-    return _safe_confidence(composite, default=0.0)
+def run_wikidata_deep_agent(*args, **kwargs):
+    _sync_workflow_dependencies()
+    return _workflow_impl.run_wikidata_deep_agent(*args, **kwargs)
 
 
-def _evaluate_auto_accept(
-    *,
-    term: str,
-    decision: AgentDecision,
-    config: AgentRunConfig,
-) -> tuple[bool, float, str]:
-    if not getattr(config, "auto_accept_enabled", False):
-        return False, 0.0, "auto_accept_disabled"
+def run_bioportal_wikidata_multiagent(*args, **kwargs):
+    _sync_workflow_dependencies()
+    return _workflow_impl.run_bioportal_wikidata_multiagent(*args, **kwargs)
 
-    candidate = getattr(decision, "candidate", None)
-    skos = getattr(decision, "skos", None)
-    if candidate is None or skos is None:
-        return False, 0.0, "missing_candidate_or_skos"
 
-    mapping_type = _normalize_mapping_type(getattr(skos, "mapping_type", ""))
-    confidence = _safe_confidence(getattr(skos, "confidence", None), default=0.0)
-    decision_source = str(getattr(skos, "decision_source", "") or "").strip().lower()
-    fallback_reason = str(getattr(skos, "fallback_reason", "") or "").strip()
-    provider = str(getattr(candidate, "source_provider", "") or "").strip()
-    auto_score = _compute_auto_acceptance_score(
-        term=term,
-        candidate_label=str(getattr(candidate, "label", "") or ""),
-        mapping_type=mapping_type,
-        confidence=confidence,
-        decision_source=decision_source,
-        fallback_reason=fallback_reason,
-        provider=provider,
-        config=config,
-    )
-
-    failed_checks: List[str] = []
-    if getattr(config, "auto_accept_require_exact_match", True) and mapping_type != "exact":
-        failed_checks.append("requires_exact_match")
-    if getattr(config, "auto_accept_require_llm_decision", True) and decision_source != "llm":
-        failed_checks.append("requires_llm_decision")
-    if getattr(config, "auto_accept_require_no_fallback", True) and fallback_reason:
-        failed_checks.append("requires_no_fallback")
-    if getattr(config, "auto_accept_trusted_ontologies_only", False) and not _provider_is_trusted(provider, config):
-        failed_checks.append("requires_trusted_ontology")
-
-    threshold = _safe_confidence(getattr(config, "auto_accept_min_confidence", 0.95), default=0.95)
-    if auto_score < threshold:
-        failed_checks.append("below_auto_accept_threshold")
-
-    if failed_checks:
-        return False, auto_score, ";".join(failed_checks)
-    return True, auto_score, "auto_accept_policy_passed"
-
-
-def _score_candidate(
-    term: str,
-    definition: str,
-    candidate: AgentCandidate,
-    config: AgentRunConfig,
-    *,
-    stats: Optional[AgenticExecutionStats] = None,
-    enrich_with_wikidata_details: bool = True,
-) -> CandidateScore:
-    candidate_text_for_matching = candidate.description or candidate.label
-    raw_identifier = candidate.raw_identifier or candidate.uri.rsplit("/", 1)[-1]
-    wikidata_fallback_reason: Optional[str] = None
-    wikidata_fallback_error_type: Optional[str] = None
-    wikidata_fallback_error_message: Optional[str] = None
-    if enrich_with_wikidata_details:
-        try:
-            details = WikidataEntityDetails(raw_identifier)
-        except WikidataRateLimitError as exc:
-            details = None
-            wikidata_fallback_reason = "wikidata_rate_limit"
-            wikidata_fallback_error_type = type(exc).__name__
-            wikidata_fallback_error_message = str(exc)[:300]
-        except Exception as exc:
-            details = None
-            wikidata_fallback_reason = "wikidata_lookup_error"
-            wikidata_fallback_error_type = type(exc).__name__
-            wikidata_fallback_error_message = str(exc)[:300]
-
-        if details:
-            candidate_text_for_matching = (
-                details.get("definition")
-                or details.get("description")
-                or candidate_text_for_matching
-            )
-
-    if stats is not None:
-        stats.skos_calls_used += 1
-        stats.total_llm_calls_used += 1
-
-    decision = classify_skos_match(
-        term,
-        definition,
-        candidate.label,
-        candidate_text_for_matching,
-        model_name=config.model_name,
-        provider=config.model_provider,
-        use_llm=True,
-        allow_heuristic_fallback=bool(getattr(config, "allow_heuristic_fallback", True)),
-        api_key_env=_resolve_model_api_key_env(config),
-        reasoning_effort=config.reasoning_effort,
-    )
-
-    if wikidata_fallback_reason and decision.decision_source == "heuristic_fallback":
-        decision.fallback_reason = wikidata_fallback_reason
-        if not getattr(decision, "fallback_error_type", None):
-            decision.fallback_error_type = wikidata_fallback_error_type
-        if not getattr(decision, "fallback_error_message", None):
-            decision.fallback_error_message = wikidata_fallback_error_message
-
-    score = CandidateScore(
-        candidate=candidate,
-        mapping_type=decision.mapping_type,
-        confidence=_safe_confidence(getattr(decision, "confidence", None), default=0.0),
-        explanation_source=getattr(decision, "decision_source", "heuristic_fallback"),
-        from_fallback=bool(getattr(decision, "fallback_reason", None)),
-        explanation=getattr(decision, "explanation", "") or "",
-        skos_decision=decision,
-    )
-    return _apply_provider_signal_boost(score, term) or score
-
-
-def _merge_and_trim_candidate_pool(
-    pool: List[AgentCandidate],
-    new_candidates: List[AgentCandidate],
-    limit: int,
-) -> List[AgentCandidate]:
-    merged = dedupe_candidates([*(pool or []), *(new_candidates or [])])
-    return merged[: max(1, int(limit or 1))]
-
-
-def _build_baseline_candidate_pool(term: str, config: AgentRunConfig) -> List[AgentCandidate]:
-    limit = max(1, int(config.candidate_pool_limit or config.max_iterations or 1))
-    search_profile = str(getattr(config, "_wikidata_search_profile", "") or "").strip().lower()
-    if search_profile and search_profile != "default":
-        baseline = search_wikidata_candidates_with_options(term, limit=limit, profile=search_profile)
-    else:
-        baseline = search_wikidata_candidates(term, limit=limit)
-    return dedupe_candidates(baseline)[:limit]
-
-
-def _should_trigger_agentic_refinement(
-    best_score: Optional[CandidateScore],
-    stats: AgenticExecutionStats,
-    config: AgentRunConfig,
-) -> bool:
-    if not config.enable_agentic_refinement:
-        return False
-    if stats.planner_calls_used >= max(0, int(config.agentic_max_planner_calls or 0)):
-        return False
-    if stats.total_llm_calls_used >= max(1, int(config.agentic_total_llm_call_budget or 1)):
-        return False
-
-    policy = str(config.agentic_trigger_policy or "no_exact_or_low_confidence").strip().lower()
-    if best_score is None:
-        return True
-    if policy == "always":
-        return True
-    if policy == "no_exact_or_low_confidence":
-        if (best_score.mapping_type or "").lower() == "exact":
-            return best_score.confidence < float(config.agentic_min_confidence_to_skip_refinement or 0.8)
-        return True
-    return (best_score.mapping_type or "").lower() != "exact"
-
-
-ALLOWED_AGENTIC_ACTIONS = {
-    "rewrite_query",
-    "broaden_query",
-    "narrow_query",
-    "request_alias_search",
-    "focus_related_concepts",
-    "inspect_specific_qid",
-}
-
-
-def _generate_agentic_plan(
-    term: str,
-    definition: str,
-    top_candidates: List[CandidateScore],
-    config: AgentRunConfig,
-    stats: AgenticExecutionStats,
-) -> AgenticPlan:
-    if stats.planner_calls_used >= max(0, int(config.agentic_max_planner_calls or 0)):
-        return AgenticPlan(actions=[], stop_reason="planner_budget_exhausted", confidence_note="")
-
-    planner_provider = _resolve_planner_provider(config)
-    planner_model_name = _resolve_planner_model(config)
-    planner_api_key_env = _resolve_planner_api_key_env(config)
-
-    candidate_summary = [
-        {
-            "label": cs.candidate.label,
-            "qid": cs.candidate.raw_identifier,
-            "mapping_type": cs.mapping_type,
-            "confidence": round(cs.confidence, 4),
-        }
-        for cs in (top_candidates or [])[:5]
-    ]
-
-    system_prompt = (
-        "You are a constrained planner for Wikidata reconciliation. "
-        "Return JSON only with keys actions (array), stop_reason, confidence_note."
-    )
-    user_prompt = (
-        f"Input term: {term}\n"
-        f"Definition: {definition}\n"
-        f"Top candidates: {json.dumps(candidate_summary, ensure_ascii=False)}\n\n"
-        "Allowed action_type values only: "
-        "rewrite_query, broaden_query, narrow_query, request_alias_search, "
-        "focus_related_concepts, inspect_specific_qid.\n"
-        "Each action must be an object with keys action_type, payload, reason."
-    )
-
-    stats.planner_calls_used += 1
-    stats.total_llm_calls_used += 1
-
-    try:
-        payload = generate_structured_completion(
-            planner_provider,
-            planner_model_name,
-            system_prompt,
-            user_prompt,
-            api_key_env=planner_api_key_env,
-            temperature=0,
-            max_tokens=700,
-            reasoning_effort=config.reasoning_effort,
-            retries_on_parse_failure=1,
-            interaction_purpose="planner",
-            term_id=term,
-        )
-    except Exception:
-        return AgenticPlan(actions=[], stop_reason="planner_error", confidence_note="")
-
-    actions_payload = payload.get("actions", []) if isinstance(payload, dict) else []
-    actions: List[AgenticPlanAction] = []
-    if isinstance(actions_payload, list):
-        for item in actions_payload:
-            if not isinstance(item, dict):
-                continue
-            action_type = str(item.get("action_type", "")).strip()
-            if action_type not in ALLOWED_AGENTIC_ACTIONS:
-                continue
-            raw_payload = item.get("payload", {})
-            actions.append(
-                AgenticPlanAction(
-                    action_type=action_type,
-                    payload=raw_payload if isinstance(raw_payload, dict) else {},
-                    reason=str(item.get("reason", "") or ""),
-                )
-            )
-
-    return AgenticPlan(
-        actions=actions,
-        stop_reason=str(payload.get("stop_reason", "") if isinstance(payload, dict) else "") or "planned",
-        confidence_note=str(payload.get("confidence_note", "") if isinstance(payload, dict) else ""),
-    )
-
-
-def _execute_agentic_plan_actions(
-    plan: AgenticPlan,
-    term: str,
-    config: AgentRunConfig,
-    stats: AgenticExecutionStats,
-) -> List[AgentCandidate]:
-    generated: List[AgentCandidate] = []
-    max_actions = max(0, int(config.agentic_max_tool_actions or 0))
-    pool_limit = max(1, int(config.candidate_pool_limit or 1))
-
-    for action in plan.actions:
-        if stats.tool_actions_used >= max_actions:
-            break
-        stats.tool_actions_used += 1
-
-        payload = action.payload or {}
-        action_type = action.action_type
-
-        if action_type == "inspect_specific_qid":
-            qid = str(payload.get("qid", "")).strip().upper()
-            if _is_valid_qid(qid):
-                candidate = load_candidate_by_qid(qid)
-                if candidate is not None:
-                    generated.append(candidate)
-            continue
-
-        if action_type == "request_alias_search":
-            aliases = payload.get("aliases", [])
-            if isinstance(aliases, list):
-                queries = [str(alias).strip() for alias in aliases if str(alias).strip()]
-                generated.extend(
-                    search_wikidata_candidates_multiquery(
-                        queries,
-                        per_query_limit=min(5, pool_limit),
-                    )
-                )
-            continue
-
-        query = str(payload.get("query", "")).strip() or term
-        if action_type == "rewrite_query":
-            generated.extend(search_wikidata_candidates_with_options(query, limit=min(8, pool_limit), profile="default"))
-        elif action_type == "broaden_query":
-            generated.extend(search_wikidata_candidates_with_options(query, limit=min(8, pool_limit), profile="broaden"))
-        elif action_type == "narrow_query":
-            generated.extend(search_wikidata_candidates_with_options(query, limit=min(8, pool_limit), profile="narrow"))
-        elif action_type == "focus_related_concepts":
-            generated.extend(search_wikidata_candidates_with_options(query, limit=min(8, pool_limit), profile="focus_related"))
-
-    return dedupe_candidates(generated)
-
-
-def _finalize_best_candidate(pool_scores: List[CandidateScore]) -> Optional[CandidateScore]:
-    if not pool_scores:
-        return None
-
-    def _rank_key(item: CandidateScore):
-        return (
-            _mapping_priority(item.mapping_type),
-            item.confidence,
-            -1 if item.from_fallback else 0,
-        )
-
-    return max(pool_scores, key=_rank_key)
-
-
-def _derive_llm_error_fix_suggestion(
-    *,
-    config: AgentRunConfig,
-    fallback_error_type: Optional[str],
-    fallback_error_message: Optional[str],
-) -> str:
-    provider = str(getattr(config, "model_provider", "") or "").strip() or "selected provider"
-    model_name = str(getattr(config, "model_name", "") or "").strip() or "selected model"
-    error_text = f"{fallback_error_type or ''} {fallback_error_message or ''}".strip().lower()
-
-    if any(token in error_text for token in ["401", "403", "unauthorized", "forbidden", "auth", "api key", "permission"]):
-        env_name = _resolve_model_api_key_env(config)
-        return (
-            f"Check credentials for provider '{provider}'. Verify the API key in '{env_name}' and confirm model "
-            f"'{model_name}' is enabled for that key."
-        )
-
-    if any(token in error_text for token in ["429", "rate limit", "too many requests"]):
-        return (
-            "Provider rate limit reached. Wait and retry, lower Max workers, or switch to a model/provider with "
-            "higher throughput."
-        )
-
-    if "openai_compatible" in provider.lower() and any(token in error_text for token in ["connection", "refused", "host", "name or service not known", "dns"]):
-        return (
-            "OpenAI-compatible endpoint appears unreachable. Verify OPENAI_COMPATIBLE_BASE_URL and ensure the local/remote "
-            "endpoint is running and accessible."
-        )
-
-    if any(token in error_text for token in ["timeout", "timed out"]):
-        return "LLM request timed out. Increase timeout, reduce batch pressure, or select a faster model."
-
-    if any(token in error_text for token in ["json", "parse", "schema", "format"]):
-        return (
-            "Model returned an invalid structured payload. Try a model with stronger JSON adherence or reduce reasoning complexity."
-        )
-
-    if any(token in error_text for token in ["context length", "token limit", "maximum context"]):
-        return "Prompt likely exceeded model context limits. Use a larger-context model or reduce prompt/definition size."
-
-    return (
-        f"Review provider '{provider}' availability and model '{model_name}' settings, then retry. "
-        "If needed, continue with heuristic fallback for the remaining terms."
-    )
-
-
-def _candidate_to_decision(
-    term: str,
-    definition: str,
-    candidate: Optional[AgentCandidate],
-    source_name: str,
-    workflow: str,
-    run_id: str,
-    config: AgentRunConfig,
-) -> AgentDecision:
-    if candidate is None:
-        return AgentDecision(
-            term=term,
-            definition=definition,
-            candidate=None,
-            skos=None,
-            status="no_match",
-            explanation="No matching candidate was found.",
-            run_id=run_id,
-            source_name=source_name,
-        )
-
-    skos_decision = None
-    explanation = candidate.description or ""
-    if config.enable_skos_matching:
-        skos_decision = classify_skos_match(
-            term,
-            definition,
-            candidate.label,
-            candidate.description or candidate.label,
-            model_name=config.model_name,
-            provider=config.model_provider,
-            use_llm=True,
-            allow_heuristic_fallback=bool(getattr(config, "allow_heuristic_fallback", True)),
-            api_key_env=_resolve_model_api_key_env(config),
-            reasoning_effort=config.reasoning_effort,
-        )
-        explanation = skos_decision.explanation or explanation
-
-    return AgentDecision(
-        term=term,
-        definition=definition,
-        candidate=candidate,
-        skos=skos_decision,
-        status="matched",
-        explanation=explanation,
-        run_id=run_id,
-        source_name=source_name,
-    )
-
-
-def _build_notebook_faithful_multiagent_config(config: AgentRunConfig) -> AgentRunConfig:
-    """Apply notebook-faithful defaults for the BioPortal+Wikidata cascade.
-
-    The cascade may surface exact, close, and related SKOS relations, but the
-    word "verified" is reserved for model-confirmed, non-fallback decisions.
-    Relation-specific confidence floors avoid treating a weak relatedMatch as
-    equivalent to an exactMatch while still allowing strongly supported
-    non-exact relations to pass.
-    """
-    return replace(
-        config,
-        enforce_verified_match=True,
-        verified_match_require_exact=False,
-        verified_match_min_confidence=0.0,
-        verified_match_min_confidence_exact=VERIFIED_THRESHOLDS["exact"],
-        verified_match_min_confidence_close=VERIFIED_THRESHOLDS["close"],
-        verified_match_min_confidence_related=VERIFIED_THRESHOLDS["related"],
-        verified_match_require_llm_decision=True,
-        verified_match_require_no_fallback=True,
-        allow_unverified_candidate_suggestions=False,
-    )
-
-
-def run_wikidata_deep_agent(
-    term: str,
-    definition: str,
-    config: AgentRunConfig,
-    source_name: str = "input",
-    run_id: Optional[str] = None,
-    search_profile: Optional[str] = None,
-) -> AgentDecision:
-    run_id = run_id or str(uuid.uuid4())
-    started = time.perf_counter()
-    stats = AgenticExecutionStats()
-    trace_metadata: Dict[str, Any] = {
-        "workflow": "wikidata_deep_agent",
-        "candidate_count": 0,
-        "enrichment_attempted": 0,
-        "agentic_enabled": bool(config.enable_agentic_refinement),
-        "agentic_triggered": False,
-        "agentic_stop_reason": "",
-        "baseline_confidence": 0.0,
-        "best_confidence": 0.0,
-        "wikidata_search_profile": str(search_profile or "default"),
-    }
-
-    enforce_verified_match = bool(getattr(config, "enforce_verified_match", False))
-
-    def _search_and_rank() -> Optional[CandidateScore]:
-        if search_profile:
-            config_for_search = replace(config)
-            setattr(config_for_search, "_wikidata_search_profile", str(search_profile or "").strip())
-        else:
-            config_for_search = config
-
-        baseline_pool = _build_baseline_candidate_pool(term, config_for_search)
-        trace_metadata["candidate_count"] = len(baseline_pool)
-        trace_metadata["verified_policy_enforced"] = enforce_verified_match
-
-        scored: List[CandidateScore] = []
-        for rank, candidate in enumerate(baseline_pool[: max(1, int(config.max_iterations or 1))]):
-            scored_candidate = _score_candidate(
-                term,
-                definition,
-                candidate,
-                config,
-                stats=stats,
-                enrich_with_wikidata_details=(rank < 2),
-            )
-            scored.append(scored_candidate)
-            if not enforce_verified_match and scored_candidate.mapping_type == "exact" and scored_candidate.confidence >= 0.98:
-                break
-
-        best = _finalize_best_candidate(scored)
-        trace_metadata["baseline_confidence"] = float(best.confidence if best else 0.0)
-        baseline_verified = _score_meets_verified_policy(best, config)
-        trace_metadata["baseline_verified_match"] = bool(baseline_verified)
-
-        if _should_trigger_agentic_refinement(best, stats, config):
-            trace_metadata["agentic_triggered"] = True
-            plan = _generate_agentic_plan(term, definition, scored, config, stats)
-            trace_metadata["agentic_stop_reason"] = plan.stop_reason
-
-            new_candidates = _execute_agentic_plan_actions(plan, term, config, stats)
-            merged_pool = _merge_and_trim_candidate_pool(
-                [s.candidate for s in scored],
-                new_candidates,
-                limit=config.candidate_pool_limit,
-            )
-
-            existing_ids = {
-                str(s.candidate.raw_identifier or s.candidate.uri).strip().lower()
-                for s in scored
-            }
-            max_rescore = max(0, int(config.agentic_max_candidate_rescore or 0))
-            rescored = 0
-            for candidate in merged_pool:
-                key = str(candidate.raw_identifier or candidate.uri).strip().lower()
-                if key in existing_ids:
-                    continue
-                if rescored >= max_rescore:
-                    break
-                scored.append(
-                    _score_candidate(
-                        term,
-                        definition,
-                        candidate,
-                        config,
-                        stats=stats,
-                        enrich_with_wikidata_details=False,
-                    )
-                )
-                rescored += 1
-                stats.candidate_rescore_used += 1
-
-            best = _finalize_best_candidate(scored)
-            trace_metadata["refined_verified_match"] = bool(_score_meets_verified_policy(best, config))
-
-        trace_metadata["best_confidence"] = float(best.confidence if best else 0.0)
-        trace_metadata["best_verified_match"] = bool(_score_meets_verified_policy(best, config))
-        return best
-
-    timed_out, result = run_with_timeout(_search_and_rank, config.timeout_seconds)
-    stats.elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
-    trace_metadata.update(stats.as_dict())
-
-    if timed_out:
-        return AgentDecision(
-            term=term,
-            definition=definition,
-            candidate=None,
-            skos=None,
-            status="timeout",
-            explanation="The Wikidata deep-agent workflow timed out.",
-            run_id=run_id,
-            source_name=source_name,
-            trace_metadata={**trace_metadata, "status": "timeout"},
-        )
-
-    if result is None:
-        return _build_no_match_decision(
-            term,
-            definition,
-            source_name,
-            run_id,
-            "No matching candidate was found.",
-            workflow="wikidata_deep_agent",
-            trace_metadata=trace_metadata,
-        )
-
-    _merge_candidate_trace_metadata(result, trace_metadata)
-
-    if enforce_verified_match and not _score_meets_verified_policy(result, config):
-        if not bool(getattr(config, "allow_unverified_candidate_suggestions", True)):
-            return _build_no_match_decision(
-                term,
-                definition,
-                source_name,
-                run_id,
-                "No candidate satisfied strict verified-match policy; returning No Match.",
-                workflow="wikidata_deep_agent",
-                trace_metadata={
-                    **trace_metadata,
-                    "verified_match_rejected": True,
-                },
-            )
-
-    best_candidate = result.candidate
-    decision = _candidate_to_decision(term, definition, best_candidate, source_name, "wikidata_deep_agent", run_id, config)
-    if result is not None and result.skos_decision is not None:
-        decision.skos = result.skos_decision
-        decision.explanation = result.skos_decision.explanation or decision.explanation
-
-    if enforce_verified_match and not _score_meets_verified_policy(result, config):
-        decision.status = "candidate_suggested"
-        decision.explanation = (
-            "Candidate found but it did not satisfy strict verified-match policy. "
-            "Treat this as a suggestion requiring manual review."
-        )
-
-    decision.trace_metadata = {**trace_metadata, "status": decision.status}
-    return decision
-
-
-def run_bioportal_wikidata_multiagent(
-    term: str,
-    definition: str,
-    config: AgentRunConfig,
-    bioportal_api_key: Optional[str] = None,
-    source_name: str = "input",
-    run_id: Optional[str] = None,
-    related_wikidata_bias: bool = False,
-) -> AgentDecision:
-    run_id = run_id or str(uuid.uuid4())
-    started = time.perf_counter()
-    stats = AgenticExecutionStats()
-    effective_config = _build_notebook_faithful_multiagent_config(config)
-    enforce_verified_match = bool(getattr(effective_config, "enforce_verified_match", False))
-    trace_metadata: Dict[str, Any] = {
-        "workflow": "bioportal_wikidata_multiagent",
-        "bioportal_attempts": 0,
-        "wikidata_fallback_used": False,
-        "provider_escalation_used": False,
-        "wikidata_second_pass_started": False,
-        "candidate_review_mode": effective_config.candidate_review_mode,
-        "verified_policy_enforced": enforce_verified_match,
-        "bioportal_trusted_shortcuts_used": 0,
-        "related_wikidata_bias": bool(related_wikidata_bias),
-        "notebook_faithful_policy_applied": True,
-        "agentic_enabled": bool(effective_config.enable_agentic_refinement),
-        "agentic_triggered": False,
-        "agentic_stop_reason": "",
-    }
-
-    def _record_wikidata_fallback_unavailable(exc: Exception) -> None:
-        """Record that the optional Wikidata fallback could not be used."""
-        trace_metadata["wikidata_fallback_used"] = True
-        trace_metadata["wikidata_second_pass_status"] = "unavailable"
-        trace_metadata["wikidata_second_pass_has_candidate"] = False
-        trace_metadata["wikidata_fallback_unavailable"] = True
-        trace_metadata["wikidata_fallback_reason"] = "wikidata_rate_limit"
-        trace_metadata["wikidata_fallback_error_type"] = type(exc).__name__
-        trace_metadata["wikidata_fallback_error_message"] = str(exc)[:300]
-        trace_metadata["notice"] = (
-            "Wikidata fallback could not be used in this run because Wikidata maxlag persisted. "
-            "The BioPortal part of the BioPortal+Wikidata workflow completed without aborting the run."
-        )
-
-    def _merge_wikidata_fallback_trace(wikidata_trace: Dict[str, Any]) -> None:
-        """Surface nested Wikidata fallback agentic metrics on the multi-agent trace.
-
-        The monitoring UI reads planner/LLM/refinement metrics from the top-level
-        per-term trace. BioPortal+Wikidata runs previously stored the Wikidata
-        deep-agent trace only under ``wikidata_trace_metadata``, so the UI showed
-        zeros even when fallback refinement used planner calls. Keep the nested
-        trace for debugging, but aggregate the counters onto this workflow too.
-        """
-        if not isinstance(wikidata_trace, dict):
-            return
-
-        trace_metadata["wikidata_trace_metadata"] = dict(wikidata_trace)
-        for field in (
-            "planner_calls_used",
-            "skos_calls_used",
-            "tool_actions_used",
-            "total_llm_calls_used",
-            "candidate_rescore_used",
-        ):
-            try:
-                current = int(getattr(stats, field, 0) or 0)
-                nested = int(wikidata_trace.get(field, 0) or 0)
-                setattr(stats, field, current + nested)
-            except Exception:
-                continue
-
-        if bool(wikidata_trace.get("agentic_triggered", False)):
-            trace_metadata["agentic_triggered"] = True
-        nested_stop_reason = str(wikidata_trace.get("agentic_stop_reason", "") or "").strip()
-        if nested_stop_reason:
-            trace_metadata["agentic_stop_reason"] = nested_stop_reason
-
-        for field in (
-            "baseline_confidence",
-            "best_confidence",
-            "best_verified_match",
-            "baseline_verified_match",
-            "refined_verified_match",
-            "wikidata_search_profile",
-        ):
-            if field in wikidata_trace:
-                trace_metadata[f"wikidata_{field}"] = wikidata_trace.get(field)
-
-    def _search_pipeline() -> Optional[CandidateScore]:
-        best_score: Optional[CandidateScore] = None
-        best_priority = -1
-
-        def _suggested_best_score_or_none() -> Optional[CandidateScore]:
-            if _score_meets_suggestion_policy(best_score, effective_config):
-                return best_score
-            if best_score is not None:
-                trace_metadata["suggestion_policy_rejected"] = True
-            return None
-
-        ontologies = effective_config.bioportal_agent_ontologies
-        if bioportal_api_key and not ontologies:
-            ontologies = recommend_ontology_acronyms([term], bioportal_api_key, min_valid=5)
-
-        if bioportal_api_key:
-            for ontology in ontologies[: effective_config.max_iterations]:
-                trace_metadata["bioportal_attempts"] = int(trace_metadata.get("bioportal_attempts", 0)) + 1
-
-                if _provider_is_trusted(ontology, effective_config):
-                    best_def = find_term_in_ontology_with_definition(
-                        term,
-                        ontology,
-                        exact=True,
-                        case_sensitive=False,
-                        api_key=bioportal_api_key,
-                        allow_fallback=effective_config.trusted_fastpath_allow_non_exact_fallback,
-                    )
-                    if best_def:
-                        mapped_id = best_def.get("mapped_id", "")
-                        
-                        gate_passed = True
-                        is_chebi = "CHEBI" in ontology.upper()
-                        
-                        if effective_config.trusted_fastpath_requires_provider_evidence:
-                            lexical_match = False
-                            label = best_def.get("label", "").lower()
-                            if label == term.lower() or term.lower() in [str(s).lower() for s in best_def.get("synonyms", [])]:
-                                lexical_match = True
-                            
-                            if is_chebi:
-                                if "obo/CHEBI_" not in mapped_id and "CHEBI:" not in mapped_id:
-                                    gate_passed = False
-                                if best_def.get("acronym", "").upper() != "CHEBI":
-                                    gate_passed = False
-                            
-                            if not lexical_match:
-                                gate_passed = False
-
-                        if gate_passed:
-                            trace_metadata["bioportal_trusted_shortcuts_used"] = int(
-                                trace_metadata.get("bioportal_trusted_shortcuts_used", 0)
-                            ) + 1
-                            candidate = AgentCandidate(
-                                uri=mapped_id,
-                                label=best_def.get("label") or term,
-                                description=best_def.get("definition") or best_def.get("label") or term,
-                                source_provider=ontology,
-                                source_workflow="bioportal_wikidata_multiagent",
-                                raw_identifier=mapped_id,
-                            )
-                            stats.skos_calls_used += 1
-                            stats.total_llm_calls_used += 1
-                            decision = classify_skos_match(
-                                term,
-                                definition,
-                                candidate.label,
-                                candidate.description,
-                                provider=effective_config.model_provider,
-                                model_name=effective_config.model_name,
-                                api_key_env=_resolve_model_api_key_env(effective_config),
-                                allow_heuristic_fallback=bool(getattr(effective_config, "allow_heuristic_fallback", True)),
-                                reasoning_effort=effective_config.reasoning_effort,
-                            )
-                            candidate_score = CandidateScore(
-                                candidate=candidate,
-                                mapping_type=decision.mapping_type,
-                                confidence=_safe_confidence(getattr(decision, "confidence", None), default=0.0),
-                                explanation_source=getattr(decision, "decision_source", "heuristic_fallback"),
-                                from_fallback=bool(getattr(decision, "fallback_reason", None)),
-                                explanation=getattr(decision, "explanation", "") or "",
-                                skos_decision=decision,
-                            )
-                            
-                            if effective_config.exact_match_requires_provider_lexical_gate and candidate_score.mapping_type == "exact":
-                                if not lexical_match or (is_chebi and gate_passed is False):
-                                    candidate_score.mapping_type = "close"
-                                    if candidate_score.skos_decision:
-                                        candidate_score.skos_decision.mapping_type = "close"
-                            _apply_provider_signal_boost(candidate_score, term)
-                            
-                            priority = _mapping_priority(candidate_score.mapping_type)
-                            if priority > best_priority:
-                                best_priority = priority
-                                best_score = candidate_score
-                            elif priority == best_priority and best_score is not None:
-                                if candidate_score.confidence > best_score.confidence:
-                                    best_score = candidate_score
-
-                            if enforce_verified_match and _score_meets_verified_policy(candidate_score, effective_config):
-                                trace_metadata["bioportal_verified_match_found"] = True
-                                return candidate_score
-                    continue
-
-                best_definition = find_best_definition(term, ontology, api_key=bioportal_api_key, exact=True)
-                if not best_definition:
-                    continue
-                candidate = AgentCandidate(
-                    uri=best_definition.get("mapped_id", ""),
-                    label=best_definition.get("label", term),
-                    description=best_definition.get("definition", "") or best_definition.get("label", term),
-                    source_provider=ontology,
-                    source_workflow="bioportal_wikidata_multiagent",
-                    raw_identifier=best_definition.get("mapped_id", ""),
-                )
-                stats.skos_calls_used += 1
-                stats.total_llm_calls_used += 1
-                decision = classify_skos_match(
-                    term,
-                    definition,
-                    candidate.label,
-                    candidate.description,
-                    provider=effective_config.model_provider,
-                    model_name=effective_config.model_name,
-                    api_key_env=_resolve_model_api_key_env(effective_config),
-                    allow_heuristic_fallback=bool(getattr(effective_config, "allow_heuristic_fallback", True)),
-                    reasoning_effort=effective_config.reasoning_effort,
-                )
-                candidate_score = CandidateScore(
-                    candidate=candidate,
-                    mapping_type=decision.mapping_type,
-                    confidence=_safe_confidence(getattr(decision, "confidence", None), default=0.0),
-                    explanation_source=getattr(decision, "decision_source", "heuristic_fallback"),
-                    from_fallback=bool(getattr(decision, "fallback_reason", None)),
-                    explanation=getattr(decision, "explanation", "") or "",
-                    skos_decision=decision,
-                )
-                _apply_provider_signal_boost(candidate_score, term)
-                priority = _mapping_priority(candidate_score.mapping_type)
-                if priority > best_priority:
-                    best_priority = priority
-                    best_score = candidate_score
-                elif priority == best_priority and best_score is not None:
-                    if candidate_score.confidence > best_score.confidence:
-                        best_score = candidate_score
-                if not enforce_verified_match and priority >= 2:
-                    return best_score
-
-                if enforce_verified_match and _score_meets_verified_policy(candidate_score, effective_config):
-                    trace_metadata["bioportal_verified_match_found"] = True
-                    return candidate_score
-
-            if best_score is None:
-                search_candidates = search_bioportal_candidates(term, api_key=bioportal_api_key, ontologies=ontologies[:5] if ontologies else None)
-                if search_candidates:
-                    fallback_candidate = search_candidates[0]
-                    fallback_score = _score_candidate(
-                        term,
-                        definition,
-                        fallback_candidate,
-                        effective_config,
-                        stats=stats,
-                    )
-                    best_score = fallback_score
-                    trace_metadata["bioportal_search_fallback_used"] = True
-
-        if best_score is not None:
-            trace_metadata["bioportal_best_mapping_type"] = best_score.mapping_type
-            trace_metadata["bioportal_best_confidence"] = float(best_score.confidence)
-            trace_metadata["bioportal_best_verified"] = bool(_score_meets_verified_policy(best_score, effective_config))
-
-            if not enforce_verified_match:
-                return best_score
-
-            if _score_meets_verified_policy(best_score, effective_config):
-                return best_score
-
-            trace_metadata["bioportal_best_rejected_by_verified_policy"] = True
-
-        trace_metadata["provider_escalation_used"] = True
-        trace_metadata["provider_escalation_from"] = "BioPortal"
-        trace_metadata["provider_escalation_to"] = "Wikidata"
-        trace_metadata["provider_escalation_reason"] = (
-            "bioportal_no_verified_match" if best_score else "bioportal_no_candidate"
-        )
-        trace_metadata["wikidata_second_pass_started"] = True
-        trace_metadata["candidate_review_mode"] = effective_config.candidate_review_mode
-
-        wikidata_config = replace(
-            effective_config,
-            enforce_verified_match=False,
-            allow_unverified_candidate_suggestions=True,
-        )
-
-        try:
-            if related_wikidata_bias:
-                wikidata_decision = run_wikidata_deep_agent(
-                    term,
-                    definition,
-                    wikidata_config,
-                    source_name=source_name,
-                    run_id=run_id,
-                    search_profile="focus_related",
-                )
-            else:
-                wikidata_decision = run_wikidata_deep_agent(
-                    term,
-                    definition,
-                    wikidata_config,
-                    source_name=source_name,
-                    run_id=run_id,
-                )
-        except WikidataRateLimitError as exc:
-            _record_wikidata_fallback_unavailable(exc)
-            return _suggested_best_score_or_none()
-        trace_metadata["wikidata_fallback_used"] = True
-        trace_metadata["wikidata_second_pass_status"] = getattr(wikidata_decision, "status", None)
-        trace_metadata["wikidata_second_pass_has_candidate"] = bool(getattr(wikidata_decision, "candidate", None))
-        trace_metadata["wikidata_second_pass_mapping_type"] = (
-            wikidata_decision.skos.mapping_type if wikidata_decision.skos else None
-        )
-        trace_metadata["wikidata_second_pass_confidence"] = (
-            wikidata_decision.skos.confidence if wikidata_decision.skos else None
-        )
-        trace_metadata["wikidata_second_pass_decision_source"] = (
-            wikidata_decision.skos.decision_source if wikidata_decision.skos else None
-        )
-        trace_metadata["wikidata_second_pass_fallback_reason"] = (
-            wikidata_decision.skos.fallback_reason if wikidata_decision.skos else None
-        )
-        if isinstance(getattr(wikidata_decision, "trace_metadata", None), dict):
-            _merge_wikidata_fallback_trace(dict(wikidata_decision.trace_metadata))
-
-        wikidata_candidate = wikidata_decision.candidate
-        wikidata_skos = wikidata_decision.skos
-        if wikidata_candidate is None or wikidata_skos is None:
-            return _suggested_best_score_or_none()
-
-        wikidata_score = CandidateScore(
-            candidate=wikidata_candidate,
-            mapping_type=wikidata_skos.mapping_type,
-            confidence=_safe_confidence(getattr(wikidata_skos, "confidence", None), default=0.0),
-            explanation_source=getattr(wikidata_skos, "decision_source", "heuristic_fallback"),
-            from_fallback=bool(getattr(wikidata_skos, "fallback_reason", None)),
-            explanation=getattr(wikidata_skos, "explanation", "") or "",
-            skos_decision=wikidata_skos,
-        )
-        _apply_provider_signal_boost(wikidata_score, term)
-        if _score_meets_verified_policy(wikidata_score, effective_config) or _score_meets_suggestion_policy(wikidata_score, effective_config):
-            trace_metadata["wikidata_second_pass_accepted_by_outer_policy"] = True
-            return wikidata_score
-
-        trace_metadata["wikidata_second_pass_rejected_by_outer_policy"] = True
-        return _suggested_best_score_or_none()
-
-    timed_out, result = run_with_timeout(_search_pipeline, effective_config.timeout_seconds)
-    stats.elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
-    trace_metadata.update(stats.as_dict())
-    if timed_out:
-        return AgentDecision(
-            term=term,
-            definition=definition,
-            candidate=None,
-            skos=None,
-            status="timeout",
-            explanation="The BioPortal/Wikidata multi-agent workflow timed out.",
-            run_id=run_id,
-            source_name=source_name,
-            trace_metadata={**trace_metadata, "status": "timeout"},
-        )
-    if result is None:
-        unavailable_notice = str(trace_metadata.get("notice") or "").strip()
-        no_match_reason = "No candidate satisfied strict verification criteria across BioPortal and Wikidata."
-        if unavailable_notice:
-            no_match_reason = f"{no_match_reason} {unavailable_notice}"
-        return _build_no_match_decision(
-            term,
-            definition,
-            source_name,
-            run_id,
-            no_match_reason,
-            workflow="bioportal_wikidata_multiagent",
-            trace_metadata=trace_metadata,
-        )
-
-    _merge_candidate_trace_metadata(result, trace_metadata)
-
-    verified = _score_meets_verified_policy(result, effective_config)
-    suggested = _score_meets_suggestion_policy(result, effective_config)
-    if enforce_verified_match and not verified:
-        if not suggested:
-            return _build_no_match_decision(
-                term,
-                definition,
-                source_name,
-                run_id,
-                "No candidate satisfied strict verified-match policy; returning No Match.",
-                workflow="bioportal_wikidata_multiagent",
-                trace_metadata={
-                    **trace_metadata,
-                    "verified_match_rejected": True,
-                    "suggestion_policy_rejected": True,
-                },
-            )
-
-    decision = _candidate_to_decision(
-        term,
-        definition,
-        result.candidate,
-        source_name,
-        "bioportal_wikidata_multiagent",
-        run_id,
-        effective_config,
-    )
-    decision.skos = result.skos_decision
-    if result.skos_decision is not None:
-        decision.explanation = result.skos_decision.explanation or decision.explanation
-
-    if enforce_verified_match and not verified:
-        decision.status = "candidate_suggested"
-        if str(getattr(result.candidate, "source_provider", "") or "").strip().lower() == "wikidata":
-            decision.explanation = (
-                "Wikidata candidate found after BioPortal did not produce a verified match. "
-                "The candidate did not satisfy the strict verified-match policy and requires manual review."
-            )
-        else:
-            decision.explanation = (
-                "Candidate found but it did not satisfy strict verified-match policy. "
-                "Treat this as a suggestion requiring manual review."
-            )
-    if result.candidate is not None:
-        decision.provider = result.candidate.source_provider
-
-    decision.trace_metadata = {**trace_metadata, **getattr(decision, "trace_metadata", {}), "status": decision.status}
-    return decision
+_ORCHESTRATOR_RUN_WIKIDATA_WRAPPER = run_wikidata_deep_agent
 
 
 def apply_agent_decision_to_dataframe(df: pd.DataFrame, row_index, decision: AgentDecision, config: AgentRunConfig) -> pd.DataFrame:
@@ -1554,6 +272,7 @@ def run_agent_batch_on_dataframe(
     progress_callback: Optional[Callable[[int, int, str, Optional[Dict[str, Any]]], None]] = None,
     source_name: str = "input",
     resume_skip_processed_terms: bool = False,
+    stop_requested_callback: Optional[Callable[[], bool]] = None,
 ) -> pd.DataFrame:
     definitions_lookup = definitions_lookup or {}
     df_out = ensure_agent_output_columns(df)
@@ -1702,7 +421,7 @@ def run_agent_batch_on_dataframe(
         term_started = time.perf_counter()
         term = str(df_out.at[row_index, "Term"]).strip()
         definition = str(definitions_lookup.get(term, df_out.at[row_index, "Definition"])).strip()
-        if not term:
+        if not term or (stop_requested_callback and stop_requested_callback()):
             return {
                 "row_index": row_index,
                 "term": term,
@@ -1713,6 +432,15 @@ def run_agent_batch_on_dataframe(
             }
 
         admission_controller.wait_for_turn()
+        if stop_requested_callback and stop_requested_callback():
+            return {
+                "row_index": row_index,
+                "term": term,
+                "definition": definition,
+                "decision": None,
+                "elapsed_ms": round((time.perf_counter() - term_started) * 1000.0, 2),
+                "skip": True,
+            }
         decision = _run_term_decision(term, definition, related_retry=False)
         elapsed_ms = round((time.perf_counter() - term_started) * 1000.0, 2)
         return {
@@ -1751,30 +479,61 @@ def run_agent_batch_on_dataframe(
     completed_positions = 0
     if effective_workers <= 1 or len(indices) <= 1:
         for row_index in indices:
+            if stop_requested_callback and stop_requested_callback():
+                break
             completed_positions += 1
             if _apply_processed_result(_process_row(row_index), completed_positions):
                 stopped_due_to_llm_error = True
                 break
-    else:
-        for batch in _chunked(indices, batch_size):
-            if stopped_due_to_llm_error:
+            if stop_requested_callback and stop_requested_callback():
                 break
-            batch_workers = min(effective_workers, len(batch))
-            with concurrent.futures.ThreadPoolExecutor(max_workers=batch_workers) as executor:
-                future_to_row = {executor.submit(_process_row, row_index): row_index for row_index in batch}
-                for future in concurrent.futures.as_completed(future_to_row):
+    else:
+        next_index_position = 0
+        accepting_new_work = True
+
+        def _submit_next(executor, future_to_row: Dict[concurrent.futures.Future, object]) -> bool:
+            nonlocal next_index_position
+            if next_index_position >= len(indices):
+                return False
+            if stop_requested_callback and stop_requested_callback():
+                return False
+            row_index = indices[next_index_position]
+            next_index_position += 1
+            future_to_row[executor.submit(_process_row, row_index)] = row_index
+            return True
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            future_to_row: Dict[concurrent.futures.Future, object] = {}
+            while len(future_to_row) < effective_workers and _submit_next(executor, future_to_row):
+                pass
+
+            while future_to_row:
+                done, _pending = concurrent.futures.wait(
+                    future_to_row,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    future_to_row.pop(future, None)
                     completed_positions += 1
                     result = future.result()
                     if _apply_processed_result(result, completed_positions):
                         stopped_due_to_llm_error = True
-                # A stop condition applies between chunks. Already-started work
-                # in this bounded chunk is allowed to finish to avoid abandoned
-                # provider calls and partially-written dataframe state.
+
+                if stopped_due_to_llm_error or (stop_requested_callback and stop_requested_callback()):
+                    accepting_new_work = False
+                    for future in list(future_to_row):
+                        if future.cancel():
+                            future_to_row.pop(future, None)
+
+                while accepting_new_work and len(future_to_row) < effective_workers:
+                    if not _submit_next(executor, future_to_row):
+                        break
 
     if (
         config.workflow == "bioportal_wikidata_multiagent"
         and bool(getattr(config, "enable_second_pass_related_retry", False))
         and not stopped_due_to_llm_error
+        and not (stop_requested_callback and stop_requested_callback())
     ):
         retry_items = [
             item
@@ -1803,6 +562,7 @@ def run_agent_batch(
     bioportal_api_key: Optional[str] = None,
     progress_callback: Optional[Callable[[BatchRunState], None]] = None,
     resume_skip_processed_terms: bool = False,
+    stop_requested_callback: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, pd.DataFrame]:
     outputs: Dict[str, pd.DataFrame] = {}
     tables = list(input_tables)
@@ -1821,6 +581,17 @@ def run_agent_batch(
         return status in {"timeout", "error", "failed"}
 
     for table_index, table in enumerate(tables, start=1):
+        if stop_requested_callback and stop_requested_callback():
+            state.stop_reason = "user_stopped"
+            state.stop_event = {
+                "stop_reason": "user_stopped",
+                "file": table.source_name,
+                "processed_terms": state.processed_terms,
+                "total_terms": state.total_terms,
+            }
+            state.status = "stopped_user"
+            state.messages.append("Run stopped by user before the next term started.")
+            break
         definitions_lookup = (definitions_by_source or {}).get(table.source_name, {})
         unreconciled = get_unreconciled_indices(table.dataframe, "No Match")
         if resume_skip_processed_terms and "Run ID" in table.dataframe.columns:
@@ -1878,16 +649,39 @@ def run_agent_batch(
             progress_callback=_progress,
             source_name=table.source_name,
             resume_skip_processed_terms=resume_skip_processed_terms,
+            stop_requested_callback=stop_requested_callback,
         )
 
         if state.stop_reason == "llm_error":
+            break
+        if stop_requested_callback and stop_requested_callback():
+            last_event = state.term_events[-1] if state.term_events else {}
+            state.stop_reason = "user_stopped"
+            state.stop_event = {
+                "stop_reason": "user_stopped",
+                "file": table.source_name,
+                "term": last_event.get("term"),
+                "processed_terms": state.processed_terms,
+                "total_terms": state.total_terms,
+            }
+            state.status = "stopped_user"
+            state.messages.append(
+                f"{table.source_name}: run stopped by user after {state.processed_terms}/{state.total_terms} term(s)."
+            )
+            if progress_callback:
+                progress_callback(state)
             break
 
         state.completed_files += 1
         if progress_callback:
             progress_callback(state)
 
-    state.status = "stopped_llm_error" if state.stop_reason == "llm_error" else "completed"
+    if state.stop_reason == "llm_error":
+        state.status = "stopped_llm_error"
+    elif state.stop_reason == "user_stopped":
+        state.status = "stopped_user"
+    else:
+        state.status = "completed"
     if progress_callback:
         progress_callback(state)
     return outputs

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, Tuple
@@ -33,6 +34,46 @@ SERVICE_IDS = {
     "rdf_generator",
     "rdf_to_table",
 }
+DEFAULT_MAX_EVENT_BODY_BYTES = 50 * 1024 * 1024
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _allowed_origins_from_env() -> set[str]:
+    raw = os.getenv("RDF4RISK_ALLOWED_ORIGINS", "")
+    return {origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()}
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    try:
+        parsed = urlparse(origin)
+    except Exception:
+        return False
+    return parsed.scheme in {"http", "https"} and (parsed.hostname or "") in LOOPBACK_HOSTS
+
+
+def _resolve_cors_origin(origin: str | None) -> str | None:
+    if not origin:
+        return None
+    normalized = origin.rstrip("/")
+    allowed_origins = _allowed_origins_from_env()
+    if "*" in allowed_origins:
+        return normalized
+    if normalized in allowed_origins:
+        return normalized
+    if not allowed_origins and _is_loopback_origin(normalized):
+        return normalized
+    return None
+
+
+def _max_event_body_bytes() -> int:
+    raw = str(os.getenv("RDF4RISK_MAX_EVENT_BODY_MB", "") or "").strip()
+    if not raw:
+        return DEFAULT_MAX_EVENT_BODY_BYTES
+    try:
+        return max(1, int(float(raw))) * 1024 * 1024
+    except ValueError:
+        LOGGER.warning("Invalid RDF4RISK_MAX_EVENT_BODY_MB=%r; using default.", raw)
+        return DEFAULT_MAX_EVENT_BODY_BYTES
 
 
 def _json_safe(value: Any) -> Any:
@@ -211,10 +252,13 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, payload: Any, status: int = HTTPStatus.OK) -> None:
         encoded = json.dumps(_json_safe(payload), ensure_ascii=False).encode("utf-8")
+        cors_origin = _resolve_cors_origin(self.headers.get("Origin"))
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        if cors_origin:
+            self.send_header("Access-Control-Allow-Origin", cors_origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
@@ -252,6 +296,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": f"Unknown service: {service_id}"}, HTTPStatus.NOT_FOUND)
                     return
                 length = int(self.headers.get("Content-Length", "0") or 0)
+                if length > _max_event_body_bytes():
+                    self._send_json({"error": "Event payload is too large."}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                    return
                 event = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
                 if not isinstance(event, dict):
                     self._send_json({"error": "Event payload must be a JSON object."}, HTTPStatus.BAD_REQUEST)

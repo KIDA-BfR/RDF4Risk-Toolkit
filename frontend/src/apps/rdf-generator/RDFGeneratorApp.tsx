@@ -86,12 +86,24 @@ const stages: { id: Stage; label: string; caption: string; optional?: boolean }[
 
 const optionalStepButtonSx = {
   '& .MuiStepIcon-root': {
-    color: '#60a5fa',
-    border: '2px dashed #60a5fa',
+    color: '#94a3b8',
+    border: '2px dashed #94a3b8',
     borderRadius: '50%',
     boxSizing: 'border-box',
     p: '2px',
-    bgcolor: 'rgba(239,246,255,.9)',
+    bgcolor: 'rgba(248,250,252,.92)',
+  },
+  '& .MuiStepIcon-text': { fill: '#475569', fontWeight: 900 },
+};
+
+const skippedOptionalStepButtonSx = {
+  '& .MuiStepIcon-root': {
+    color: '#2563eb',
+    border: '2px dashed #2563eb',
+    borderRadius: '50%',
+    boxSizing: 'border-box',
+    p: '2px',
+    bgcolor: 'rgba(239,246,255,.92)',
   },
   '& .MuiStepIcon-text': { fill: '#2563eb', fontWeight: 900 },
 };
@@ -136,11 +148,20 @@ function AppShell({ snapshot, activeStage, children }: { snapshot: Snapshot; act
   const data = snapshot.data ?? {}; const mapping = snapshot.mapping ?? {}; const outputs = snapshot.outputs ?? {};
   const activeStep = stages.findIndex((s) => s.id === activeStage);
   const activeStageMeta = stages[activeStep];
+  const optionalUsage: Record<Stage, boolean> = {
+    load: false,
+    enrich: Boolean(snapshot.mapping?.column_names?.some((column) => ['label', 'ui_link', 'acronym', 'source', 'message'].includes(column))),
+    templates: Boolean(snapshot.templates?.items?.length),
+    model: false,
+    reference: Boolean(snapshot.reference?.loaded || snapshot.outputs?.has_reference),
+    generate: false,
+    export: false,
+  };
   return <Box sx={{ bgcolor: '#eef7fb', minHeight: '100vh', p: { xs: 1, md: 2 }, borderRadius: 4 }}><Stack spacing={2}>
     <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 }, borderRadius: 4, background: 'linear-gradient(135deg,#ffffff 0%,#f0fdfa 50%,#eff6ff 100%)', boxShadow: '0 18px 48px rgba(15,23,42,.08)' }}>
       <Stack direction={{ xs: 'column', xl: 'row' }} spacing={2} alignItems={{ xs: 'stretch', xl: 'center' }} justifyContent="space-between">
         <Stack direction="row" spacing={1.5} alignItems="center"><RdfIcon /><Stack><Typography variant="h5">RDF Generator</Typography><Typography variant="body2" color="text.secondary">Guided workflow for data/mapping ingestion, URI enrichment, schema templates, RDF generation, DCAT metadata, and downloads</Typography></Stack></Stack>
-        <Stepper nonLinear activeStep={activeStep} sx={{ width: '100%', minWidth: { xl: 820 }, overflowX: 'auto', pb: 0.5 }}>{stages.map((stage, idx) => <Step key={stage.id} completed={idx < activeStep}><StepButton onClick={() => emit({ type: 'navigate', stage: stage.id })} sx={stage.optional ? optionalStepButtonSx : undefined}><Stack spacing={0.35}><Typography variant="body2" sx={{ fontWeight: 800 }}>{stage.label}</Typography><Typography variant="caption" color="text.secondary">{stage.caption}</Typography></Stack></StepButton></Step>)}</Stepper>
+        <Stepper nonLinear activeStep={activeStep} sx={{ width: '100%', minWidth: { xl: 820 }, overflowX: 'auto', pb: 0.5 }}>{stages.map((stage, idx) => { const optionalDone = Boolean(stage.optional && optionalUsage[stage.id]); const optionalSkipped = Boolean(stage.optional && !optionalDone && idx < activeStep); const optionalSx = optionalDone ? undefined : optionalSkipped ? skippedOptionalStepButtonSx : optionalStepButtonSx; return <Step key={stage.id} completed={stage.optional ? optionalDone : idx < activeStep}><StepButton onClick={() => emit({ type: 'navigate', stage: stage.id })} sx={stage.optional ? optionalSx : undefined}><Stack spacing={0.35}><Typography variant="body2" sx={{ fontWeight: 800 }}>{stage.label}</Typography><Typography variant="caption" color="text.secondary">{stage.caption}</Typography></Stack></StepButton></Step>; })}</Stepper>
       </Stack>
       {activeStageMeta?.optional && <Alert severity="info" variant="outlined" sx={{ mt: 2, borderStyle: 'dashed', borderColor: '#0f766e', bgcolor: 'rgba(240,253,250,.72)' }}>This workflow step is optional. You can complete it now or skip directly to the next required configuration step.</Alert>}
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4,1fr)' }, gap: 1.2, mt: 2 }}>

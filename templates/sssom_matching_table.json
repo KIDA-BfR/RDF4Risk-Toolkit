@@ -1,0 +1,41 @@
+{
+  "description": "Canonical SSSOM matching-table schema used across RDF4Risk workflows.",
+  "core_columns": [
+    "subject_id",
+    "subject_label",
+    "predicate_id",
+    "object_id",
+    "object_label",
+    "mapping_justification"
+  ],
+  "optional_export_columns": [
+    "author_id",
+    "confidence",
+    "comment",
+    "mapping_date",
+    "review_date",
+    "creator_id",
+    "creator_label",
+    "reviewer_id",
+    "reviewer_label",
+    "mapping_provider",
+    "object_source",
+    "mapping_tool",
+    "mapping_tool_version",
+    "publication_date",
+    "match_string"
+  ],
+  "legacy_required_columns": [
+    "Term",
+    "URI",
+    "RDF Role",
+    "Match Type"
+  ],
+  "default_mapping_justifications": {
+    "manual": "semapv:ManualMappingCuration",
+    "review": "semapv:MappingReview",
+    "lexical": "semapv:LexicalMatching",
+    "lexical_similarity_threshold": "semapv:LexicalSimilarityThresholdMatching",
+    "semantic_similarity_threshold": "semapv:SemanticSimilarityThresholdMatching"
+  }
+}

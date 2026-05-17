@@ -5,6 +5,11 @@ import traceback
 from urllib.parse import quote
 import logging # Import logging module
 
+try:
+    from .cache_utils import cache_data
+except ImportError:  # pragma: no cover - legacy direct module execution
+    from cache_utils import cache_data
+
 # --- Constants ---
 DEFAULT_OLS_API_URL = "https://www.ebi.ac.uk/ols4/api"
 DEFAULT_QUERY_FIELDS = "label,synonym,description,short_form,obo_id,iri"
@@ -12,12 +17,6 @@ DEFAULT_QUERY_FIELDS = "label,synonym,description,short_form,obo_id,iri"
 DEFAULT_INCLUDE_FIELDS = "iri,label,synonym,description,ontology_prefix"
 # Recommended sleep time between requests (seconds)
 SLEEP_TIME = 0.5
-
-# Lightweight no-op cache decorator used by the backend service
-def cache_data(ttl=None):
-    def decorator(func):
-        return func
-    return decorator
 
 @cache_data(ttl=3600)
 def query_ols(

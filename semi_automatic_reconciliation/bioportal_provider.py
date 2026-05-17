@@ -5,6 +5,11 @@ import traceback
 from urllib.parse import urlparse, quote
 import logging # Import logging module
 
+try:
+    from .cache_utils import cache_data
+except ImportError:  # pragma: no cover - legacy direct module execution
+    from cache_utils import cache_data
+
 # --- Constants ---
 # Default base URL, can be overridden by config
 DEFAULT_BIOPORTAL_API_URL = "https://data.bioontology.org"
@@ -12,12 +17,6 @@ DEFAULT_BIOPORTAL_API_URL = "https://data.bioontology.org"
 DEFAULT_INCLUDE_FIELDS = "prefLabel,synonym,definition"
 # Recommended sleep time between requests (seconds)
 SLEEP_TIME = 1.0
-
-# Lightweight no-op cache decorator used by the backend service
-def cache_data(ttl=None):
-    def decorator(func):
-        return func
-    return decorator
 
 @cache_data(ttl=3600)
 def query_bioportal(

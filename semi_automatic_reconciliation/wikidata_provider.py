@@ -4,11 +4,10 @@ import time
 import traceback
 import logging # Import logging module
 
-# Lightweight no-op cache decorator used by the backend service
-def cache_data(ttl=None):
-    def decorator(func):
-        return func
-    return decorator
+try:
+    from .cache_utils import cache_data
+except ImportError:  # pragma: no cover - legacy direct module execution
+    from cache_utils import cache_data
 
 @cache_data(ttl=3600)
 def query_wikidata(

@@ -8,52 +8,89 @@ Primary contract (strict SSSOM table used for exchange):
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import pandas as pd
 
 
-SSSOM_MATCHING_TABLE_COLUMNS = [
-    "subject_id",
-    "subject_label",
-    "predicate_id",
-    "object_id",
-    "object_label",
-    "mapping_justification",
-]
+_SSSOM_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "templates" / "sssom_matching_table.json"
+_FALLBACK_SSSOM_TEMPLATE = {
+    "core_columns": [
+        "subject_id",
+        "subject_label",
+        "predicate_id",
+        "object_id",
+        "object_label",
+        "mapping_justification",
+    ],
+    "optional_export_columns": [
+        "author_id",
+        "confidence",
+        "comment",
+        "mapping_date",
+        "review_date",
+        "creator_id",
+        "creator_label",
+        "reviewer_id",
+        "reviewer_label",
+        "mapping_provider",
+        "object_source",
+        "mapping_tool",
+        "mapping_tool_version",
+        "publication_date",
+        "match_string",
+    ],
+    "legacy_required_columns": ["Term", "URI", "RDF Role", "Match Type"],
+    "default_mapping_justifications": {
+        "manual": "semapv:ManualMappingCuration",
+        "review": "semapv:MappingReview",
+        "lexical": "semapv:LexicalMatching",
+        "lexical_similarity_threshold": "semapv:LexicalSimilarityThresholdMatching",
+        "semantic_similarity_threshold": "semapv:SemanticSimilarityThresholdMatching",
+    },
+}
 
-SSSOM_OPTIONAL_EXPORT_COLUMNS = [
-    "author_id",
-    "confidence",
-    "comment",
-    "mapping_date",
-    "review_date",
-    "creator_id",
-    "creator_label",
-    "reviewer_id",
-    "reviewer_label",
-    "mapping_provider",
-    "object_source",
-    "mapping_tool",
-    "mapping_tool_version",
-    "publication_date",
-    "match_string",
-]
+
+def _load_sssom_template() -> Dict[str, object]:
+    try:
+        payload = json.loads(_SSSOM_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    template = {**_FALLBACK_SSSOM_TEMPLATE, **(payload if isinstance(payload, dict) else {})}
+    for key in ("core_columns", "optional_export_columns", "legacy_required_columns"):
+        value = template.get(key)
+        if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+            template[key] = _FALLBACK_SSSOM_TEMPLATE[key]
+    justifications = template.get("default_mapping_justifications")
+    if not isinstance(justifications, dict):
+        template["default_mapping_justifications"] = _FALLBACK_SSSOM_TEMPLATE["default_mapping_justifications"]
+    return template
+
+
+_SSSOM_TEMPLATE = _load_sssom_template()
+
+SSSOM_MATCHING_TABLE_COLUMNS = list(_SSSOM_TEMPLATE["core_columns"])
+
+SSSOM_OPTIONAL_EXPORT_COLUMNS = list(_SSSOM_TEMPLATE["optional_export_columns"])
 
 CURATED_SSSOM_EXPORT_COLUMNS = SSSOM_MATCHING_TABLE_COLUMNS + SSSOM_OPTIONAL_EXPORT_COLUMNS
 
-LEGACY_REQUIRED_MATCHING_TABLE_COLUMNS = ["Term", "URI", "RDF Role", "Match Type"]
+LEGACY_REQUIRED_MATCHING_TABLE_COLUMNS = list(_SSSOM_TEMPLATE["legacy_required_columns"])
 
 # Kept for backwards import compatibility across the codebase.
 REQUIRED_MATCHING_TABLE_COLUMNS = SSSOM_MATCHING_TABLE_COLUMNS.copy()
 
-DEFAULT_MAPPING_JUSTIFICATION = "semapv:ManualMappingCuration"
-REVIEW_MAPPING_JUSTIFICATION = "semapv:MappingReview"
-LEXICAL_MAPPING_JUSTIFICATION = "semapv:LexicalMatching"
-LEXICAL_SIMILARITY_THRESHOLD_MAPPING_JUSTIFICATION = "semapv:LexicalSimilarityThresholdMatching"
-SEMANTIC_MAPPING_JUSTIFICATION = "semapv:SemanticSimilarityThresholdMatching"
+_DEFAULT_MAPPING_JUSTIFICATIONS = _SSSOM_TEMPLATE["default_mapping_justifications"]
+
+DEFAULT_MAPPING_JUSTIFICATION = str(_DEFAULT_MAPPING_JUSTIFICATIONS["manual"])
+REVIEW_MAPPING_JUSTIFICATION = str(_DEFAULT_MAPPING_JUSTIFICATIONS["review"])
+LEXICAL_MAPPING_JUSTIFICATION = str(_DEFAULT_MAPPING_JUSTIFICATIONS["lexical"])
+LEXICAL_SIMILARITY_THRESHOLD_MAPPING_JUSTIFICATION = str(_DEFAULT_MAPPING_JUSTIFICATIONS["lexical_similarity_threshold"])
+SEMANTIC_MAPPING_JUSTIFICATION = str(_DEFAULT_MAPPING_JUSTIFICATIONS["semantic_similarity_threshold"])
 
 JUSTIFICATION_EXTENSION_COLUMNS = [
     "subject_match_field",
