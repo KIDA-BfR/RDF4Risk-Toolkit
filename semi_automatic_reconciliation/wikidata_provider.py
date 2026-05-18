@@ -1,86 +1,53 @@
 # -*- coding: utf-8 -*-
-import requests
-import time
-import traceback
-import logging # Import logging module
+"""Wikidata reconciliation provider."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, List
 
 try:
-    from .cache_utils import cache_data
-except ImportError:  # pragma: no cover - legacy direct module execution
-    from cache_utils import cache_data
+    from .base_provider import BaseProvider
+except ImportError:  # pragma: no cover - direct script fallback
+    from base_provider import BaseProvider
 
-@cache_data(ttl=3600)
-def query_wikidata(
-    term,
-    limit=7,
-    api_url="https://www.wikidata.org/w/api.php",
-    user_agent="RDF4RiskToolkit/Wikidata"
-    # proxies parameter removed
-    ):
-    """
-    Queries the Wikidata API for entities (via GET).
+logger = logging.getLogger(__name__)
 
-    Args:
-        term (str): The term to search for.
-        limit (int): Maximum number of suggestions.
-        api_url (str): The URL of the Wikidata API.
-        user_agent (str): The User-Agent string for the request.
+DEFAULT_WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
 
-    Returns:
-        list: A list of suggestion dictionaries [{'uri': ..., 'label': ..., 'description': ...}].
-              Returns an empty list on error.
-    """
-    if not term:
-        logging.warning("Wikidata query attempted with empty term.")
-        return []
 
-    params = {"action": "wbsearchentities", "search": term, "language": "en", "format": "json", "limit": limit}
-    headers = {'User-Agent': user_agent}
-    suggestions = []
-    response = None
-    logging.info(f"Querying Wikidata: term='{term}', limit={limit}")
-    try:
-        # proxies argument removed
-        response = requests.get(api_url, params=params, headers=headers, timeout=15)
-        logging.debug(f"Wikidata request sent, sleeping briefly...")
-        time.sleep(0.05) # Brief pause
-        response.raise_for_status() # Raises HTTPError for 4xx/5xx
-        data = response.json()      # Can raise ValueError
+class WikidataProvider(BaseProvider):
+    name = "Wikidata"
+    sleep_time = 0.05
 
-        if "search" in data:
-            logging.info(f"Wikidata returned {len(data['search'])} hits for '{term}'.")
-            for result in data["search"]:
-                # Construct URI if concepturi is missing
-                entity_id = result.get('id')
-                uri = result.get("concepturi")
-                if not uri and entity_id:
-                    uri = f"http://www.wikidata.org/entity/{entity_id}"
+    def build_kwargs(self, config: dict, num_suggestions: int) -> dict:
+        api_url = config.get("wikidata", {}).get("api_url")
+        return {"api_url": api_url} if api_url else {}
 
-                if uri: # Only add if we have a valid URI
-                    suggestions.append({
+    def _fetch(
+        self,
+        term: str,
+        limit: int,
+        user_agent: str,
+        *,
+        api_url: str = DEFAULT_WIKIDATA_API_URL,
+        **_: Any,
+    ) -> List[Dict[str, Any]]:
+        params = {"action": "wbsearchentities", "search": term, "language": "en", "format": "json", "limit": limit}
+        data = self._get(api_url, params=params, headers={"User-Agent": user_agent}, timeout=15).json()
+        suggestions: list[dict[str, Any]] = []
+        for result in data.get("search", []) if isinstance(data, dict) else []:
+            entity_id = result.get("id")
+            uri = result.get("concepturi") or (f"http://www.wikidata.org/entity/{entity_id}" if entity_id else None)
+            if uri:
+                suggestions.append(
+                    {
                         "uri": uri,
                         "label": result.get("label", "N/A"),
                         "description": result.get("description", ""),
-                        "source_provider": "Wikidata" # Add source provider information
-                    })
-                    logging.debug(f"Wikidata: Added suggestion for '{term}': {result.get('label', 'N/A')} <{uri}>")
-                else:
-                    logging.warning(f"Wikidata hit for '{term}' skipped due to missing URI/ID: {result}")
-        else:
-            logging.info(f"Wikidata: No 'search' key in response for '{term}'.")
-
-
-    except ValueError as e: # JSONDecodeError
-        logging.warning(f"Wikidata: Error parsing JSON response for '{term}'. Status: {response.status_code if response else 'N/A'}", exc_info=True)
-        if response is not None: logging.warning(f"Wikidata Response Text: {response.text[:200]}...")
-        return []
-    except requests.exceptions.RequestException as e: # Catches Timeout, HTTPError, ConnectionError etc.
-         logging.warning(f"Wikidata: Network/HTTP Error for '{term}': {e}", exc_info=True)
-         # Proxy check removed
-         return []
-    except Exception as e:
-        logging.exception(f"Wikidata: Unexpected error for '{term}'") # Log full traceback
-        return []
-
-    logging.info(f"Wikidata query for '{term}' finished, returning {len(suggestions)} suggestions.")
-    return suggestions
+                        "source_provider": self.name,
+                    }
+                )
+            else:
+                logger.warning("Wikidata hit for %r skipped due to missing URI/ID: %s", term, result)
+        return suggestions

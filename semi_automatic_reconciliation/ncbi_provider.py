@@ -1,238 +1,185 @@
 # -*- coding: utf-8 -*-
-import requests
+"""NCBI E-utilities reconciliation provider."""
+
+from __future__ import annotations
+
+import logging
 import time
-import traceback
-import urllib.parse
-import logging # Import logging module
+from typing import Any, Dict, List
+
+import requests
 
 try:
-    from .cache_utils import cache_data
-except ImportError:  # pragma: no cover - legacy direct module execution
-    from cache_utils import cache_data
+    from .base_provider import BaseProvider
+except ImportError:  # pragma: no cover - direct script fallback
+    from base_provider import BaseProvider
 
-# --- Constants ---
+logger = logging.getLogger(__name__)
+
 EUTILS_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
 ESEARCH_URL = EUTILS_BASE_URL + "esearch.fcgi"
 ESUMMARY_URL = EUTILS_BASE_URL + "esummary.fcgi"
+DEFAULT_NCBI_DATABASES = ["taxonomy", "bioproject", "gene", "protein", "nuccore", "biosample", "sra", "pubmed"]
 
-# --- Helper function to construct NCBI URLs ---
+
 def _construct_ncbi_uri(db, item_id):
     """Constructs a standard URL for an NCBI object."""
     if not item_id:
         return None
-    # Specific URLs for common databases
-    if db == 'taxonomy':
+    if db == "taxonomy":
         return f"https://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi?id={item_id}"
-    elif db == 'bioproject':
+    if db == "bioproject":
         return f"https://www.ncbi.nlm.nih.gov/bioproject/{item_id}"
-    elif db == 'gene':
+    if db == "gene":
         return f"https://www.ncbi.nlm.nih.gov/gene/{item_id}"
-    elif db == 'protein':
+    if db == "protein":
         return f"https://www.ncbi.nlm.nih.gov/protein/{item_id}"
-    elif db == 'nuccore':
+    if db == "nuccore":
         return f"https://www.ncbi.nlm.nih.gov/nuccore/{item_id}"
-    elif db == 'biosample':
+    if db == "biosample":
         return f"https://www.ncbi.nlm.nih.gov/biosample/{item_id}"
-    elif db == 'sra':
-        return f"https://www.ncbi.nlm.nih.gov/sra?term={item_id}" # SRA uses term, not ID directly in URL
-    elif db == 'pubmed':
+    if db == "sra":
+        return f"https://www.ncbi.nlm.nih.gov/sra?term={item_id}"
+    if db == "pubmed":
         return f"https://pubmed.ncbi.nlm.nih.gov/{item_id}/"
-    # Generic fallback for other databases
-    else:
-        return f"https://www.ncbi.nlm.nih.gov/{db}/{item_id}"
+    return f"https://www.ncbi.nlm.nih.gov/{db}/{item_id}"
 
 
-@cache_data(ttl=3600)
-def query_ncbi(
-    term,
-    databases_to_search=['taxonomy', 'bioproject', 'gene', 'protein', 'nuccore', 'biosample', 'sra', 'pubmed'], # Expanded default databases
-    limit_per_db=10, # How many IDs to fetch from ESearch per DB?
-    api_key=None,    # Your NCBI API Key (STRONGLY RECOMMENDED!)
-    tool_name="RDF4RiskReconTool", # Your tool's name
-    email="user@example.com",      # Your email address (IMPORTANT!)
-    user_agent="RDF4RiskToolkit/NCBI" # User-Agent for header
-    ):
-    """
-    Queries NCBI E-utilities (ESearch + ESummary) to reconcile terms.
+class NcbiProvider(BaseProvider):
+    name = "NCBI"
 
-    Args:
-        term (str): The term to search for.
-        databases_to_search (list): List of NCBI databases to search.
-        limit_per_db (int): Maximum number of IDs ESearch should return per DB.
-        api_key (str, optional): Your NCBI API Key.
-        tool_name (str): Name of the tool for E-utilities parameters.
-        email (str): User's email for E-utilities parameters.
-        user_agent (str): User-Agent for the HTTP header.
+    def build_kwargs(self, config: dict, num_suggestions: int) -> dict:
+        provider_config = config.get("ncbi", {})
+        api_key = provider_config.get("api_key")
+        if not api_key:
+            raise ValueError("Required NCBI API Key not found in environment variables (.env / OS env).")
+        return {
+            "api_key": api_key,
+            "databases_to_search": config.get("ncbi_databases") or DEFAULT_NCBI_DATABASES,
+            "tool_name": provider_config.get("tool_name", "RDF4RiskReconTool"),
+            "email": provider_config.get("email", "user@example.com"),
+        }
 
-    Returns:
-        list: A list of suggestion dictionaries
-              [{'uri': ..., 'label': ..., 'description': ..., 'db': ..., 'id': ...}].
-              Returns an empty list on error.
-    """
-    if not term:
-        logging.warning("NCBI query attempted with empty term.")
-        return []
-    if not email or "@example.com" in email or email == "no-email-provided@example.com":
-         logging.warning(f"NCBI Provider: A valid email address must be provided (current: {email}). Continuing, but NCBI might block requests.")
+    def _fetch(
+        self,
+        term: str,
+        limit: int,
+        user_agent: str,
+        *,
+        databases_to_search: list[str] | None = None,
+        api_key: str | None = None,
+        tool_name: str = "RDF4RiskReconTool",
+        email: str = "user@example.com",
+        **_: Any,
+    ) -> List[Dict[str, Any]]:
+        if not email or "@example.com" in email or email == "no-email-provided@example.com":
+            logger.warning("NCBI Provider: A valid email address should be provided. Current: %s", email)
 
-    all_suggestions = []
-    base_params = {
-        'tool': tool_name,
-        'email': email,
-    }
-    if api_key:
-        base_params['api_key'] = api_key
-        sleep_time = 0.11 # Rate limit for API Key: 10 requests/second
-    else:
-        logging.warning("NCBI Provider: No NCBI API Key provided. Rate limit restricted to 3 requests/second.")
-        sleep_time = 0.34 # Rate limit without API Key: 3 requests/second
+        base_params = {"tool": tool_name, "email": email}
+        sleep_time = 0.34
+        if api_key:
+            base_params["api_key"] = api_key
+            sleep_time = 0.11
+        else:
+            logger.warning("NCBI Provider: No NCBI API Key provided. Rate limit restricted to 3 requests/second.")
 
-    headers = {'User-Agent': user_agent}
+        headers = {"User-Agent": user_agent}
+        all_suggestions: list[dict[str, Any]] = []
 
-    # 1. Iterate through the databases to search
-    for db in databases_to_search:
-        search_ids = []
-        esearch_response = None
-        logging.info(f"NCBI: Starting ESearch for term '{term}' in database '{db}'")
-        try:
-            # 2. ESearch Request (GET)
-            esearch_params = base_params.copy()
-            esearch_params.update({
-                'db': db,
-                'term': term,
-                'retmax': limit_per_db,
-                'retmode': 'json',
-            })
-
-            logging.debug(f"NCBI ESearch ({db}) params: {esearch_params}")
-            esearch_response = requests.get(ESEARCH_URL, params=esearch_params, headers=headers, timeout=20)
-            logging.debug(f"NCBI ESearch ({db}) request sent, sleeping for {sleep_time}s")
-            time.sleep(sleep_time) # Wait AFTER EACH request!
-            esearch_response.raise_for_status()
-            esearch_data = esearch_response.json()
-
-            # Extract IDs
-            if 'esearchresult' in esearch_data and 'idlist' in esearch_data['esearchresult']:
-                search_ids = esearch_data['esearchresult']['idlist']
-                logging.info(f"NCBI ESearch ({db}) for '{term}' found {len(search_ids)} IDs: {search_ids}")
-            elif 'error' in esearch_data:
-                 logging.warning(f"NCBI ESearch ({db}) API error for '{term}': {esearch_data.get('error')}")
-                 continue
-            elif 'warning' in esearch_data:
-                 logging.warning(f"NCBI ESearch ({db}) API warning for '{term}': {esearch_data.get('warning')}")
-                 if 'esearchresult' in esearch_data and 'idlist' in esearch_data['esearchresult']:
-                    search_ids = esearch_data['esearchresult']['idlist']
-                 else:
-                     continue
-
-        except ValueError as e:
-            logging.warning(f"NCBI ESearch ({db}): Error parsing JSON response for '{term}'. Status: {esearch_response.status_code if esearch_response else 'N/A'}", exc_info=True)
-            if esearch_response is not None: logging.warning(f"NCBI ESearch ({db}) Response Text: {esearch_response.text[:200]}...")
-            continue
-        except requests.exceptions.RequestException as e:
-             logging.warning(f"NCBI ESearch ({db}): Network/HTTP Error for '{term}': {e}", exc_info=True)
-             continue
-        except Exception as e:
-            logging.exception(f"NCBI ESearch ({db}): Unexpected error for '{term}'")
-            continue
-
-
-        # 3. ESummary Request (POST), if IDs were found
-        if search_ids:
-            esummary_response = None
-            logging.info(f"NCBI: Starting ESummary for {len(search_ids)} IDs in database '{db}' for term '{term}'")
+        for db in databases_to_search or DEFAULT_NCBI_DATABASES:
             try:
-                esummary_payload = base_params.copy()
-                esummary_payload.update({
-                    'db': db,
-                    'id': ",".join(search_ids),
-                    'retmode': 'json',
-                    'version': '2.0',
-                })
+                search_ids = self._search_ids(term, db, limit, base_params, headers, sleep_time)
+                if search_ids:
+                    all_suggestions.extend(self._summarize_ids(term, db, search_ids, base_params, headers, sleep_time))
+            except Exception as exc:
+                logger.warning("NCBI error for %r in database %s: %s", term, db, exc, exc_info=True)
+                continue
+        logger.info("NCBI query for %r finished across all specified databases.", term)
+        return all_suggestions
 
-                logging.debug(f"NCBI ESummary ({db}) payload keys: {list(esummary_payload.keys())}")
-                esummary_response = requests.post(ESUMMARY_URL, data=esummary_payload, headers=headers, timeout=30)
-                logging.debug(f"NCBI ESummary ({db}) request sent, sleeping for {sleep_time}s")
-                time.sleep(sleep_time)
-                esummary_response.raise_for_status()
-                esummary_data = esummary_response.json()
+    def _search_ids(self, term: str, db: str, limit: int, base_params: dict, headers: dict, sleep_time: float) -> list[str]:
+        params = dict(base_params)
+        params.update({"db": db, "term": term, "retmax": limit, "retmode": "json"})
+        response = requests.get(ESEARCH_URL, params=params, headers=headers, timeout=20)
+        time.sleep(sleep_time)
+        response.raise_for_status()
+        data = response.json()
+        if "error" in data:
+            logger.warning("NCBI ESearch (%s) API error for %r: %s", db, term, data.get("error"))
+            return []
+        result = data.get("esearchresult", {})
+        return result.get("idlist", []) if isinstance(result, dict) else []
 
-                # 4. Parse ESummary JSON (database-specific!)
-                if 'result' in esummary_data:
-                    result_dict = esummary_data['result']
-                    processed_uids = result_dict.get('uids', [])
+    def _summarize_ids(
+        self,
+        term: str,
+        db: str,
+        search_ids: list[str],
+        base_params: dict,
+        headers: dict,
+        sleep_time: float,
+    ) -> list[dict[str, Any]]:
+        payload = dict(base_params)
+        payload.update({"db": db, "id": ",".join(search_ids), "retmode": "json", "version": "2.0"})
+        response = requests.post(ESUMMARY_URL, data=payload, headers=headers, timeout=30)
+        time.sleep(sleep_time)
+        response.raise_for_status()
+        data = response.json()
+        result_dict = data.get("result", {}) if isinstance(data, dict) else {}
+        processed_uids = result_dict.get("uids", []) if isinstance(result_dict, dict) else []
 
-                    logging.info(f"NCBI ESummary ({db}) received results for {len(processed_uids)} UIDs.")
+        suggestions: list[dict[str, Any]] = []
+        for uid in processed_uids:
+            item = result_dict.get(uid)
+            if not isinstance(item, dict):
+                continue
+            try:
+                suggestion = self._parse_summary_item(db, uid, item)
+                if suggestion:
+                    suggestions.append(suggestion)
+            except Exception as exc:
+                logger.warning("NCBI Provider: Error parsing ESummary item (%s, UID: %s) for %r: %s", db, uid, term, exc, exc_info=True)
+        return suggestions
 
-                    for uid in processed_uids:
-                        if uid in result_dict:
-                            item = result_dict[uid]
-                            suggestion = {'db': db}
-                            label = f"Unknown {db} {uid}"
-                            description = ""
-                            item_id_for_uri = uid
+    def _parse_summary_item(self, db: str, uid: str, item: dict[str, Any]) -> dict[str, Any] | None:
+        label = f"Unknown {db} {uid}"
+        description = ""
+        item_id_for_uri = uid
 
-                            try:
-                                # Parsing logic per database
-                                if db == 'taxonomy':
-                                    label = item.get('scientificname', label)
-                                    description = item.get('rank', '')
-                                elif db == 'bioproject':
-                                    accession = item.get('project_acc')
-                                    if accession:
-                                        item_id_for_uri = accession
-                                    label = item.get('name', item.get('project_title', label))
-                                    description = item.get('project_description', '')
-                                elif db == 'gene':
-                                    label = item.get('name', label)
-                                    description = item.get('description', item.get('summary', ''))
-                                elif db == 'protein':
-                                    label = item.get('title', label)
-                                    description = item.get('organism', '')
-                                elif db == 'nuccore':
-                                    label = item.get('title', label)
-                                    description = item.get('organism', '')
-                                elif db == 'biosample':
-                                    label = item.get('accession', label) # BioSample uses accession
-                                    item_id_for_uri = item.get('accession', uid)
-                                    description = item.get('description', '')
-                                elif db == 'sra':
-                                    label = item.get('title', label)
-                                    description = item.get('description', '')
-                                elif db == 'pubmed':
-                                    label = item.get('title', label)
-                                    description = item.get('authors', [{}])[0].get('name', '') if item.get('authors') else ''
-                                    description += f" ({item.get('pubdate', '')})" if item.get('pubdate') else ''
+        if db == "taxonomy":
+            label = item.get("scientificname", label)
+            description = item.get("rank", "")
+        elif db == "bioproject":
+            item_id_for_uri = item.get("project_acc") or uid
+            label = item.get("name", item.get("project_title", label))
+            description = item.get("project_description", "")
+        elif db == "gene":
+            label = item.get("name", label)
+            description = item.get("description", item.get("summary", ""))
+        elif db in {"protein", "nuccore"}:
+            label = item.get("title", label)
+            description = item.get("organism", "")
+        elif db == "biosample":
+            label = item.get("accession", label)
+            item_id_for_uri = item.get("accession", uid)
+            description = item.get("description", "")
+        elif db == "sra":
+            label = item.get("title", label)
+            description = item.get("description", "")
+        elif db == "pubmed":
+            label = item.get("title", label)
+            authors = item.get("authors") or []
+            description = authors[0].get("name", "") if authors else ""
+            description += f" ({item.get('pubdate', '')})" if item.get("pubdate") else ""
 
-                                # Construct URI
-                                uri = _construct_ncbi_uri(db, item_id_for_uri)
-                                if uri:
-                                    suggestion['uri'] = uri
-                                    suggestion['label'] = label
-                                    suggestion['description'] = description
-                                    suggestion['id'] = item_id_for_uri
-                                    suggestion['source_provider'] = f"NCBI {db}" # Add source provider with specific DB
-                                    all_suggestions.append(suggestion)
-                                    logging.debug(f"NCBI: Added suggestion for '{term}' ({db}): {label} <{uri}>")
-
-                            except Exception as parse_e:
-                                logging.warning(f"NCBI Provider: Error parsing ESummary item ({db}, UID: {uid}) for '{term}': {parse_e}. Item: {item}", exc_info=True)
-
-                        else:
-                             logging.warning(f"NCBI ESummary ({db}): UID '{uid}' from 'uids' list not found in 'result' dictionary for term '{term}'.")
-
-                elif 'error' in esummary_data:
-                     logging.warning(f"NCBI ESummary ({db}) API error for '{term}': {esummary_data.get('error')}")
-                elif 'warning' in esummary_data:
-                     logging.warning(f"NCBI ESummary ({db}) API warning for '{term}': {esummary_data.get('warning')}")
-
-            except ValueError as e:
-                logging.warning(f"NCBI ESummary ({db}): Error parsing JSON response for '{term}'. Status: {esummary_response.status_code if esummary_response else 'N/A'}", exc_info=True)
-                if esummary_response is not None: logging.warning(f"NCBI ESummary ({db}) Response Text: {esummary_response.text[:200]}...")
-            except requests.exceptions.RequestException as e:
-                 logging.warning(f"NCBI ESummary ({db}): Network/HTTP Error for '{term}': {e}", exc_info=True)
-            except Exception as e:
-                logging.exception(f"NCBI ESummary ({db}): Unexpected error for '{term}'")
-
-    logging.info(f"NCBI query for '{term}' finished across all specified databases.")
-    return all_suggestions
+        uri = _construct_ncbi_uri(db, item_id_for_uri)
+        if not uri:
+            return None
+        return {
+            "db": db,
+            "uri": uri,
+            "label": label,
+            "description": description,
+            "id": item_id_for_uri,
+            "source_provider": f"NCBI {db}",
+        }

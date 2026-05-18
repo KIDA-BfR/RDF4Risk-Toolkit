@@ -760,3 +760,35 @@ def query_local_resources(
     # When multiple resources are loaded, keep only global top-N by score
     all_suggestions.sort(key=lambda d: d.get("score", -1), reverse=True)
     return all_suggestions[: max(limit, 1)]
+
+
+try:
+    from .base_provider import BaseProvider
+except ImportError:  # pragma: no cover - direct script fallback
+    from base_provider import BaseProvider
+
+
+class LocalResourceProvider(BaseProvider):
+    name = "Local Ontology"
+    query_cache_ttl = -1
+
+    def build_kwargs(self, config: dict, num_suggestions: int) -> dict:
+        return {"config": config}
+
+    def query(self, term: str, limit: int, user_agent: str, **kwargs: Any) -> List[Dict[str, Any]]:
+        term = str(term or "").strip()
+        if not term:
+            logger.warning("Local Ontology query attempted with empty term.")
+            return []
+        return self._fetch(term=term, limit=limit, user_agent=user_agent, **kwargs)
+
+    def _fetch(
+        self,
+        term: str,
+        limit: int,
+        user_agent: str,
+        *,
+        config: Optional[Dict[str, Any]] = None,
+        **_: Any,
+    ) -> List[Dict[str, Any]]:
+        return query_local_resources(term=term, limit=limit, config=config, user_agent=user_agent)

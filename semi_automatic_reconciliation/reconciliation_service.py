@@ -19,12 +19,8 @@ import pandas as pd
 
 try:
     from . import local_resource_provider
+    from .provider_registry import get_all_providers, get_provider
     from .processing_service import fetch_suggestions_for_term_from_provider
-    from .bioportal_provider import get_available_ontologies as get_bioportal_ontologies
-    from .earthportal_provider import get_available_ontologies as get_earthportal_ontologies
-    from .ols_provider import get_available_ontologies as get_ols_ontologies
-    from .semlookp_provider import get_available_ontologies as get_semlookp_ontologies
-    from .agroportal_provider import get_available_ontologies as get_agroportal_ontologies
     from .snapshot_utils import dataframe_records as _records, json_safe_value as _json_safe
     from .reconciliation_core import (
         NO_MATCH_URI,
@@ -63,12 +59,8 @@ try:
     )
 except ImportError:  # pragma: no cover - direct script fallback
     import local_resource_provider
+    from provider_registry import get_all_providers, get_provider
     from processing_service import fetch_suggestions_for_term_from_provider
-    from bioportal_provider import get_available_ontologies as get_bioportal_ontologies
-    from earthportal_provider import get_available_ontologies as get_earthportal_ontologies
-    from ols_provider import get_available_ontologies as get_ols_ontologies
-    from semlookp_provider import get_available_ontologies as get_semlookp_ontologies
-    from agroportal_provider import get_available_ontologies as get_agroportal_ontologies
     from snapshot_utils import dataframe_records as _records, json_safe_value as _json_safe
     from reconciliation_core import (
         NO_MATCH_URI,
@@ -209,7 +201,13 @@ def _reset_reconciliation_state_and_load_df(df_to_load: pd.DataFrame, source_nam
 
 
 def _available_reconciliation_providers() -> list[str]:
-    providers = STANDARD_RECONCILIATION_PROVIDERS.copy()
+    registered = get_all_providers()
+    providers = [provider for provider in STANDARD_RECONCILIATION_PROVIDERS if provider in registered]
+    providers.extend(
+        provider
+        for provider in sorted(registered)
+        if provider not in providers and provider != CUSTOM_SPARQL_PROVIDER_NAME
+    )
     if STATE.get("custom_sparql_enabled") and CUSTOM_SPARQL_PROVIDER_NAME not in providers:
         providers.append(CUSTOM_SPARQL_PROVIDER_NAME)
     return providers
@@ -302,26 +300,8 @@ def _ensure_ontology_options_for_queue():
             continue
         STATE["ontology_loading_status"][provider_name] = "loading"
         try:
-            ontologies_list = []
-            if provider_name == "BioPortal":
-                api_key = CONFIG.get("bioportal", {}).get("api_key")
-                if not api_key:
-                    raise ValueError("BioPortal API Key is missing or default.")
-                ontologies_list = get_bioportal_ontologies(USER_AGENT, api_key)
-            elif provider_name == "EarthPortal":
-                api_key = CONFIG.get("earthportal", {}).get("api_key")
-                if not api_key:
-                    raise ValueError("EarthPortal API Key is missing or default.")
-                ontologies_list = get_earthportal_ontologies(USER_AGENT, api_key)
-            elif provider_name == "OLS (EBI)":
-                ontologies_list = get_ols_ontologies(USER_AGENT)
-            elif provider_name == "SemLookP":
-                ontologies_list = get_semlookp_ontologies(USER_AGENT)
-            elif provider_name == "AgroPortal":
-                api_key = CONFIG.get("agroportal", {}).get("api_key")
-                if not api_key:
-                    raise ValueError("AgroPortal API Key is missing or default.")
-                ontologies_list = get_agroportal_ontologies(USER_AGENT, api_key)
+            provider = get_provider(provider_name)
+            ontologies_list = provider.get_available_ontologies(USER_AGENT, **provider.build_ontology_kwargs(CONFIG))
             available_ontologies = sorted([_normalize_ontology_acronym(o) for o in ontologies_list if _normalize_ontology_acronym(o)])
             STATE["available_ontologies_by_provider"][provider_name] = available_ontologies
             STATE["ontology_loading_status"][provider_name] = "loaded"

@@ -1,86 +1,88 @@
 # -*- coding: utf-8 -*-
+"""QUDT reconciliation provider."""
+
+from __future__ import annotations
+
 import logging
 import time
-from SPARQLWrapper import SPARQLWrapper, JSON, SPARQLExceptions
+from typing import Any
+
+from SPARQLWrapper import JSON, SPARQLExceptions, SPARQLWrapper
+
+try:
+    from .base_provider import BaseProvider
+except ImportError:  # pragma: no cover - direct script fallback
+    from base_provider import BaseProvider
 
 logger = logging.getLogger(__name__)
 
-def query_qudt(term: str, limit: int, user_agent: str, config: dict) -> list:
-    """
-    Queries the QUDT SPARQL endpoint for units or quantity kinds based on the term.
-    """
-    endpoint_url = "https://qudt.org/fuseki/qudt/query" # Hardcoded as it's a persistent public endpoint
-    
-    # No need to check if endpoint_url is empty as it's hardcoded
+DEFAULT_QUDT_ENDPOINT = "https://qudt.org/fuseki/qudt/query"
 
-    # Basic sanitization for the term to prevent SPARQL injection issues
-    sanitized_term = term.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'")
 
-    # QUDT has Units and QuantityKinds. We can search both.
-    # This query searches for labels containing the term in English.
-    query = f"""
-    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-    PREFIX qudt: <http://qudt.org/schema/qudt/>
-    PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+class QudtProvider(BaseProvider):
+    name = "QUDT"
 
-    SELECT DISTINCT ?uri ?label ?description WHERE {{
-      {{
-        ?uri a qudt:Unit ;
-             rdfs:label ?label .
-        FILTER (CONTAINS(LCASE(STR(?label)), LCASE("{sanitized_term}")))
-        OPTIONAL {{ ?uri rdfs:comment ?description . }}
-      }} UNION {{
-        ?uri a qudt:QuantityKind ;
-             rdfs:label ?label .
-        FILTER (CONTAINS(LCASE(STR(?label)), LCASE("{sanitized_term}")))
-        OPTIONAL {{ ?uri rdfs:comment ?description . }}
-      }}
-      FILTER (lang(?label) = 'en')
-    }}
-    LIMIT {limit}
-    """
+    def build_kwargs(self, config: dict, num_suggestions: int) -> dict:
+        return {"config": config}
 
-    results_list = []
-    try:
+    def _fetch(self, term: str, limit: int, user_agent: str, *, config: dict | None = None, **_: Any) -> list:
+        endpoint_url = (config or {}).get("qudt", {}).get("endpoint", DEFAULT_QUDT_ENDPOINT)
+        sanitized_term = term.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'")
+        query = f"""
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        PREFIX qudt: <http://qudt.org/schema/qudt/>
+        PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+
+        SELECT DISTINCT ?uri ?label ?description WHERE {{
+          {{
+            ?uri a qudt:Unit ;
+                 rdfs:label ?label .
+            FILTER (CONTAINS(LCASE(STR(?label)), LCASE("{sanitized_term}")))
+            OPTIONAL {{ ?uri rdfs:comment ?description . }}
+          }} UNION {{
+            ?uri a qudt:QuantityKind ;
+                 rdfs:label ?label .
+            FILTER (CONTAINS(LCASE(STR(?label)), LCASE("{sanitized_term}")))
+            OPTIONAL {{ ?uri rdfs:comment ?description . }}
+          }}
+          FILTER (lang(?label) = 'en')
+        }}
+        LIMIT {limit}
+        """
+
         sparql = SPARQLWrapper(endpoint_url)
         sparql.setQuery(query)
         sparql.setReturnFormat(JSON)
         sparql.agent = user_agent
-        sparql.setTimeout(30) # 30-second timeout
+        sparql.setTimeout(30)
 
-        logger.info(f"Querying QUDT endpoint: {endpoint_url} for term '{term}'")
+        logger.info("Querying QUDT endpoint: %s for term %r", endpoint_url, term)
         start_time = time.time()
-        results = sparql.query().convert()
+        try:
+            results = sparql.query().convert()
+        except SPARQLExceptions.EndPointNotFound as exc:
+            raise ConnectionError(f"QUDT SPARQL Endpoint not found: {endpoint_url}") from exc
+        except SPARQLExceptions.QueryBadFormed as exc:
+            raise ValueError(f"Bad QUDT SPARQL Query. Check template/term syntax. Error: {exc}") from exc
         duration = time.time() - start_time
-        logger.info(f"QUDT query for '{term}' took {duration:.2f}s, got {len(results.get('results', {}).get('bindings', []))} bindings.")
+        bindings = results.get("results", {}).get("bindings", [])
+        logger.info("QUDT query for %r took %.2fs, got %d bindings.", term, duration, len(bindings))
 
-        for result in results["results"]["bindings"]:
+        results_list = []
+        for result in bindings:
             uri = result.get("uri", {}).get("value")
             label = result.get("label", {}).get("value")
             description = result.get("description", {}).get("value", "")
-
             if uri and label:
-                results_list.append({
-                    "uri": uri,
-                    "label": label,
-                    "description": description,
-                    "score": None, # QUDT SPARQL doesn't provide a score directly
-                    "source_provider": "QUDT"
-                })
+                results_list.append(
+                    {
+                        "uri": uri,
+                        "label": label,
+                        "description": description,
+                        "score": None,
+                        "source_provider": self.name,
+                    }
+                )
             else:
-                logger.warning(f"Missing URI or label in QUDT result binding: {result}")
-
-    except SPARQLExceptions.EndPointNotFound as e:
-        logger.error(f"QUDT Endpoint not found or invalid: {endpoint_url}. Error: {e}")
-        raise ConnectionError(f"QUDT SPARQL Endpoint not found: {endpoint_url}") from e
-    except SPARQLExceptions.QueryBadFormed as e:
-        logger.error(f"QUDT SPARQL query badly formed. Error: {e}\nQuery Attempted:\n{query}")
-        raise ValueError(f"Bad QUDT SPARQL Query. Check template/term syntax. Error: {e}") from e
-    except ConnectionRefusedError as e:
-        logger.error(f"Connection refused by QUDT endpoint: {endpoint_url}. Error: {e}")
-        raise ConnectionError(f"Connection refused by QUDT endpoint: {endpoint_url}") from e
-    except Exception as e:
-        logger.exception(f"An unexpected error occurred querying QUDT endpoint '{endpoint_url}' for term '{term}'.")
-        raise ConnectionError(f"Failed to query QUDT {endpoint_url}: {e}") from e
-
-    return results_list[:limit]
+                logger.warning("Missing URI or label in QUDT result binding: %s", result)
+        return results_list[:limit]
