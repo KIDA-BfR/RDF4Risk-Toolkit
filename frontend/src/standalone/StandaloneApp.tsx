@@ -32,6 +32,7 @@ import { SemiAutomaticReconciliationApp } from '../apps/semi-automatic-reconcili
 import { setAppEventHandler, type AppEvent } from '../shared/appBridge';
 import { fetchSnapshot, postEvent, type BackendPayload } from './backendClient';
 import { serviceFromHash, services, type ServiceId } from './services';
+import rdf4RiskLogo from '../../../img/Logo_cropped_white.png';
 
 const drawerWidth = 312;
 
@@ -182,9 +183,22 @@ export function StandaloneApp() {
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: '#eef7fb' }}>
       <Drawer variant="permanent" sx={{ width: drawerWidth, flexShrink: 0, '& .MuiDrawer-paper': { width: drawerWidth, boxSizing: 'border-box', borderRight: '1px solid #dbeafe', bgcolor: '#f8fafc' } }}>
-        <Toolbar sx={{ alignItems: 'flex-start', flexDirection: 'column', py: 2 }}>
+        <Toolbar sx={{ alignItems: 'flex-start', flexDirection: 'column', py: 2, bgcolor: '#FFFFFF' }}>
           <Typography variant="h6">RDF4Risk Toolkit</Typography>
           <Typography variant="caption" color="text.secondary">RDF4Risk app</Typography>
+          <Box
+            component="img"
+            src={rdf4RiskLogo}
+            alt="RDF4Risk logo"
+            sx={{
+              width: 88,
+              height: 88,
+              mt: 1.5,
+              borderRadius: 2,
+              objectFit: 'contain',
+              bgcolor: '#fff',
+            }}
+          />
         </Toolbar>
         <Divider />
         <List sx={{ px: 1.2 }}>
