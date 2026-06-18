@@ -26,7 +26,13 @@ Legacy columns such as `Term`, `URI`, `RDF Role`, and `Match Type` are still nor
 
 ## Configuration
 
-Provider credentials and endpoints are read from the repository `config.yaml`, with environment-variable overrides supported for sensitive values such as:
+Provider credentials and endpoints are read from a local `config.yaml`. On first setup, copy the tracked placeholder file and then fill in local values as needed:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+The local `config.yaml` is intentionally ignored by Git so API keys, endpoints, and machine-specific provider choices are not committed. Environment-variable overrides are also supported for sensitive values such as:
 
 * `NCBI_API_KEY`
 * `BIOPORTAL_API_KEY`

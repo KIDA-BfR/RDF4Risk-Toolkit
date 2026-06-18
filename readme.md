@@ -78,7 +78,25 @@ pip install -r requirements.txt
 
 ---
 
-## 4. Run the Material UI App
+## 4. Create a Local Configuration File
+
+The repository ships `config.example.yaml` as a safe placeholder. On first setup, copy it to `config.yaml` and fill in your local endpoints, provider preferences, and API credentials as needed:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+On Windows Command Prompt:
+
+```bat
+copy config.example.yaml config.yaml
+```
+
+`config.yaml` is intentionally ignored by Git because it may contain machine-specific values or secrets. Do not commit real API keys.
+
+---
+
+## 5. Run the Material UI App
 
 After activating the environment and installing the dependencies:
 
@@ -122,6 +140,9 @@ source .venv/bin/activate # (macOS/Linux)
 
 # Install all required packages
 pip install -r requirements.txt
+
+# Create your local configuration file
+cp config.example.yaml config.yaml
 
 # Run the Material UI app with the Python backend
 npm run start
