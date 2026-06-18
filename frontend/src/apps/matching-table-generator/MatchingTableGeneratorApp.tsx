@@ -107,14 +107,38 @@ type MatchingTableGeneratorProps = {
 
 type Stage = 'load' | 'omit' | 'preprocess' | 'consolidate' | 'generate' | 'export';
 
-const stages: { id: Stage; label: string; caption: string }[] = [
+const stages: { id: Stage; label: string; caption: string; optional?: boolean }[] = [
   { id: 'load', label: 'Load', caption: 'Upload & parse' },
   { id: 'omit', label: 'Omit', caption: 'Filter values' },
-  { id: 'preprocess', label: 'Preprocess', caption: 'Split & expand' },
-  { id: 'consolidate', label: 'Consolidate', caption: 'Similar terms' },
+  { id: 'preprocess', label: 'Preprocess', caption: 'Split & expand', optional: true },
+  { id: 'consolidate', label: 'Consolidate', caption: 'Similar terms', optional: true },
   { id: 'generate', label: 'Generate', caption: 'SSSOM table' },
   { id: 'export', label: 'Export', caption: 'Downloads' },
 ];
+
+const optionalStepButtonSx = {
+  '& .MuiStepIcon-root': {
+    color: '#94a3b8',
+    border: '2px dashed #94a3b8',
+    borderRadius: '50%',
+    boxSizing: 'border-box',
+    p: '2px',
+    bgcolor: 'background.default',
+  },
+  '& .MuiStepIcon-text': { fill: '#475569', fontWeight: 900 },
+};
+
+const skippedOptionalStepButtonSx = {
+  '& .MuiStepIcon-root': {
+    color: '#2563eb',
+    border: '2px dashed #2563eb',
+    borderRadius: '50%',
+    boxSizing: 'border-box',
+    p: '2px',
+    bgcolor: 'rgba(239,246,255,.92)',
+  },
+  '& .MuiStepIcon-text': { fill: '#2563eb', fontWeight: 900 },
+};
 
 const MatchingIcon = () => (
   <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" style={{ marginRight: 12 }}>
@@ -190,17 +214,28 @@ function ToggleCard({ checked, title, description, onChange }: { checked: boolea
 
 function AppShell({ snapshot, activeStage, setActiveStage, children }: { snapshot: Snapshot; activeStage: Stage; setActiveStage: (stage: Stage) => void; children: React.ReactNode }) {
   const activeStep = stages.findIndex((stage) => stage.id === activeStage);
+  const activeStageMeta = stages[activeStep];
   const data = snapshot.data ?? {};
   const matching = snapshot.matching ?? {};
   const preprocessing = snapshot.preprocessing ?? {};
+  const consolidation = snapshot.consolidation ?? {};
+  const optionalUsage: Record<Stage, boolean> = {
+    load: false,
+    omit: false,
+    preprocess: Boolean(preprocessing.transformations_prepared),
+    consolidate: Boolean(consolidation.staged),
+    generate: false,
+    export: false,
+  };
   return (
     <Box sx={{ bgcolor: 'background.default', minHeight: '100vh', p: { xs: 1, md: 2 }, borderRadius: 4 }}>
       <Stack spacing={2}>
         <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 }, borderRadius: 4, background: heroSurface, boxShadow: '0 18px 48px rgba(15,23,42,.08)' }}>
           <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems={{ xs: 'stretch', lg: 'center' }} justifyContent="space-between">
             <Stack direction="row" spacing={1.5} alignItems="center"><MatchingIcon /><Stack><Typography variant="h5" component="h2">Matching Table Generator</Typography><Typography variant="body2" color="text.secondary">Guided workflow for preprocessing tabular data and producing strict SSSOM matching tables</Typography></Stack></Stack>
-            <Stepper nonLinear activeStep={activeStep} sx={{ minWidth: { lg: 760 } }}>{stages.map((stage, idx) => <Step key={stage.id} completed={idx < activeStep}><StepButton onClick={() => setActiveStage(stage.id)}><Stack spacing={0}><Typography variant="body2" sx={{ fontWeight: 800 }}>{stage.label}</Typography><Typography variant="caption" color="text.secondary">{stage.caption}</Typography></Stack></StepButton></Step>)}</Stepper>
+            <Stepper nonLinear activeStep={activeStep} sx={{ minWidth: { lg: 760 } }}>{stages.map((stage, idx) => { const optionalDone = Boolean(stage.optional && optionalUsage[stage.id]); const optionalSkipped = Boolean(stage.optional && !optionalDone && idx < activeStep); const optionalSx = optionalDone ? undefined : optionalSkipped ? skippedOptionalStepButtonSx : optionalStepButtonSx; return <Step key={stage.id} completed={stage.optional ? optionalDone : idx < activeStep}><StepButton onClick={() => setActiveStage(stage.id)} sx={stage.optional ? optionalSx : undefined}><Stack spacing={0}><Typography variant="body2" sx={{ fontWeight: 800 }}>{stage.label}</Typography><Typography variant="caption" color="text.secondary">{stage.caption}</Typography></Stack></StepButton></Step>; })}</Stepper>
           </Stack>
+          {activeStageMeta?.optional && <Alert severity="info" variant="outlined" sx={{ mt: 2, borderStyle: 'dashed', borderColor: '#0f766e', bgcolor: 'rgba(240,253,250,.72)' }}>This workflow step is optional. You can complete it now or skip directly to the next required workflow step.</Alert>}
           <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4, 1fr)' }, gap: 1.2, mt: 2 }}>
             <Chip label={data.has_table ? `${data.rows ?? 0} rows loaded` : 'No table loaded'} color={data.has_table ? 'success' : 'warning'} />
             <Chip label={`${data.columns ?? 0} columns`} color={data.has_table ? 'info' : 'default'} />
@@ -353,11 +388,12 @@ function PreprocessPage({ snapshot, emit, goNext }: { snapshot: Snapshot; emit: 
   }
 
   return <Stack spacing={2}>
-    <Card variant="outlined"><CardContent><Stack spacing={2}>
-      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="subtitle1">3. Preprocess Data</Typography><Typography variant="body2" color="text.secondary">Transformations are staged here and applied only when the matching table is generated.</Typography></Stack><Chip label={prep.transformations_prepared ? 'rules prepared' : 'optional'} color={prep.transformations_prepared ? 'success' : 'default'} /></Stack>
+    <Card variant="outlined" sx={{ borderStyle: 'dashed', borderColor: '#0f766e' }}><CardContent><Stack spacing={2}>
+      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}><Stack><Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap"><Typography variant="subtitle1">3. Preprocess Data</Typography><Chip size="small" label="Optional step" variant="outlined" sx={{ borderStyle: 'dashed', borderColor: '#0f766e', color: '#0f766e' }} /></Stack><Typography variant="body2" color="text.secondary">Use these optional rules to make combined values easier to match. The rules are staged here and applied only when the matching table is generated.</Typography></Stack><Chip label={prep.transformations_prepared ? 'rules prepared' : 'optional'} color={prep.transformations_prepared ? 'success' : 'default'} /></Stack>
       <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}><Stack spacing={1.5}>
-        <Stack direction="row" justifyContent="space-between"><Stack><Typography variant="subtitle2">A) Split Columns by Position</Typography><Typography variant="caption" color="text.secondary">Example: split “Berlin, Germany” into City and Country columns.</Typography></Stack><Switch checked={splitEnabled} onChange={(e) => setSplitEnabled(e.target.checked)} inputProps={{ 'aria-label': 'Enable column splitting' }} /></Stack>
+        <Stack direction="row" justifyContent="space-between"><Stack><Typography variant="subtitle2">A) Split Columns by Position</Typography><Typography variant="body2" color="text.secondary">Use this when one cell contains several values in a fixed order. For example, a location cell like "Berlin, Germany" can be split at the comma into two new columns: City = "Berlin" and Country = "Germany".</Typography></Stack><Switch checked={splitEnabled} onChange={(e) => setSplitEnabled(e.target.checked)} inputProps={{ 'aria-label': 'Enable column splitting' }} /></Stack>
         <Collapse in={splitEnabled}><Stack spacing={1.2}>
+          <Alert severity="info" variant="outlined">Choose the column, enter the delimiter that separates the parts, and name the new columns in the same order as the values appear.</Alert>
           <FormControl fullWidth size="small"><InputLabel>Columns to split</InputLabel><Select multiple label="Columns to split" value={splitColumns} onChange={(e) => setSplitColumns(typeof e.target.value === 'string' ? e.target.value.split(',') : (e.target.value as string[]))} renderValue={(selected) => (selected as string[]).join(', ')}>{columns.map((column) => <MenuItem key={column} value={column}><Checkbox checked={splitColumns.includes(column)} />{column}</MenuItem>)}</Select></FormControl>
           <FormControlLabel control={<Checkbox checked={autoNames} onChange={(e) => setAutoNames(e.target.checked)} />} label="Auto-generate new names as <column>_1, <column>_2 (editable)" />
           {splitColumns.map((column) => <Box key={column} sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '.35fr .65fr' }, gap: 1 }}><TextField label={`${column} • Delimiter`} value={splitRules[column]?.delimiter ?? ','} onChange={(e) => setSplitRules({ ...splitRules, [column]: { ...(splitRules[column] ?? { names: '' }), delimiter: e.target.value } })} /><TextField label={`${column} • New Names (comma-sep.)`} value={splitRules[column]?.names ?? ''} onChange={(e) => setSplitRules({ ...splitRules, [column]: { ...(splitRules[column] ?? { delimiter: ',' }), names: e.target.value } })} placeholder="e.g., City, Country" /></Box>)}
@@ -365,8 +401,9 @@ function PreprocessPage({ snapshot, emit, goNext }: { snapshot: Snapshot; emit: 
         </Stack></Collapse>
       </Stack></Paper>
       <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}><Stack spacing={1.5}>
-        <Stack direction="row" justifyContent="space-between"><Stack><Typography variant="subtitle2">B) Expand Codes to Indicator Columns</Typography><Typography variant="caption" color="text.secondary">Example: expand “CIP, TET” into boolean/code indicator columns.</Typography></Stack><Switch checked={expandEnabled} onChange={(e) => setExpandEnabled(e.target.checked)} inputProps={{ 'aria-label': 'Enable code expansion' }} /></Stack>
+        <Stack direction="row" justifyContent="space-between"><Stack><Typography variant="subtitle2">B) Expand Codes to Indicator Columns</Typography><Typography variant="body2" color="text.secondary">Use this when one cell lists several codes. For example, a cell containing "ERY, NAL, TET" can become separate columns named Indicator_ERY, Indicator_NAL, and Indicator_TET, with TRUE/FALSE values showing whether each code is present in that row.</Typography></Stack><Switch checked={expandEnabled} onChange={(e) => setExpandEnabled(e.target.checked)} inputProps={{ 'aria-label': 'Enable code expansion' }} /></Stack>
         <Collapse in={expandEnabled}><Stack spacing={1.2}>
+          <Alert severity="info" variant="outlined">Select the codes column, set the delimiter used between codes, detect or choose the codes to expand, and choose the values written when a code is present or absent.</Alert>
           <FormControl fullWidth size="small"><InputLabel>Column containing codes</InputLabel><Select label="Column containing codes" value={expandColumn} onChange={(e) => { setExpandColumn(String(e.target.value)); setExpandCodes([]); }}>{columns.map((column) => <MenuItem key={column} value={column}>{column}</MenuItem>)}</Select></FormControl>
           <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '.4fr 1fr auto' }, gap: 1 }}><TextField label="Codes delimiter" value={expandDelimiter} onChange={(e) => setExpandDelimiter(e.target.value)} /><TextField label="New column prefix" value={expandPrefix} onChange={(e) => setExpandPrefix(e.target.value)} /><SearchActionButton onClick={() => emit({ type: 'detect_expansion_codes', column: expandColumn, delimiter: expandDelimiter })}>Detect codes</SearchActionButton></Box>
           <FormControl fullWidth size="small"><InputLabel>Codes to expand</InputLabel><Select multiple label="Codes to expand" value={expandCodes} onChange={(e) => setExpandCodes(typeof e.target.value === 'string' ? e.target.value.split(',') : (e.target.value as string[]))} renderValue={(selected) => (selected as string[]).join(', ')}>{detectedCodes.map((code) => <MenuItem key={code} value={code}><Checkbox checked={expandCodes.includes(code)} />{code}</MenuItem>)}</Select></FormControl>
@@ -384,8 +421,8 @@ function ConsolidatePage({ snapshot, emit, goNext }: { snapshot: Snapshot; emit:
   const [choices, setChoices] = useState<Record<string, string>>(cons.choices ?? {});
   useEffect(() => { setChoices(cons.choices ?? {}); setThreshold(asNumber(cons.threshold, 0.85)); }, [cons.choices, cons.threshold]);
   return <Stack spacing={2}>
-    <Card variant="outlined"><CardContent><Stack spacing={1.5}>
-      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between"><Stack><Typography variant="subtitle1">4. Consolidate Nearly Identical Terms</Typography><Typography variant="body2" color="text.secondary">Use Levenshtein similarity to group terms and stage replacement choices before generation.</Typography></Stack><Chip label={cons.staged ? 'staged' : `${cons.groups?.length ?? 0} groups`} color={cons.staged ? 'success' : (cons.groups?.length ? 'warning' : 'default')} /></Stack>
+    <Card variant="outlined" sx={{ borderStyle: 'dashed', borderColor: '#0f766e' }}><CardContent><Stack spacing={1.5}>
+      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between"><Stack><Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap"><Typography variant="subtitle1">4. Consolidate Nearly Identical Terms</Typography><Chip size="small" label="Optional step" variant="outlined" sx={{ borderStyle: 'dashed', borderColor: '#0f766e', color: '#0f766e' }} /></Stack><Typography variant="body2" color="text.secondary">Use Levenshtein similarity to group terms and stage replacement choices before generation.</Typography></Stack><Chip label={cons.staged ? 'staged' : `${cons.groups?.length ?? 0} groups`} color={cons.staged ? 'success' : (cons.groups?.length ? 'warning' : 'default')} /></Stack>
       <Box sx={{ px: 1 }}><Typography variant="body2" sx={{ fontWeight: 800 }}>Similarity threshold: {threshold.toFixed(2)}</Typography><Slider min={0} max={1} step={0.01} value={threshold} onChange={(_, value) => setThreshold(value as number)} /></Box>
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}><SearchActionButton onClick={() => emit({ type: 'find_similar_terms', threshold })} disabled={!snapshot.data?.has_table}>Find similar terms</SearchActionButton><PrepareButton onClick={() => emit({ type: 'stage_consolidations', choices })} disabled={!(cons.groups?.length)}>Apply & stage consolidations</PrepareButton><ContinueButton disabled={!snapshot.data?.has_table} onClick={goNext}>Continue to generation</ContinueButton></Stack>
       {(cons.groups ?? []).map((group, idx) => {

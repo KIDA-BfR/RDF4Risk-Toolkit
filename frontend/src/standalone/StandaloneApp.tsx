@@ -312,7 +312,7 @@ export function StandaloneApp() {
             onImportRecipe={importRecipe}
           />
           <Box sx={{ px: 2, pb: 2 }}>
-            <Button fullWidth variant="outlined" startIcon={<RefreshIcon />} onClick={() => refresh()} disabled={loading || activeService === 'home'}>Refresh service</Button>
+            <Button fullWidth variant="outlined" startIcon={<RefreshIcon />} onClick={() => refresh(activeServiceRef.current)} disabled={loading || activeService === 'home'}>Refresh service</Button>
           </Box>
         </Box>
       </Drawer>

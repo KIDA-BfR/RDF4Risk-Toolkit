@@ -35,7 +35,9 @@ async function parseError(response: Response): Promise<Error> {
 
 export async function fetchSnapshot(service: ServiceId): Promise<BackendPayload | null> {
   if (service === 'home') return null;
-  const response = await fetch(`${API_BASE}/api/services/${service}/snapshot`);
+  const response = await fetch(`${API_BASE}/api/services/${service}/snapshot?_=${Date.now()}`, {
+    cache: 'no-store',
+  });
   if (!response.ok) throw await parseError(response);
   return response.json();
 }

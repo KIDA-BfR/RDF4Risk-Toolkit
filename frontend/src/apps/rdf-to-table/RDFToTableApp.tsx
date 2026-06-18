@@ -11,13 +11,11 @@ import {
   Chip,
   Paper,
   Stack,
-  Step,
-  StepButton,
-  Stepper,
   Tab,
   Tabs,
   Typography,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import { emitAppEvent, notifyLayoutChanged, type AppEvent } from '../../shared/appBridge';
 import { ConfirmActionButton } from '../../components/dialogs/ConfirmActionButton';
 import { DataTable as SharedDataTable, type DataTableProps } from '../../components/table/DataTable';
@@ -127,20 +125,75 @@ function SummaryRow({ label, value }: { label: string; value: React.ReactNode })
 
 function MetricCard({ label, value, helper }: { label: string; value: React.ReactNode; helper?: string }) { return <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}><Typography variant="caption" color="text.secondary">{label}</Typography><Typography variant="h6" sx={{ fontWeight: 900 }}>{value}</Typography>{helper && <Typography variant="caption" color="text.secondary">{helper}</Typography>}</Paper>; }
 
+const softChipSx = (color: 'success' | 'info' | 'warning' | 'primary' | 'default') => (theme: any) => {
+  if (color === 'default') {
+    return {
+      bgcolor: alpha(theme.palette.text.secondary, theme.palette.mode === 'dark' ? 0.12 : 0.08),
+      borderColor: theme.palette.divider,
+      color: theme.palette.text.primary,
+    };
+  }
+  const main = theme.palette[color].main;
+  return {
+    bgcolor: alpha(main, theme.palette.mode === 'dark' ? 0.16 : 0.08),
+    borderColor: alpha(main, theme.palette.mode === 'dark' ? 0.48 : 0.34),
+    color: theme.palette.text.primary,
+  };
+};
+
+function SectionNavigation({ activeStage }: { activeStage: Stage }) {
+  return (
+    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(5, minmax(0, 1fr))' }, gap: 1, mt: 2 }}>
+      {stages.map((stage) => {
+        const active = stage.id === activeStage;
+        return (
+          <Button
+            key={stage.id}
+            variant="outlined"
+            color="primary"
+            aria-current={active ? 'page' : undefined}
+            onClick={() => emit({ type: 'navigate', stage: stage.id })}
+            sx={(theme) => ({
+              minHeight: 60,
+              justifyContent: 'flex-start',
+              textAlign: 'left',
+              borderRadius: 1,
+              px: 1.4,
+              py: 1,
+              bgcolor: active ? alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.22 : 0.1) : 'background.paper',
+              borderColor: active ? theme.palette.primary.main : 'divider',
+              color: 'text.primary',
+              boxShadow: active ? `inset 0 0 0 1px ${alpha(theme.palette.primary.main, 0.18)}` : 'none',
+              '&:hover': {
+                bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.08),
+                borderColor: theme.palette.primary.main,
+              },
+            })}
+          >
+            <Stack spacing={0.2} alignItems="flex-start">
+              <Typography variant="body2" sx={{ fontWeight: 900, lineHeight: 1.1 }}>{stage.label}</Typography>
+              <Typography variant="caption" sx={{ color: active ? 'primary.main' : 'text.secondary', lineHeight: 1.2 }}>{stage.caption}</Typography>
+            </Stack>
+          </Button>
+        );
+      })}
+    </Box>
+  );
+}
+
 function AppShell({ snapshot, activeStage, children }: { snapshot: Snapshot; activeStage: Stage; children: React.ReactNode }) {
   const source = snapshot.source ?? {}; const data = snapshot.data ?? {}; const stats = snapshot.statistics ?? {};
-  const activeStep = stages.findIndex((stage) => stage.id === activeStage);
   return <Box sx={{ bgcolor: 'background.default', minHeight: '100vh', p: { xs: 1, md: 2 }, borderRadius: 4 }}><Stack spacing={2}>
     <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 }, borderRadius: 4, background: heroSurface, boxShadow: '0 18px 48px rgba(15,23,42,.08)' }}>
       <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems={{ xs: 'stretch', lg: 'center' }} justifyContent="space-between">
         <Stack direction="row" spacing={1.5} alignItems="center"><TableIcon /><Stack><Typography variant="h5" component="h2">RDF to Table</Typography><Typography variant="body2" color="text.secondary">Guided workflow for TriG/RDF exploration, metadata inspection, statistics, and Excel/CSV/Markdown export</Typography></Stack></Stack>
-        <Stepper nonLinear activeStep={activeStep} sx={{ minWidth: { lg: 700 } }}>{stages.map((stage, idx) => <Step key={stage.id} completed={idx < activeStep}><StepButton onClick={() => emit({ type: 'navigate', stage: stage.id })}><Stack spacing={0}><Typography variant="body2" sx={{ fontWeight: 800 }}>{stage.label}</Typography><Typography variant="caption" color="text.secondary">{stage.caption}</Typography></Stack></StepButton></Step>)}</Stepper>
       </Stack>
+      <SectionNavigation activeStage={activeStage} />
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4,1fr)' }, gap: 1.2, mt: 2 }}>
-        <Chip label={source.has_data ? source.filename || 'TriG loaded' : 'No TriG loaded'} color={source.has_data ? 'success' : 'warning'} />
-        <Chip label={`${data.rows ?? 0} table rows`} color={data.rows ? 'info' : 'default'} />
-        <Chip label={`${stats.total_triples ?? 0} triples`} color={stats.total_triples ? 'info' : 'default'} />
-        <Chip label={`${stats.external_matches ?? 0} external matches`} color={stats.external_matches ? 'success' : 'default'} />
+        <Chip variant="outlined" label={source.has_data ? source.filename || 'TriG loaded' : 'No TriG loaded'} sx={softChipSx(source.has_data ? 'success' : 'warning')} />
+        <Chip variant="outlined" label={`${data.rows ?? 0} table rows`} sx={softChipSx(data.rows ? 'info' : 'default')} />
+        <Chip variant="outlined" label={`${stats.total_triples ?? 0} triples`} sx={softChipSx(stats.total_triples ? 'info' : 'default')} />
+        <Chip variant="outlined" label={`${stats.external_matches ?? 0} external matches`} sx={softChipSx(stats.external_matches ? 'success' : 'default')} />
       </Box>
     </Paper>
     {snapshot.statusMessage?.text && <Alert severity={snapshot.statusMessage.severity ?? 'info'} sx={{ whiteSpace: 'pre-wrap' }}>{snapshot.statusMessage.text}</Alert>}
@@ -155,10 +208,10 @@ function LoadPage({ snapshot }: { snapshot: Snapshot }) {
     if (!file.name.toLowerCase().endsWith('.trig')) { setUploadError('Please choose a .trig file.'); return; }
     try { emit({ type: 'upload_trig', filename: file.name, content_base64: await fileToBase64(file) }); } catch (error) { setUploadError(error instanceof Error ? error.message : 'Unable to read the selected file.'); }
   }
-  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: 'minmax(0,1fr) 360px' }, gap: 2 }}><Stack spacing={2}><Card variant="outlined"><CardContent><Stack spacing={1.5}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="subtitle1">1. Load TriG/RDF Catalog</Typography><Typography variant="body2" color="text.secondary">Upload a TriG file, or load the generated catalog produced by the RDF Generator.</Typography></Stack><Chip label={snapshot.source?.has_data ? 'loaded' : 'waiting'} color={snapshot.source?.has_data ? 'success' : 'warning'} /></Stack><Paper variant="outlined" sx={{ p: 3, textAlign: 'center', borderStyle: 'dashed', borderRadius: 3, bgcolor: 'background.default' }}><Typography variant="h6" component="h3">TriG input</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: .5 }}>Supported: .trig. The backend extracts subject rows, DCAT metadata, publication references, property mappings, namespaces, and SKOS exact/close-match links.</Typography><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="center" sx={{ mt: 1.5 }}><Button component="label" variant="contained">Upload TriG file<input hidden type="file" accept=".trig,application/trig,text/plain" onChange={handleUpload} /></Button><Button variant="outlined" disabled={!snapshot.source?.catalog_available} onClick={() => emit({ type: 'load_catalog' })}>Load Catalog from RDF Generator</Button></Stack>{uploadError && <Alert severity="warning" sx={{ mt: 1.5 }}>{uploadError}</Alert>}</Paper><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4,1fr)' }, gap: 1 }}><SummaryRow label="File" value={snapshot.source?.filename || '—'} /><SummaryRow label="Rows" value={snapshot.data?.rows ?? 0} /><SummaryRow label="Columns" value={snapshot.data?.columns ?? 0} /><SummaryRow label="Generator catalog" value={snapshot.source?.catalog_available ? 'Available' : 'Not available'} /></Box></Stack></CardContent></Card></Stack><Stack spacing={2}><Card variant="outlined"><CardContent><Stack spacing={1.1}><Typography variant="subtitle1">Workflow guide</Typography>{['Load a generated TriG catalog or upload a .trig file.', 'Preview subject data as a linked table.', 'Inspect DCAT metadata, publication reference, and other named graphs in expandables.', 'Review dataset statistics, property catalog, namespaces, and SKOS match counts.', 'Prepare and download Excel, CSV, and Markdown exports.'].map((item) => <Typography key={item} variant="body2" color="text.secondary">✓ {item}</Typography>)}<Button variant="contained" disabled={!snapshot.source?.has_data} onClick={() => emit({ type: 'navigate', stage: 'preview' })}>Continue to Preview</Button></Stack></CardContent></Card></Stack></Box>;
+  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: 'minmax(0,1fr) 360px' }, gap: 2 }}><Stack spacing={2}><Card variant="outlined"><CardContent><Stack spacing={1.5}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="subtitle1">1. Load TriG/RDF Catalog</Typography><Typography variant="body2" color="text.secondary">Upload a TriG file, or load the generated catalog produced by the RDF Generator.</Typography></Stack><Chip label={snapshot.source?.has_data ? 'loaded' : 'waiting'} color={snapshot.source?.has_data ? 'success' : 'warning'} /></Stack><Paper variant="outlined" sx={{ p: 3, textAlign: 'center', borderStyle: 'dashed', borderRadius: 3, bgcolor: 'background.default' }}><Typography variant="h6" component="h3">TriG input</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: .5 }}>Supported: .trig. The backend extracts subject rows, DCAT metadata, publication references, property mappings, namespaces, and SKOS exact/close-match links.</Typography><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="center" sx={{ mt: 1.5 }}><Button component="label" variant="contained">Upload TriG file<input hidden type="file" accept=".trig,application/trig,text/plain" onChange={handleUpload} /></Button><Button variant="outlined" disabled={!snapshot.source?.catalog_available} onClick={() => emit({ type: 'load_catalog' })}>Load Catalog from RDF Generator</Button></Stack>{uploadError && <Alert severity="warning" sx={{ mt: 1.5 }}>{uploadError}</Alert>}</Paper><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4,1fr)' }, gap: 1 }}><SummaryRow label="File" value={snapshot.source?.filename || '—'} /><SummaryRow label="Rows" value={snapshot.data?.rows ?? 0} /><SummaryRow label="Columns" value={snapshot.data?.columns ?? 0} /><SummaryRow label="Generator catalog" value={snapshot.source?.catalog_available ? 'Available' : 'Not available'} /></Box></Stack></CardContent></Card></Stack><Stack spacing={2}><Card variant="outlined"><CardContent><Stack spacing={1.1}><Typography variant="subtitle1">Available views</Typography>{['Preview subject data as a linked table.', 'Inspect DCAT metadata, publication reference, and other named graphs.', 'Review dataset statistics, property catalog, namespaces, and SKOS match counts.', 'Prepare and download Excel, CSV, and Markdown exports.'].map((item) => <Typography key={item} variant="body2" color="text.secondary">✓ {item}</Typography>)}</Stack></CardContent></Card></Stack></Box>;
 }
 
-function PreviewPage({ snapshot }: { snapshot: Snapshot }) { return <Stack spacing={2}><Card variant="outlined"><CardContent><Stack spacing={1.5}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="subtitle1">Data Preview</Typography><Typography variant="body2" color="text.secondary">Subject rows extracted from data graphs. URI values are displayed as clickable labels when labels or external SKOS matches are available.</Typography></Stack><Chip label={`${snapshot.data?.rows ?? 0} rows × ${snapshot.data?.columns ?? 0} columns`} color={snapshot.data?.rows ? 'info' : 'default'} /></Stack><Alert severity="info" variant="outlined">Click a blue linked label to open the target resource in a new tab. Internal concept URIs are rendered as labels without external links.</Alert><DataTable rows={snapshot.data?.preview} empty="No subject data found in the TriG file." maxColumns={12} /><Button variant="contained" disabled={!snapshot.source?.has_data} onClick={() => emit({ type: 'navigate', stage: 'metadata' })}>Continue to Metadata</Button></Stack></CardContent></Card></Stack>; }
+function PreviewPage({ snapshot }: { snapshot: Snapshot }) { return <Stack spacing={2}><Card variant="outlined"><CardContent><Stack spacing={1.5}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="subtitle1">Data Preview</Typography><Typography variant="body2" color="text.secondary">Subject rows extracted from data graphs. URI values are displayed as clickable labels when labels or external SKOS matches are available.</Typography></Stack><Chip label={`${snapshot.data?.rows ?? 0} rows × ${snapshot.data?.columns ?? 0} columns`} color={snapshot.data?.rows ? 'info' : 'default'} /></Stack><Alert severity="info" variant="outlined">Click a blue linked label to open the target resource in a new tab. Internal concept URIs are rendered as labels without external links.</Alert><DataTable rows={snapshot.data?.preview} empty="No subject data found in the TriG file." maxColumns={12} /></Stack></CardContent></Card></Stack>; }
 
 function GraphSection({ title, section, empty }: { title: string; section: NamedGraphSection; empty: string }) {
   if (!section) return <Alert severity="info" variant="outlined">{empty}</Alert>;
@@ -167,12 +220,12 @@ function GraphSection({ title, section, empty }: { title: string; section: Named
 
 function MetadataPage({ snapshot }: { snapshot: Snapshot }) {
   const otherGraphs = snapshot.metadata?.other_graphs ?? [];
-  return <Stack spacing={2}><GraphSection title="DCAT Metadata" section={snapshot.metadata?.dcat ?? null} empty="No DCAT metadata graph found in this file." /><GraphSection title="Publication References" section={snapshot.metadata?.publication ?? null} empty="No publication reference graph found in this file." />{otherGraphs.length > 0 && <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Other Named Graphs</Typography>{otherGraphs.map((graph, idx) => <GraphSection key={`${graph?.graph_uri}-${idx}`} title={`Graph ${idx + 1}`} section={graph} empty="No data found in this named graph." />)}</Stack></CardContent></Card>}<Button variant="contained" disabled={!snapshot.source?.has_data} onClick={() => emit({ type: 'navigate', stage: 'statistics' })}>Continue to Statistics</Button></Stack>;
+  return <Stack spacing={2}><GraphSection title="DCAT Metadata" section={snapshot.metadata?.dcat ?? null} empty="No DCAT metadata graph found in this file." /><GraphSection title="Publication References" section={snapshot.metadata?.publication ?? null} empty="No publication reference graph found in this file." />{otherGraphs.length > 0 && <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Other Named Graphs</Typography>{otherGraphs.map((graph, idx) => <GraphSection key={`${graph?.graph_uri}-${idx}`} title={`Graph ${idx + 1}`} section={graph} empty="No data found in this named graph." />)}</Stack></CardContent></Card>}</Stack>;
 }
 
 function StatisticsPage({ snapshot }: { snapshot: Snapshot }) {
   const stats = snapshot.statistics ?? {}; const [tab, setTab] = useState(0);
-  return <Stack spacing={2}><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4,1fr)' }, gap: 1.2 }}><MetricCard label="Total Triples" value={(stats.total_triples ?? 0).toLocaleString()} /><MetricCard label="Subjects" value={(stats.subjects ?? 0).toLocaleString()} /><MetricCard label="Properties" value={(stats.properties ?? 0).toLocaleString()} /><MetricCard label="External Matches" value={(stats.external_matches ?? 0).toLocaleString()} helper={`${stats.exact_matches ?? 0} exact • ${stats.close_matches ?? 0} close`} /></Box><Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Dataset Statistics</Typography><Tabs value={tab} onChange={(_, value) => setTab(value)} variant="scrollable"><Tab label="Property Catalog" /><Tab label="Namespaces" /><Tab label="URI Mappings" /></Tabs>{tab === 0 && <DataTable rows={stats.property_catalog} empty="No property catalog found." maxColumns={4} />}{tab === 1 && <DataTable rows={stats.namespaces} empty="No namespaces extracted." maxColumns={2} />}{tab === 2 && <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.2 }}><MetricCard label="Exact Matches (skos:exactMatch)" value={stats.exact_matches ?? 0} /><MetricCard label="Close Matches (skos:closeMatch)" value={stats.close_matches ?? 0} /></Box>}<Button variant="contained" disabled={!snapshot.source?.has_data} onClick={() => emit({ type: 'navigate', stage: 'export' })}>Continue to Export</Button></Stack></CardContent></Card></Stack>;
+  return <Stack spacing={2}><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4,1fr)' }, gap: 1.2 }}><MetricCard label="Total Triples" value={(stats.total_triples ?? 0).toLocaleString()} /><MetricCard label="Subjects" value={(stats.subjects ?? 0).toLocaleString()} /><MetricCard label="Properties" value={(stats.properties ?? 0).toLocaleString()} /><MetricCard label="External Matches" value={(stats.external_matches ?? 0).toLocaleString()} helper={`${stats.exact_matches ?? 0} exact • ${stats.close_matches ?? 0} close`} /></Box><Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Dataset Statistics</Typography><Tabs value={tab} onChange={(_, value) => setTab(value)} variant="scrollable"><Tab label="Property Catalog" /><Tab label="Namespaces" /><Tab label="URI Mappings" /></Tabs>{tab === 0 && <DataTable rows={stats.property_catalog} empty="No property catalog found." maxColumns={4} />}{tab === 1 && <DataTable rows={stats.namespaces} empty="No namespaces extracted." maxColumns={2} />}{tab === 2 && <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.2 }}><MetricCard label="Exact Matches (skos:exactMatch)" value={stats.exact_matches ?? 0} /><MetricCard label="Close Matches (skos:closeMatch)" value={stats.close_matches ?? 0} /></Box>}</Stack></CardContent></Card></Stack>;
 }
 
 function ExportPage({ snapshot }: { snapshot: Snapshot }) {
