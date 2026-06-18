@@ -12,6 +12,7 @@ import {
   Divider,
   Drawer,
   FormControl,
+  IconButton,
   FormControlLabel,
   InputAdornment,
   InputLabel,
@@ -27,19 +28,32 @@ import {
   Tab,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
+  alpha,
 } from '@mui/material';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import LoginIcon from '@mui/icons-material/Login';
 import LogoutIcon from '@mui/icons-material/Logout';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import RateReviewIcon from '@mui/icons-material/RateReview';
 import SaveIcon from '@mui/icons-material/Save';
+import SkipNextIcon from '@mui/icons-material/SkipNext';
+import { DataTable } from '../../components/table/DataTable';
 import { AgentRunProgressPanel, type AgentRunWorkflow, type RunStatus } from '../../components/run/AgentRunProgressPanel';
+import { ReviewGrid } from './ReviewGrid';
+import { ReviewProvenancePanel } from './ProvenancePanel';
+import { LineageStrip } from './LineageStrip';
+import { ComparisonRow } from './ComparisonRow';
 import type {
+  AdvancedConfig,
   AgentReconciliationAppProps,
   AppEvent,
+  AutoAcceptPolicy,
   DataStatus,
   ExportPayload,
+  ProvenanceConfig,
   ReadinessState,
   ReviewItem,
   ReviewState,
@@ -66,6 +80,7 @@ import {
   unique,
   workflows,
 } from './utils';
+import { heroSurface } from '../../shared/surfaces';
 const AgentIcon = () => (
   <svg
     width="64"
@@ -119,58 +134,21 @@ async function fileToBase64(file: File) {
   return window.btoa(binary);
 }
 
-function DataTable({ rows, empty }: { rows?: Record<string, unknown>[]; empty: string }) {
-  const safeRows = rows ?? [];
-  const columns = safeRows.length ? Object.keys(safeRows[0]).slice(0, 8) : [];
-  if (!safeRows.length) return <Typography variant="body2" color="text.secondary">{empty}</Typography>;
-  return (
-    <Box sx={{ overflow: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
-      <Box component="table" sx={{ width: '100%', borderCollapse: 'collapse', minWidth: 620 }}>
-        <Box component="thead" sx={{ bgcolor: '#f8fafc' }}><tr>{columns.map((col) => <Box component="th" key={col} sx={{ p: 1, textAlign: 'left', fontSize: 12 }}>{col}</Box>)}</tr></Box>
-        <tbody>{safeRows.slice(0, 80).map((row, i) => <tr key={i}>{columns.map((col) => <Box component="td" key={col} sx={{ p: 1, borderTop: '1px solid #e2e8f0', fontSize: 12, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(row[col] ?? '')}</Box>)}</tr>)}</tbody>
-      </Box>
-    </Box>
-  );
-}
 
 function SummaryRow({ label, value }: { label: string; value: React.ReactNode }) {
   return <Stack direction="row" justifyContent="space-between" spacing={2}><Typography variant="body2" color="text.secondary">{label}</Typography><Typography variant="body2" sx={{ fontWeight: 700, textAlign: 'right' }}>{value}</Typography></Stack>;
 }
 
-function ComparisonRow({ leftLabel, leftValue, rightLabel, rightValue }: { leftLabel: string; leftValue: React.ReactNode; rightLabel: string; rightValue: React.ReactNode }) {
-  const renderValue = (value: React.ReactNode) => {
-    if (value === null || value === undefined || value === '') {
-      return '—';
-    }
-    if (React.isValidElement(value)) {
-      return value;
-    }
-    return String(value);
-  };
-
-  return (
-    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.2 }}>
-      <Paper variant="outlined" sx={{ p: 1.2, borderRadius: 2 }}>
-        <Typography variant="caption" color="text.secondary">{leftLabel}</Typography>
-        <Typography variant="body2" sx={{ fontWeight: 700, mt: 0.4, wordBreak: 'break-word' }}>{renderValue(leftValue)}</Typography>
-      </Paper>
-      <Paper variant="outlined" sx={{ p: 1.2, borderRadius: 2 }}>
-        <Typography variant="caption" color="text.secondary">{rightLabel}</Typography>
-        <Typography variant="body2" sx={{ fontWeight: 700, mt: 0.4, wordBreak: 'break-word' }}>{renderValue(rightValue)}</Typography>
-      </Paper>
-    </Box>
-  );
-}
 function ToggleCard({ checked, title, description, onChange }: { checked: boolean; title: string; description: string; onChange: (value: boolean) => void }) {
-  return <Paper variant="outlined" sx={{ p: 1.5, minHeight: 94, borderRadius: 3, borderColor: checked ? 'primary.main' : 'divider', bgcolor: checked ? 'rgba(37,99,235,.035)' : 'background.paper' }}><Stack direction="row" spacing={1} alignItems="flex-start"><Checkbox checked={checked} onChange={(e) => onChange(e.target.checked)} sx={{ p: 0 }} /><Stack><Typography variant="body2" sx={{ fontWeight: 800 }}>{title}</Typography><Typography variant="caption" color="text.secondary">{description}</Typography></Stack></Stack></Paper>;
+  return <Paper variant="outlined" sx={{ p: 1.5, minHeight: 94, borderRadius: 3, borderColor: checked ? 'primary.main' : 'divider', bgcolor: checked ? 'rgba(37,99,235,.035)' : 'background.paper' }}><FormControlLabel sx={{ alignItems: 'flex-start', m: 0 }} control={<Checkbox checked={checked} onChange={(e) => onChange(e.target.checked)} sx={{ p: 0, mr: 1 }} />} label={<Stack><Typography variant="body2" sx={{ fontWeight: 800 }}>{title}</Typography><Typography variant="caption" color="text.secondary">{description}</Typography></Stack>} /></Paper>;
 }
 
 function AppShell({ activeStage, onNavigate, children, dataStatus, runStatus, review }: { activeStage: Stage; onNavigate: (stage: Stage) => void; children: React.ReactNode; dataStatus: DataStatus; runStatus: RunStatus; review: ReviewState }) {
   const activeStep = stages.findIndex((s) => s.id === activeStage);
-  return <Box sx={{ bgcolor: '#eef7fb', minHeight: '100vh', p: { xs: 1, md: 2 }, borderRadius: 4 }}><Stack spacing={2}>
-    <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 }, borderRadius: 4, background: 'linear-gradient(135deg,#ffffff 0%,#f0fdfa 50%,#eff6ff 100%)', boxShadow: '0 18px 48px rgba(15,23,42,.08)' }}>
+  return <Box sx={{ bgcolor: 'background.default', minHeight: '100vh', p: { xs: 1, md: 2 }, borderRadius: 4 }}><Stack spacing={2}>
+    <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 }, borderRadius: 4, background: heroSurface, boxShadow: '0 18px 48px rgba(15,23,42,.08)' }}>
       <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems={{ xs: 'stretch', lg: 'center' }} justifyContent="space-between">
-        <Stack direction="row" spacing={1.5} alignItems="center"><AgentIcon /><Stack><Typography variant="h5">Agent-Based Reconciliation</Typography><Typography variant="body2" color="text.secondary">Agent-based workflow for semantic reconciliation, curation, and SSSOM export</Typography></Stack></Stack>
+        <Stack direction="row" spacing={1.5} alignItems="center"><AgentIcon /><Stack><Typography variant="h5" component="h2">Agent-Based Reconciliation</Typography><Typography variant="body2" color="text.secondary">Agent-based workflow for semantic reconciliation, curation, and SSSOM export</Typography></Stack></Stack>
         <Stepper nonLinear activeStep={activeStep} sx={{ minWidth: { lg: 560 } }}>{stages.map((stage, idx) => <Step key={stage.id} completed={idx < activeStep}><StepButton onClick={() => onNavigate(stage.id)}><Stack spacing={0}><Typography variant="body2" sx={{ fontWeight: 800 }}>{stage.label}</Typography><Typography variant="caption" color="text.secondary">{stage.caption}</Typography></Stack></StepButton></Step>)}</Stepper>
       </Stack>
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4, 1fr)' }, gap: 1.2, mt: 2 }}>
@@ -206,8 +184,8 @@ function FileUploadPanel({ dataStatus, emit }: { dataStatus: DataStatus; emit: (
 
   return <Card variant="outlined"><CardContent><Stack spacing={1.5}>
     <Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="subtitle1">File Upload</Typography><Chip size="small" label={dataStatus.has_table ? 'file selected' : 'waiting'} color={dataStatus.has_table ? 'success' : 'warning'} /></Stack>
-    <Paper variant="outlined" sx={{ p: 3, textAlign: 'center', borderStyle: 'dashed', borderRadius: 3, bgcolor: '#f8fafc' }}>
-      <Typography variant="h6">Upload matching table</Typography>
+    <Paper variant="outlined" sx={{ p: 3, textAlign: 'center', borderStyle: 'dashed', borderRadius: 3, bgcolor: 'background.default' }}>
+      <Typography variant="h6" component="h3">Upload matching table</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: .5 }}>Choose a CSV matching table directly in the browser app, or load the shared table from the Matching Table Generator.</Typography>
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="center" alignItems="center" sx={{ mt: 1.5 }}>
         <Button component="label" variant="contained" disabled={dataStatus.upload_bridge_available === false}>
@@ -221,6 +199,7 @@ function FileUploadPanel({ dataStatus, emit }: { dataStatus: DataStatus; emit: (
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4,1fr)' }, gap: 1 }}>
       <SummaryRow label="File" value={dataStatus.filename || dataStatus.source_name || '—'} />
       <SummaryRow label="Rows" value={dataStatus.rows ?? 0} />
+      {(dataStatus.reconciled_rows ?? 0) > 0 && <SummaryRow label="To reconcile" value={`${dataStatus.unreconciled_rows ?? 0} of ${dataStatus.rows ?? 0} · ${dataStatus.reconciled_rows} already reconciled`} />}
       <SummaryRow label="Columns" value={dataStatus.columns ?? 0} />
       <SummaryRow label="Schema" value={dataStatus.schema_message || 'No schema detected'} />
     </Box>
@@ -244,6 +223,8 @@ function WorkflowConfigPanelInner({ config, providers, providerLabels, modelOpti
   const selectedWorkflow = workflows.find((item) => item.id === config.workflow) ?? workflows[0];
   const updateAdvanced = (patch: Partial<AdvancedConfig>) => update({ advanced: { ...config.advanced, ...patch } });
   const updatePolicy = (patch: Partial<AutoAcceptPolicy>) => update({ auto_accept_policy: { ...config.auto_accept_policy, ...patch } });
+  const ontologySelectOptions = unique([...(ontologyOptions || []), ...(config.bioportal_ontologies || [])]).sort();
+  const ontologyMenuProps = { PaperProps: { sx: { maxHeight: 360 } } };
   return <Card variant="outlined"><CardContent><Stack spacing={2}>
     <Stack><Typography variant="subtitle1">Workflow Configuration</Typography><Typography variant="body2" color="text.secondary">Agent strategy, model provider, policies and advanced execution settings.</Typography></Stack>
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.5 }}>{workflows.map((workflow) => <ButtonBase key={workflow.id} onClick={() => update({ workflow: workflow.id })} sx={{ textAlign: 'left', borderRadius: 3 }}><Paper variant="outlined" sx={{ p: 2, width: '100%', minHeight: 150, borderRadius: 3, borderColor: config.workflow === workflow.id ? 'primary.main' : 'divider', bgcolor: config.workflow === workflow.id ? 'rgba(37,99,235,.04)' : 'white' }}><Stack spacing={1}><Stack direction="row" justifyContent="space-between"><Typography variant="subtitle2">{workflow.title}</Typography><Chip size="small" label={workflow.badge} sx={{ color: workflow.badgeColor, bgcolor: `${workflow.badgeColor}18` }} /></Stack><Typography variant="body2" color="text.secondary">{workflow.description}</Typography>{workflow.bullets.map((b) => <Typography key={b} variant="caption" color="text.secondary">✓ {b}</Typography>)}</Stack></Paper></ButtonBase>)}</Box>
@@ -280,10 +261,10 @@ function WorkflowConfigPanelInner({ config, providers, providerLabels, modelOpti
     ) : <TextField label="Provider API key env var" value={config.provider_api_key_env} onChange={(e) => update({ provider_api_key_env: e.target.value })} InputProps={{ startAdornment: <InputAdornment position="start">ENV</InputAdornment> }} />}
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2,1fr)', lg: 'repeat(4,1fr)' }, gap: 1.2 }}><ToggleCard checked={config.skos_matching} title="SKOS matching" description="Generate SKOS predicates for mappings." onChange={(v) => update({ skos_matching: v })} /><ToggleCard checked={config.auto_accept} title="Auto-accept" description="Accept high-confidence mappings by policy." onChange={(v) => update({ auto_accept: v })} /><ToggleCard checked={config.langsmith} title="LangSmith" description="Enable single MUI monitoring panel." onChange={(v) => update({ langsmith: v })} /><ToggleCard checked={config.expert_mode} title="Expert mode" description="Expose planner, budgets and limits." onChange={(v) => update({ expert_mode: v })} /></Box>
     <Collapse in={config.langsmith}><TextField fullWidth label="LangSmith project" value={config.langsmith_project} onChange={(e) => update({ langsmith_project: e.target.value })} /></Collapse>
-    <Collapse in={config.workflow === 'bioportal_wikidata_multiagent'}><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.2 }}><TextField label="Trusted ontologies" helperText={ontologyOptions.length ? `Available: ${ontologyOptions.slice(0, 8).join(', ')}…` : 'Comma separated'} value={(config.trusted_ontologies ?? []).join(', ')} onChange={(e) => update({ trusted_ontologies: splitCsv(e.target.value) })} /><TextField label="BioPortal ontologies" value={(config.bioportal_ontologies ?? []).join(', ')} onChange={(e) => update({ bioportal_ontologies: splitCsv(e.target.value) })} /></Box></Collapse>
+    <Collapse in={config.workflow === 'bioportal_wikidata_multiagent'}><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.2 }}><TextField label="Trusted ontologies" helperText={ontologyOptions.length ? `Available: ${ontologyOptions.slice(0, 8).join(', ')}...` : 'Comma separated'} value={(config.trusted_ontologies ?? []).join(', ')} onChange={(e) => update({ trusted_ontologies: splitCsv(e.target.value) })} /><FormControl fullWidth size="small" disabled={Boolean(config.bioportal_use_all_ontologies)}><InputLabel>BioPortal ontologies</InputLabel><Select multiple displayEmpty label="BioPortal ontologies" MenuProps={ontologyMenuProps} value={config.bioportal_use_all_ontologies ? [] : (config.bioportal_ontologies ?? [])} onChange={(e) => update({ bioportal_ontologies: typeof e.target.value === 'string' ? splitCsv(e.target.value) : (e.target.value as string[]) })} renderValue={(selected) => config.bioportal_use_all_ontologies ? 'All BioPortal ontologies' : (selected as string[]).join(', ')}>{ontologySelectOptions.map((ontology) => <MenuItem key={ontology} value={ontology}><Checkbox size="small" checked={!config.bioportal_use_all_ontologies && (config.bioportal_ontologies ?? []).includes(ontology)} /><Typography variant="body2">{ontology}</Typography></MenuItem>)}</Select></FormControl><FormControlLabel control={<Switch checked={Boolean(config.bioportal_use_all_ontologies)} onChange={(e) => update({ bioportal_use_all_ontologies: e.target.checked, bioportal_ontologies: e.target.checked ? [] : config.bioportal_ontologies })} />} label="All BioPortal ontologies" /><FormControlLabel control={<Switch checked={Boolean(config.enable_wikidata_fallback)} onChange={(e) => update({ enable_wikidata_fallback: e.target.checked })} />} label="Allow Wikidata fallback" /></Box></Collapse>
     <Collapse in={config.auto_accept}><Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}><Stack spacing={1}><Typography variant="subtitle2">Auto-Accept Policy</Typography><TextField type="number" label="Minimum confidence" inputProps={{ min: 0, max: 1, step: .01 }} value={config.auto_accept_policy.min_confidence} onChange={(e) => updatePolicy({ min_confidence: asNumber(e.target.value, .8) })} /><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4,1fr)' }, gap: 1 }}><FormControlLabel control={<Checkbox checked={config.auto_accept_policy.require_exact_match} onChange={(e) => updatePolicy({ require_exact_match: e.target.checked })} />} label="Exact match" /><FormControlLabel control={<Checkbox checked={config.auto_accept_policy.require_llm_decision} onChange={(e) => updatePolicy({ require_llm_decision: e.target.checked })} />} label="LLM decision" /><FormControlLabel control={<Checkbox checked={config.auto_accept_policy.require_no_fallback} onChange={(e) => updatePolicy({ require_no_fallback: e.target.checked })} />} label="No fallback" /><FormControlLabel control={<Checkbox checked={config.auto_accept_policy.trusted_ontologies_only} onChange={(e) => updatePolicy({ trusted_ontologies_only: e.target.checked })} />} label="Trusted only" /></Box></Stack></Paper></Collapse>
-    <Paper variant="outlined" sx={{ borderRadius: 3, overflow: 'hidden' }}><Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ p: 1.5 }}><Stack><Typography variant="subtitle2">Advanced Settings</Typography><Typography variant="caption" color="text.secondary">Execution limits, review policy and agentic refinement controls.</Typography></Stack><Switch checked={config.expert_mode} onChange={(e) => update({ expert_mode: e.target.checked })} /></Stack><Collapse in={config.expert_mode}><Divider /><Stack spacing={1.5} sx={{ p: 1.5 }}><Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, bgcolor: '#f8fafc' }}><Stack spacing={1}><Typography variant="subtitle2">Candidate review policy</Typography><FormControl fullWidth size="small"><InputLabel>Candidate review policy</InputLabel><Select label="Candidate review policy" value={config.candidate_review_mode} onChange={(e) => update({ candidate_review_mode: normalizeCandidateReviewMode(e.target.value) })}><MenuItem value="conservative">Conservative</MenuItem><MenuItem value="exploratory">Exploratory</MenuItem></Select></FormControl><Typography variant="caption" color="text.secondary"><strong>Conservative</strong>: automatically accepts only strong candidates but still shows plausible exact/close matches for review. <strong>Exploratory</strong>: also shows weaker close or related candidates for manual review. Useful for sparse ontologies or uncommon terms.</Typography></Stack></Paper><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4,1fr)' }, gap: 1.2 }}><TextField type="number" label="Timeout" value={config.advanced.timeout_s} onChange={(e) => updateAdvanced({ timeout_s: asNumber(e.target.value, 180) })} /><TextField type="number" label="Iterations" value={config.advanced.max_iterations} onChange={(e) => updateAdvanced({ max_iterations: asNumber(e.target.value, 10) })} /><TextField type="number" label="Batch size" value={config.advanced.batch_size} onChange={(e) => updateAdvanced({ batch_size: asNumber(e.target.value, 10) })} /><TextField type="number" label="Workers" value={config.advanced.max_workers} onChange={(e) => updateAdvanced({ max_workers: asNumber(e.target.value, 4) })} /></Box><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3,1fr)' }, gap: 1.2 }}><FormControlLabel control={<Switch checked={Boolean(config.allow_heuristic_fallback)} onChange={(e) => update({ allow_heuristic_fallback: e.target.checked })} />} label="Allow heuristic fallbacks" /><FormControlLabel control={<Switch checked={Boolean(config.use_different_models)} onChange={(e) => update({ use_different_models: e.target.checked })} />} label="Different definition model" /><TextField type="number" label="LLM call budget" value={config.advanced.agentic_total_llm_call_budget} onChange={(e) => updateAdvanced({ agentic_total_llm_call_budget: asNumber(e.target.value, 14) })} /></Box></Stack></Collapse></Paper>
-    <Alert severity="info" variant="outlined">Selected strategy: <strong>{selectedWorkflow.title}</strong>. Configuration changes are emitted as structured <code>config_changed</code> events.</Alert>
+    <Paper variant="outlined" sx={{ borderRadius: 3, overflow: 'hidden' }}><Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ p: 1.5 }}><Stack><Typography variant="subtitle2">Advanced Settings</Typography><Typography variant="caption" color="text.secondary">Execution limits, review policy and agentic refinement controls.</Typography></Stack><Switch checked={config.expert_mode} onChange={(e) => update({ expert_mode: e.target.checked })} inputProps={{ 'aria-label': 'Show advanced settings' }} /></Stack><Collapse in={config.expert_mode}><Divider /><Stack spacing={1.5} sx={{ p: 1.5 }}><Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, bgcolor: 'background.default' }}><Stack spacing={1}><Typography variant="subtitle2">Candidate review policy</Typography><FormControl fullWidth size="small"><InputLabel>Candidate review policy</InputLabel><Select label="Candidate review policy" value={config.candidate_review_mode} onChange={(e) => update({ candidate_review_mode: normalizeCandidateReviewMode(e.target.value) })}><MenuItem value="conservative">Conservative</MenuItem><MenuItem value="exploratory">Exploratory</MenuItem></Select></FormControl><Typography variant="caption" color="text.secondary"><strong>Conservative</strong>: automatically accepts only strong candidates but still shows plausible exact/close matches for review. <strong>Exploratory</strong>: also shows weaker close or related candidates for manual review. Useful for sparse ontologies or uncommon terms.</Typography></Stack></Paper><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4,1fr)' }, gap: 1.2 }}><TextField type="number" label="Timeout" value={config.advanced.timeout_s} onChange={(e) => updateAdvanced({ timeout_s: asNumber(e.target.value, 180) })} /><TextField type="number" label="Iterations" value={config.advanced.max_iterations} onChange={(e) => updateAdvanced({ max_iterations: asNumber(e.target.value, 10) })} /><TextField type="number" label="Batch size" value={config.advanced.batch_size} onChange={(e) => updateAdvanced({ batch_size: asNumber(e.target.value, 10) })} /><TextField type="number" label="Workers" value={config.advanced.max_workers} onChange={(e) => updateAdvanced({ max_workers: asNumber(e.target.value, 4) })} /></Box><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3,1fr)' }, gap: 1.2 }}><FormControlLabel control={<Switch checked={Boolean(config.allow_heuristic_fallback)} onChange={(e) => update({ allow_heuristic_fallback: e.target.checked })} />} label="Allow heuristic fallbacks" /><FormControlLabel control={<Switch checked={Boolean(config.enable_candidate_adjudication)} onChange={(e) => update({ enable_candidate_adjudication: e.target.checked })} />} label="Final candidate adjudication" /><FormControlLabel control={<Switch checked={Boolean(config.use_different_models)} onChange={(e) => update({ use_different_models: e.target.checked })} />} label="Different definition model" /><TextField type="number" label="LLM call budget" value={config.advanced.agentic_total_llm_call_budget} onChange={(e) => updateAdvanced({ agentic_total_llm_call_budget: asNumber(e.target.value, 14) })} /></Box></Stack></Collapse></Paper>
+    <Alert severity="info" variant="outlined">Selected strategy: <strong>{selectedWorkflow.title}</strong>. Your configuration is saved automatically as you change it.</Alert>
   </Stack></CardContent></Card>;
 }
 
@@ -326,13 +307,13 @@ function DefinitionPreparationPanel({ config, update, emit }: { config: Workflow
   return <Card variant="outlined"><CardContent><Stack spacing={1.5}>
     <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={2}>
       <Stack><Typography variant="subtitle1">Definition Preparation</Typography><Typography variant="body2" color="text.secondary">Optional contextual definitions for ambiguous terms.</Typography></Stack>
-      <Switch checked={Boolean(config.definition_preparation)} onChange={(e) => update({ definition_preparation: e.target.checked })} />
+      <Switch checked={Boolean(config.definition_preparation)} onChange={(e) => update({ definition_preparation: e.target.checked })} inputProps={{ 'aria-label': 'Enable definition preparation' }} />
     </Stack>
     <Collapse in={Boolean(config.definition_preparation)}>
       <Stack spacing={1.3} sx={{ pt: .5 }}>
         <FormControl fullWidth size="small"><InputLabel>Definition strategy</InputLabel><Select label="Definition strategy" value={strategy} onChange={(e) => { setUploadError(''); update({ definition_strategy: String(e.target.value) }); }}><MenuItem value="uploaded_sheet">Upload definitions sheet</MenuItem><MenuItem value="generate_single_shot">Generate from context</MenuItem><MenuItem value="reference_publication">Reference publication</MenuItem></Select></FormControl>
         {strategy === 'uploaded_sheet' && (
-          <Paper variant="outlined" sx={{ p: 2, borderStyle: 'dashed', borderRadius: 3, bgcolor: '#f8fafc' }}>
+          <Paper variant="outlined" sx={{ p: 2, borderStyle: 'dashed', borderRadius: 3, bgcolor: 'background.default' }}>
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
               <Stack spacing={.4}>
                 <Typography variant="subtitle2">Definitions sheet</Typography>
@@ -348,7 +329,7 @@ function DefinitionPreparationPanel({ config, update, emit }: { config: Workflow
         )}
         {strategy === 'reference_publication' && (
           <Stack spacing={1}>
-            <Paper variant="outlined" sx={{ p: 2, borderStyle: 'dashed', borderRadius: 3, bgcolor: '#f8fafc' }}>
+            <Paper variant="outlined" sx={{ p: 2, borderStyle: 'dashed', borderRadius: 3, bgcolor: 'background.default' }}>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
                 <Stack spacing={.4}>
                   <Typography variant="subtitle2">Reference publication</Typography>
@@ -384,7 +365,7 @@ function RunPrerequisitesPanel({ readiness }: { readiness: ReadinessState }) { r
 function RunSummaryPanel({ readiness, config }: { readiness: ReadinessState; config: WorkflowConfig }) { const summary = readiness.summary ?? {}; return <Card variant="outlined"><CardContent><Stack spacing={1.1}><Typography variant="subtitle1">Run Summary</Typography><SummaryRow label="Workflow" value={summary.Workflow || config.workflow} /><SummaryRow label="Model" value={summary.Model || config.model} /><SummaryRow label="SKOS Matching" value={summary['SKOS Matching'] || (config.skos_matching ? 'Enabled' : 'Disabled')} /><SummaryRow label="Auto-accept" value={summary['Auto-accept'] || (config.auto_accept ? 'Enabled' : 'Disabled')} /><SummaryRow label="Batch Size" value={summary['Batch Size'] || String(config.advanced.batch_size)} /><SummaryRow label="Max Workers" value={summary['Max Workers'] || String(config.advanced.max_workers)} /><SummaryRow label="Est. Runtime" value={summary['Est. Runtime'] || 'n/a'} /><SummaryRow label="Est. Cost" value={summary['Est. Cost'] || 'Available after run telemetry'} /></Stack></CardContent></Card>; }
 function MonitoringMetric({ label, value, tone = 'default' }: { label: string; value: React.ReactNode; tone?: 'default' | 'error' }) {
   return (
-    <Paper variant="outlined" sx={{ p: 1.2, borderRadius: 2, bgcolor: tone === 'error' ? 'rgba(254,242,242,.72)' : '#f8fafc', borderColor: tone === 'error' ? 'error.light' : 'divider' }}>
+    <Paper variant="outlined" sx={{ p: 1.2, borderRadius: 2, bgcolor: tone === 'error' ? (t)=>alpha(t.palette.error.main,0.1) : 'background.default', borderColor: tone === 'error' ? 'error.light' : 'divider' }}>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{label}</Typography>
       <Typography variant="body1" sx={{ fontWeight: 900, color: tone === 'error' ? 'error.main' : 'text.primary' }}>{value}</Typography>
     </Paper>
@@ -393,14 +374,19 @@ function MonitoringMetric({ label, value, tone = 'default' }: { label: string; v
 function MonitoringPanel({ telemetry, runStatus }: { telemetry: Telemetry; runStatus: RunStatus }) { const [tab, setTab] = useState(0); const hasRealProgress = typeof runStatus.processed_count === 'number' && typeof runStatus.total_count === 'number' && runStatus.total_count > 0; const progress = hasRealProgress ? Math.min(100, Math.round(((runStatus.processed_count as number) / (runStatus.total_count as number)) * 100)) : null; const processedValue = runStatus.processed_count ?? telemetry.processed_terms ?? 0; const totalValue = runStatus.total_count ?? telemetry.total_terms ?? 0; const failureValue = Math.max(0, Number(telemetry.failed_terms ?? 0)); return <Card variant="outlined"><CardContent><Stack spacing={1.5}><Stack direction="row" justifyContent="space-between"><Typography variant="subtitle1">Monitoring / Telemetry</Typography><Chip size="small" label={telemetry.enabled ? 'enabled' : 'disabled'} color={telemetry.enabled ? 'success' : 'default'} /></Stack><Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable"><Tab label="Run Status" /><Tab label="LLM Calls" /><Tab label="LangSmith" /><Tab label="Logs" /></Tabs>{tab === 0 && <Stack spacing={1}><LinearProgress variant="determinate" value={hasRealProgress ? progress ?? 0 : 0} /><Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(5, minmax(0, 1fr))' }, gap: 1 }}><MonitoringMetric label="Processed terms" value={processedValue} /><MonitoringMetric label="Total terms" value={totalValue} /><MonitoringMetric label="Run failures" value={failureValue} tone={failureValue > 0 ? 'error' : 'default'} /><MonitoringMetric label="Duration" value={telemetry.duration_sec ? `${telemetry.duration_sec.toFixed(2)}s` : '—'} /><MonitoringMetric label="Cost" value={`$${(telemetry.total_cost_usd ?? 0).toFixed(4)}`} /></Box><DataTable rows={telemetry.events} empty="No term-level events captured yet." /></Stack>}{tab === 1 && <DataTable rows={telemetry.llm_calls} empty="No LLM prompt/response interactions captured yet." />}{tab === 2 && <Stack spacing={1}><Alert severity={telemetry.enabled ? 'info' : 'warning'} variant="outlined">{telemetry.langsmith_message || (telemetry.enabled ? 'LangSmith monitoring is enabled.' : 'LangSmith monitoring is disabled.')}</Alert>{telemetry.langsmith_project_url && <Button href={telemetry.langsmith_project_url} target="_blank">Open LangSmith project</Button>}{telemetry.langsmith_url && <Button href={telemetry.langsmith_url} target="_blank">Open LangSmith run</Button>}<DataTable rows={telemetry.cascade} empty="No cascade trace captured yet." /></Stack>}{tab === 3 && <Stack spacing={.7}>{(telemetry.logs?.length ? telemetry.logs : ['No logs captured yet.']).slice(-80).map((log, idx) => <Typography key={idx} variant="caption" sx={{ fontFamily: 'monospace' }}>{log}</Typography>)}</Stack>}</Stack></CardContent></Card>; }
 function workflowForRunPanel(workflow: string): AgentRunWorkflow { return workflow === 'wikidata_deep_agent' ? 'wikidata_deep_agent' : 'bioportal_wikidata'; }
 function RunStartPanel({ readiness, running, runStatus, onStart, onBack }: { readiness: ReadinessState; running: boolean; runStatus: RunStatus; onStart: () => void; onBack: () => void }) { return <Card variant="outlined"><CardContent><Stack spacing={1.5}><Typography variant="subtitle1">Run Agent-Based Reconciliation</Typography><Alert severity={readiness.ready ? 'success' : 'warning'} variant="outlined">{runStatus.message || (readiness.ready ? 'Ready to run' : 'Resolve prerequisites before running.')}</Alert><Button variant="contained" disabled={!readiness.ready || running} onClick={onStart}>Start Reconciliation</Button><Button variant="outlined" onClick={onBack}>Back to Setup</Button></Stack></CardContent></Card>; }
-function RunSuccessPanel({ runStatus, telemetry, onContinue }: { runStatus: RunStatus; telemetry: Telemetry; onContinue: () => void }) { const processed = runStatus.processed_count ?? telemetry.processed_terms ?? 0; const total = runStatus.total_count ?? telemetry.total_terms ?? 0; const duration = telemetry.duration_sec ?? runStatus.elapsed_seconds; return <Card variant="outlined" sx={{ borderRadius: 4, borderColor: 'success.light', bgcolor: 'rgba(240,253,244,.72)' }}><CardContent><Stack spacing={1.5}><Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h6" sx={{ fontWeight: 900 }}>Run completed successfully</Typography><Chip color="success" label="Success" /></Stack><Alert severity="success" variant="outlined">Agent-based reconciliation completed. Review the generated mapping suggestions next.</Alert><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 1 }}><SummaryRow label="Processed" value={total ? `${processed} / ${total}` : processed} /><SummaryRow label="Duration" value={typeof duration === 'number' ? `${duration.toFixed(1)}s` : '—'} /><SummaryRow label="Cost" value={`$${(telemetry.total_cost_usd ?? 0).toFixed(4)}`} /></Box><LinearProgress variant="determinate" value={100} sx={{ height: 10, borderRadius: 999 }} /><Button variant="contained" color="success" onClick={onContinue}>Continue to Review</Button></Stack></CardContent></Card>; }
-function RunErrorPanel({ error, onBack, onRetry }: { error: string; onBack: () => void; onRetry: () => void }) { return <Card variant="outlined" sx={{ borderRadius: 4, borderColor: 'error.light', bgcolor: 'rgba(254,242,242,.72)' }}><CardContent><Stack spacing={1.5}><Typography variant="h6" sx={{ fontWeight: 900 }}>Run failed</Typography><Alert severity="error" variant="outlined">{error}</Alert><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><Button variant="contained" color="error" onClick={onRetry}>Retry Reconciliation</Button><Button variant="outlined" onClick={onBack}>Back to Setup</Button></Stack></Stack></CardContent></Card>; }
-function RunStoppedPanel({ runStatus, telemetry, onResume, onRestart, onBack }: { runStatus: RunStatus; telemetry: Telemetry; onResume: () => void; onRestart: () => void; onBack: () => void }) {
+function RunSuccessPanel({ runStatus, telemetry, onContinue }: { runStatus: RunStatus; telemetry: Telemetry; onContinue: () => void }) { const processed = runStatus.processed_count ?? telemetry.processed_terms ?? 0; const total = runStatus.total_count ?? telemetry.total_terms ?? 0; const duration = telemetry.duration_sec ?? runStatus.elapsed_seconds; return <Card variant="outlined" sx={{ borderRadius: 4, borderColor: 'success.light', bgcolor: (t)=>alpha(t.palette.success.main,0.1) }}><CardContent><Stack spacing={1.5}><Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h6" sx={{ fontWeight: 900 }}>Run completed successfully</Typography><Chip color="success" label="Success" /></Stack><Alert severity="success" variant="outlined">Agent-based reconciliation completed. Review the generated mapping suggestions next.</Alert><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 1 }}><SummaryRow label="Processed" value={total ? `${processed} / ${total}` : processed} /><SummaryRow label="Duration" value={typeof duration === 'number' ? `${duration.toFixed(1)}s` : '—'} /><SummaryRow label="Cost" value={`$${(telemetry.total_cost_usd ?? 0).toFixed(4)}`} /></Box><LinearProgress variant="determinate" value={100} sx={{ height: 10, borderRadius: 999 }} /><Button variant="contained" color="success" onClick={onContinue}>Continue to Review</Button></Stack></CardContent></Card>; }
+function RunErrorPanel({ error, onBack, onRetry }: { error: string; onBack: () => void; onRetry: () => void }) { return <Card variant="outlined" sx={{ borderRadius: 4, borderColor: 'error.light', bgcolor: (t)=>alpha(t.palette.error.main,0.1) }}><CardContent><Stack spacing={1.5}><Typography variant="h6" sx={{ fontWeight: 900 }}>Run failed</Typography><Alert severity="error" variant="outlined">{error}</Alert><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><Button variant="contained" color="error" onClick={onRetry}>Retry Reconciliation</Button><Button variant="outlined" onClick={onBack}>Back to Setup</Button></Stack></Stack></CardContent></Card>; }
+function RunStoppedPanel({ runStatus, telemetry, onResume, onReview, onSkipFailedTerm, onRestart, onBack }: { runStatus: RunStatus; telemetry: Telemetry; onResume: () => void; onReview: () => void; onSkipFailedTerm: () => void; onRestart: () => void; onBack: () => void }) {
   const processed = runStatus.processed_count ?? telemetry.processed_terms ?? 0;
   const total = runStatus.total_count ?? telemetry.total_terms ?? 0;
   const stopEvent = (runStatus.stop_event ?? {}) as StopEvent;
+  const stoppedByLlm = runStatus.stop_reason === 'llm_error' || stopEvent.stop_reason === 'llm_error';
+  const stoppedByRuntimeError = runStatus.stop_reason === 'runtime_error' || stopEvent.stop_reason === 'runtime_error';
+  const stoppedByUser = !stoppedByLlm && !stoppedByRuntimeError;
+  const canSkipFailed = stoppedByLlm || stoppedByRuntimeError;
+  const hasCompleted = Number(processed) > 0;
   const nextTerm = total ? Math.min(total, Number(processed) + 1) : null;
-  return <Card variant="outlined" sx={{ borderRadius: 4, borderColor: 'error.light', bgcolor: 'rgba(254,242,242,.72)' }}><CardContent><Stack spacing={1.5}><Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h6" sx={{ fontWeight: 900 }}>Run stopped</Typography><Chip color="error" label="Stopped" /></Stack><Alert severity="warning" variant="outlined">{runStatus.message || 'The run was stopped by the user.'}</Alert><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 1 }}><SummaryRow label="Processed" value={total ? `${processed} / ${total}` : processed} /><SummaryRow label="Next resume step" value={nextTerm ? `${nextTerm} / ${total}` : '—'} /><SummaryRow label="Stopped at" value={stopEvent.term || 'Last completed term'} /></Box><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><Button variant="contained" color="error" disabled={!runStatus.can_resume} onClick={onResume}>Continue from Stopped Point</Button><Button variant="outlined" color="error" onClick={onRestart}>Rerun from Start</Button><Button variant="outlined" onClick={onBack}>Back to Setup</Button></Stack></Stack></CardContent></Card>;
+  return <Card variant="outlined" sx={{ borderRadius: 4, borderColor: 'warning.light', bgcolor: (t)=>alpha(t.palette.warning.main,0.1) }}><CardContent><Stack spacing={1.5}><Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h6" sx={{ fontWeight: 900 }}>Run stopped</Typography><Chip color="warning" label={stoppedByLlm ? 'Needs attention' : 'Stopped'} /></Stack><Alert severity="warning" variant="outlined">{runStatus.message || (stoppedByLlm ? 'The run stopped on a timeout or LLM/API error.' : 'The run was stopped by the user.')}</Alert><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 1 }}><SummaryRow label="Processed" value={total ? `${processed} / ${total}` : processed} /><SummaryRow label="Next resume step" value={nextTerm ? `${nextTerm} / ${total}` : '—'} /><SummaryRow label="Stopped at" value={stopEvent.term || 'Last completed term'} /></Box><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} useFlexGap flexWrap="wrap">{hasCompleted && <Button variant={stoppedByUser ? 'outlined' : 'contained'} color="warning" startIcon={<RateReviewIcon />} onClick={onReview}>Review Completed Terms</Button>}{runStatus.can_resume && <Button variant={stoppedByUser ? 'contained' : 'outlined'} color="warning" onClick={onResume}>Continue from Stopped Point</Button>}{canSkipFailed && <Button variant="outlined" color="warning" startIcon={<SkipNextIcon />} disabled={!runStatus.can_resume} onClick={onSkipFailedTerm}>Skip Failed Term and Continue</Button>}<Button variant="outlined" color="warning" startIcon={<RefreshIcon />} onClick={onRestart}>Rerun from Start</Button><Button variant="outlined" onClick={onBack}>Back to Setup</Button></Stack></Stack></CardContent></Card>;
 }
 function RunPage({ config, readiness, runStatus, telemetry, dataStatus, emit }: { config: WorkflowConfig; readiness: ReadinessState; runStatus: RunStatus; telemetry: Telemetry; dataStatus: DataStatus; emit: (event: AppEvent) => void }) {
   const [optimisticRunning, setOptimisticRunning] = useState(false);
@@ -420,24 +406,11 @@ function RunPage({ config, readiness, runStatus, telemetry, dataStatus, emit }: 
     emit({ type: 'start_run', resume_previous: resumePrevious });
   };
   const stopRun = () => emit({ type: 'stop_run' });
-  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: running ? 'minmax(0, 1fr)' : '360px minmax(0,1fr)' }, gap: 2 }}><Stack spacing={2}>{running ? <AgentRunProgressPanel runStatus={panelStatus} workflow={workflowForRunPanel(config.workflow)} optimisticTotalCount={optimisticTotalCount} onStop={stopRun} /> : runStatus.stopped ? <RunStoppedPanel runStatus={runStatus} telemetry={telemetry} onResume={() => startRun(true)} onRestart={() => startRun(false)} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /> : runStatus.error ? <RunErrorPanel error={runStatus.error} onRetry={() => startRun(false)} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /> : runStatus.finished ? <RunSuccessPanel runStatus={runStatus} telemetry={telemetry} onContinue={() => emit({ type: 'navigate', stage: 'review' })} /> : <><RunPrerequisitesPanel readiness={readiness} /><RunSummaryPanel readiness={readiness} config={config} /><RunStartPanel readiness={readiness} running={running} runStatus={runStatus} onStart={() => startRun(false)} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /></>}</Stack><MonitoringPanel telemetry={telemetry} runStatus={panelStatus} /></Box>;
+  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: running ? 'minmax(0, 1fr)' : '360px minmax(0,1fr)' }, gap: 2 }}><Stack spacing={2}>{running ? <AgentRunProgressPanel runStatus={panelStatus} workflow={workflowForRunPanel(config.workflow)} optimisticTotalCount={optimisticTotalCount} onStop={stopRun} /> : runStatus.stopped ? <RunStoppedPanel runStatus={runStatus} telemetry={telemetry} onResume={() => startRun(true)} onReview={() => emit({ type: 'review_partial_results' })} onSkipFailedTerm={() => { setOptimisticStartedAt(new Date().toISOString()); setOptimisticRunning(true); emit({ type: 'skip_failed_term_and_resume' }); }} onRestart={() => startRun(false)} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /> : runStatus.error ? <RunErrorPanel error={runStatus.error} onRetry={() => startRun(false)} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /> : runStatus.finished ? <RunSuccessPanel runStatus={runStatus} telemetry={telemetry} onContinue={() => emit({ type: 'navigate', stage: 'review' })} /> : <><RunPrerequisitesPanel readiness={readiness} /><RunSummaryPanel readiness={readiness} config={config} /><RunStartPanel readiness={readiness} running={running} runStatus={runStatus} onStart={() => startRun(false)} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /></>}</Stack><MonitoringPanel telemetry={telemetry} runStatus={panelStatus} /></Box>;
 }
 function ReviewPage({ review, dataStatus, emit }: { review: ReviewState; dataStatus: DataStatus; emit: (event: AppEvent) => void }) {
-  const [status, setStatus] = useState('all');
-  const [matchType, setMatchType] = useState('all');
-  const [provider, setProvider] = useState('all');
   const [selected, setSelected] = useState<ReviewItem | null>(null);
-  const [selectedMatchTypes, setSelectedMatchTypes] = useState<Record<string, string>>({});
-  const providers = unique((review.items ?? []).map((i) => String(i.provider || '')).filter(Boolean));
-  const filtered = (review.items ?? []).filter((item) =>
-    (status === 'all' || String(item.status || 'pending') === status)
-    && (matchType === 'all' || String(item.match_type || 'no_match') === matchType)
-    && (provider === 'all' || String(item.provider || '') === provider)
-  );
   const isNoMatchItem = (item: ReviewItem) => String(item.status || '').toLowerCase() === 'no_match' || String(item.match_type || '').toLowerCase() === 'no_match';
-  const canAcceptItem = (item: ReviewItem) => item.can_accept !== false && !isNoMatchItem(item) && Boolean(String(item.suggested_uri || '').trim());
-  const selectedMatchTypeFor = (item: ReviewItem) => selectedMatchTypes[item.mapping_id] || normalizeEditableSkosMatchType(item.match_type || item.accepted_match_type);
-  const updateSelectedMatchType = (item: ReviewItem, value: string) => setSelectedMatchTypes((current) => ({ ...current, [item.mapping_id]: normalizeEditableSkosMatchType(value) }));
   const traceOf = (item: ReviewItem) => item.trace_metadata ?? {};
 
   return (
@@ -457,6 +430,7 @@ function ReviewPage({ review, dataStatus, emit }: { review: ReviewState; dataSta
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4,1fr)' }, gap: 1 }}>
               <SummaryRow label="File" value={dataStatus.filename || dataStatus.source_name || '—'} />
               <SummaryRow label="Rows" value={dataStatus.rows ?? 0} />
+              {(dataStatus.reconciled_rows ?? 0) > 0 && <SummaryRow label="To reconcile" value={`${dataStatus.unreconciled_rows ?? 0} of ${dataStatus.rows ?? 0} · ${dataStatus.reconciled_rows} already reconciled`} />}
               <SummaryRow label="Columns" value={dataStatus.columns ?? 0} />
               <SummaryRow label="Schema" value={dataStatus.schema_message || 'No schema detected'} />
             </Box>
@@ -484,76 +458,11 @@ function ReviewPage({ review, dataStatus, emit }: { review: ReviewState; dataSta
               For reviewable suggestions, adjust the SKOS match type in the table before clicking <strong>Accept</strong> if the agent’s proposed predicate is not appropriate.
             </Alert>
 
-            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4, 1fr)' }, gap: 1 }}>
-              <FormControl size="small"><InputLabel>Status</InputLabel><Select label="Status" value={status} onChange={(e) => setStatus(String(e.target.value))}>{reviewStatuses.map((s) => <MenuItem key={s} value={s}>{s}</MenuItem>)}</Select></FormControl>
-              <FormControl size="small"><InputLabel>Match type</InputLabel><Select label="Match type" value={matchType} onChange={(e) => setMatchType(String(e.target.value))}>{matchTypes.map((m) => <MenuItem key={m} value={m}>{m}</MenuItem>)}</Select></FormControl>
-              <FormControl size="small"><InputLabel>Provider</InputLabel><Select label="Provider" value={provider} onChange={(e) => setProvider(String(e.target.value))}><MenuItem value="all">all</MenuItem>{providers.map((p) => <MenuItem key={p} value={p}>{p}</MenuItem>)}</Select></FormControl>
+            <Stack direction="row" justifyContent="flex-end">
               <Button variant="contained" onClick={() => emit({ type: 'navigate', stage: 'export' })}>Continue to Export</Button>
-            </Box>
+            </Stack>
 
-            <Typography variant="subtitle2">Results table (live)</Typography>
-            <Box sx={{ overflow: 'auto' }}>
-              <Box component="table" sx={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
-                <thead>
-                  <tr>{['Term','Status','Match Type','Provider','Confidence','Suggested Label','Suggested URI','Actions'].map((h) => <Box component="th" key={h} sx={{ textAlign: 'left', p: 1, bgcolor: '#f8fafc', fontSize: 12 }}>{h}</Box>)}</tr>
-                </thead>
-                <tbody>
-                  {filtered.map((item) => {
-                    const noMatch = isNoMatchItem(item);
-                    const canAccept = canAcceptItem(item);
-                    const selectedMatchType = selectedMatchTypeFor(item);
-                    return (
-                      <tr key={item.mapping_id}>
-                        <Box component="td" sx={{ p: 1, borderTop: '1px solid #e2e8f0' }}>{item.term}</Box>
-                        <Box component="td" sx={{ p: 1, borderTop: '1px solid #e2e8f0' }}><Chip size="small" label={statusLabel(item.status)} sx={reviewStatusChipSx(item.status)} /></Box>
-                        <Box component="td" sx={{ p: 1, borderTop: '1px solid #e2e8f0', minWidth: 210 }}>
-                          {canAccept ? (
-                            <FormControl size="small" fullWidth>
-                              <Select
-                                value={selectedMatchType}
-                                onChange={(event) => updateSelectedMatchType(item, String(event.target.value))}
-                                sx={{
-                                  fontSize: 13,
-                                  fontWeight: 700,
-                                  borderRadius: 999,
-                                  ...skosChipSx(selectedMatchType),
-                                  '& .MuiSelect-select': { py: 0.55, px: 1.4 },
-                                  '& fieldset': { borderColor: 'transparent' },
-                                }}
-                              >
-                                {editableSkosMatchTypes.map((option) => <MenuItem key={option} value={option}>{option}</MenuItem>)}
-                              </Select>
-                            </FormControl>
-                          ) : (
-                            <Chip size="small" label={item.match_type || 'no_match'} sx={skosChipSx(item.match_type)} />
-                          )}
-                        </Box>
-                        <Box component="td" sx={{ p: 1, borderTop: '1px solid #e2e8f0' }}>{noMatch ? '—' : item.provider}</Box>
-                        <Box component="td" sx={{ p: 1, borderTop: '1px solid #e2e8f0' }}>{item.confidence}</Box>
-                        <Box component="td" sx={{ p: 1, borderTop: '1px solid #e2e8f0' }}>{noMatch ? <Typography variant="body2" color="text.secondary">No acceptable suggestion</Typography> : item.suggested_label}</Box>
-                        <Box component="td" sx={{ p: 1, borderTop: '1px solid #e2e8f0', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{noMatch ? <Typography variant="body2" color="text.secondary">—</Typography> : item.suggested_uri}</Box>
-                        <Box component="td" sx={{ p: 1, borderTop: '1px solid #e2e8f0' }}>
-                          <Stack direction="row" spacing={0.5}>
-                            <Button size="small" onClick={() => setSelected(item)}>Details</Button>
-                            {canAccept ? (
-                              <Button size="small" color="success" onClick={() => emit({ type: 'accept_mapping', mapping_id: item.mapping_id, selected_match_type: selectedMatchType })}>Accept</Button>
-                            ) : noMatch ? (
-                              <Button size="small" color="warning" onClick={() => emit({ type: 'reject_mapping', mapping_id: item.mapping_id })}>Acknowledge no match</Button>
-                            ) : (
-                              <Button size="small" color="success" disabled>Accept</Button>
-                            )}
-                            {!noMatch && <Button size="small" color="warning" onClick={() => emit({ type: 'reject_mapping', mapping_id: item.mapping_id })}>Reject</Button>}
-                            <Button size="small" onClick={() => emit({ type: 'reset_mapping', mapping_id: item.mapping_id })}>Reset</Button>
-                          </Stack>
-                        </Box>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </Box>
-            </Box>
-
-            {!filtered.length && <Alert severity="info">No review rows match the selected filters.</Alert>}
+            <ReviewGrid items={review.items ?? []} emit={emit} onOpenDetails={setSelected} />
           </Stack>
         </CardContent>
       </Card>
@@ -564,9 +473,11 @@ function ReviewPage({ review, dataStatus, emit }: { review: ReviewState; dataSta
             <Typography variant="h6">Input vs Agent suggestion</Typography>
             {selected && (
               <>
+                <LineageStrip item={selected} />
+                <ReviewProvenancePanel item={selected} />
                 {isNoMatchItem(selected) && <Alert severity="warning" variant="outlined">{selected.no_match_note || 'This row is a no-match decision. A candidate may be shown below for audit only, but accepting is intentionally disabled.'}</Alert>}
                 {String(selected.status || '').toLowerCase() === 'candidate_suggested' && <Alert severity="info" variant="outlined">This candidate was found after BioPortal did not produce a verified match. It requires manual review because it did not satisfy the strict verified-match policy.</Alert>}
-                {Boolean(traceOf(selected).provider_escalation_used) && <Paper variant="outlined" sx={{ p: 1.2, borderRadius: 2, bgcolor: '#f8fafc' }}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`${traceOf(selected).provider_escalation_from || 'BioPortal'} checked → no verified match`} /><Chip size="small" color="info" label={`${traceOf(selected).provider_escalation_to || 'Wikidata'} second pass started`} /><Chip size="small" color={traceOf(selected).wikidata_second_pass_has_candidate ? 'success' : 'default'} label={traceOf(selected).wikidata_second_pass_has_candidate ? 'Wikidata candidate found' : 'Wikidata checked → no suitable candidate'} /></Stack></Paper>}
+                {Boolean(traceOf(selected).provider_escalation_used) && <Paper variant="outlined" sx={{ p: 1.2, borderRadius: 2, bgcolor: 'background.default' }}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`${traceOf(selected).provider_escalation_from || 'BioPortal'} checked → no verified match`} /><Chip size="small" color="info" label={`${traceOf(selected).provider_escalation_to || 'Wikidata'} second pass started`} /><Chip size="small" color={traceOf(selected).wikidata_second_pass_has_candidate ? 'success' : 'default'} label={traceOf(selected).wikidata_second_pass_has_candidate ? 'Wikidata candidate found' : 'Wikidata checked → no suitable candidate'} /></Stack></Paper>}
                 <ComparisonRow leftLabel="Input term" leftValue={selected.term} rightLabel="Suggested term" rightValue={selected.suggested_label} />
                 <ComparisonRow leftLabel="Input definition" leftValue={selected.definition} rightLabel="Suggested description" rightValue={selected.suggested_description} />
                 <ComparisonRow leftLabel="Input URI" leftValue={selected.input_uri} rightLabel="Suggested URI" rightValue={selected.suggested_uri} />

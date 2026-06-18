@@ -17,6 +17,7 @@ from .agent_provider_config import (
     _normalize_openai_compatible_base_url,
 )
 from .agent_reconciliation_keys import *
+from .agent_reconciliation_keys import COMPONENT_TO_STAGE as _COMPONENT_TO_STAGE, STAGE_TO_COMPONENT as _STAGE_TO_COMPONENT
 from .agent_runtime_state import runtime_state
 from .agent_llm_service import get_default_api_key_env, get_default_model_options, get_provider_label, get_supported_llm_providers
 from semi_automatic_reconciliation.reconciliation_core import CONFIG
@@ -104,6 +105,18 @@ def _build_run_config_from_state() -> AgentRunConfig:
     default_allow_heuristic_fallback = bool(agent_cfg.get("allow_heuristic_fallback", True))
     allow_heuristic_fallback = bool(
         runtime_state.get("agent_allow_heuristic_fallback", default_allow_heuristic_fallback)
+    )
+    default_enable_wikidata_fallback = bool(agent_cfg.get("enable_wikidata_fallback", True))
+    enable_wikidata_fallback = bool(
+        runtime_state.get("agent_enable_wikidata_fallback", default_enable_wikidata_fallback)
+    )
+    default_bioportal_use_all_ontologies = bool(agent_cfg.get("bioportal_use_all_ontologies", False))
+    bioportal_use_all_ontologies = bool(
+        runtime_state.get("agent_bioportal_use_all_ontologies", default_bioportal_use_all_ontologies)
+    )
+    default_enable_candidate_adjudication = bool(agent_cfg.get("enable_candidate_adjudication", True))
+    enable_candidate_adjudication = bool(
+        runtime_state.get("agent_enable_candidate_adjudication", default_enable_candidate_adjudication)
     )
 
     if agentic_expert_mode:
@@ -211,6 +224,9 @@ def _build_run_config_from_state() -> AgentRunConfig:
         if bool(runtime_state.get("agent_use_langsmith_monitoring", False))
         else None,
         allow_heuristic_fallback=allow_heuristic_fallback,
+        enable_wikidata_fallback=enable_wikidata_fallback,
+        bioportal_use_all_ontologies=bioportal_use_all_ontologies,
+        enable_candidate_adjudication=enable_candidate_adjudication,
         candidate_review_mode=candidate_review_mode,
     )
 
@@ -319,6 +335,9 @@ def _build_workflow_config_from_state(defaults: Optional[Dict[str, object]] = No
         if str(runtime_state.get("agent_candidate_review_mode", agent_cfg.get("candidate_review_mode", "conservative")) or "conservative").strip().lower() in {"conservative", "exploratory"}
         else "conservative",
         "allow_heuristic_fallback": bool(runtime_state.get("agent_allow_heuristic_fallback", agent_cfg.get("allow_heuristic_fallback", True))),
+        "enable_wikidata_fallback": bool(runtime_state.get("agent_enable_wikidata_fallback", agent_cfg.get("enable_wikidata_fallback", True))),
+        "bioportal_use_all_ontologies": bool(runtime_state.get("agent_bioportal_use_all_ontologies", agent_cfg.get("bioportal_use_all_ontologies", False))),
+        "enable_candidate_adjudication": bool(runtime_state.get("agent_enable_candidate_adjudication", agent_cfg.get("enable_candidate_adjudication", True))),
         "use_different_models": bool(runtime_state.get("agent_use_different_models", False)),
         "definition_model": runtime_state.get("agent_definition_model_name", runtime_state.get("agent_model_name", defaults.get("default_model", "gpt-5.1"))),
         "agentic_trigger_policy": runtime_state.get("agentic_trigger_policy", agent_cfg.get("agentic_trigger_policy", "no_exact_or_low_confidence")),
@@ -409,6 +428,9 @@ def _apply_workflow_config_to_runtime_state(config: Optional[Dict[str, object]])
     if candidate_review_mode in {"conservative", "exploratory"}:
         _set("agent_candidate_review_mode", candidate_review_mode)
     _set("agent_allow_heuristic_fallback", bool(config.get("allow_heuristic_fallback", True)))
+    _set("agent_enable_wikidata_fallback", bool(config.get("enable_wikidata_fallback", True)))
+    _set("agent_bioportal_use_all_ontologies", bool(config.get("bioportal_use_all_ontologies", False)))
+    _set("agent_enable_candidate_adjudication", bool(config.get("enable_candidate_adjudication", True)))
     _set("agent_use_different_models", bool(config.get("use_different_models", False)))
     definition_model = str(config.get("definition_model", "") or "").strip()
     if definition_model and bool(config.get("use_different_models", False)):
@@ -585,4 +607,3 @@ def _parse_mapping_id(mapping_id: object) -> tuple[Optional[str], Optional[objec
     except ValueError:
         row_index = raw_index
     return source_name, row_index
-

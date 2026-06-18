@@ -58,6 +58,33 @@ def recommend_ontology_acronyms(
     return results
 
 
+def list_bioportal_ontology_acronyms(
+    api_key: Optional[str],
+    *,
+    base_url: str = DEFAULT_BIOPORTAL_BASE_URL,
+) -> List[str]:
+    if not api_key:
+        return []
+    try:
+        response = requests.get(
+            f"{base_url}/ontologies",
+            params={"apikey": api_key},
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except (requests.RequestException, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    acronyms = [
+        str(item.get("acronym", "") or "").strip().upper()
+        for item in data
+        if isinstance(item, dict) and str(item.get("acronym", "") or "").strip()
+    ]
+    return sorted(set(acronyms))
+
+
 def _extract_definition(entry: Dict[str, any]) -> str:
     definitions = entry.get("definition") or []
     if isinstance(definitions, list):

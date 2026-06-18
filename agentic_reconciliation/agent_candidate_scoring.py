@@ -106,7 +106,7 @@ def _score_meets_verified_policy(score: Optional[CandidateScore], config: AgentR
     if confidence < min_confidence:
         return False
 
-    if bool(getattr(config, "verified_match_require_llm_decision", False)) and decision_source != "llm":
+    if bool(getattr(config, "verified_match_require_llm_decision", False)) and decision_source not in {"llm", "llm_adjudication"}:
         return False
 
     if bool(getattr(config, "verified_match_require_no_fallback", False)) and from_fallback:

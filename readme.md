@@ -94,7 +94,7 @@ npm --prefix frontend install
 npm run start
 ```
 
-The frontend is served by Vite and talks to `mui_backend_server.py` on `http://127.0.0.1:8765` by default.
+The frontend is served by Vite and talks to `mui_backend_server.py` on `http://127.0.0.1:8766` by default.
 
 ---
 

@@ -34,6 +34,13 @@ import {
   SearchActionButton,
   UploadButton,
 } from '../../components/actions/WorkflowActionButtons';
+import { ConfirmActionButton } from '../../components/dialogs/ConfirmActionButton';
+import { DataTable } from '../../components/table/DataTable';
+import { EmptyState } from '../../components/states/EmptyState';
+import { heroSurface } from '../../shared/surfaces';
+import { DEMO_FILENAME, demoCsvBase64 } from '../../shared/demoData';
+import TableChartOutlinedIcon from '@mui/icons-material/TableChartOutlined';
+import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 
 type Severity = 'success' | 'info' | 'warning' | 'error';
 type AppEvent = { type: string; [key: string]: unknown };
@@ -164,25 +171,6 @@ function triggerBase64Download(base64: string, filename: string, mime: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function DataTable({ rows, empty, maxColumns = 8 }: { rows?: TableRow[]; empty: string; maxColumns?: number }) {
-  const safeRows = rows ?? [];
-  const columns = safeRows.length ? Object.keys(safeRows[0]).slice(0, maxColumns) : [];
-  if (!safeRows.length) return <Typography variant="body2" color="text.secondary">{empty}</Typography>;
-  return (
-    <Box sx={{ overflow: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
-      <Box component="table" sx={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
-        <thead>
-          <tr>{columns.map((column) => <Box component="th" key={column} sx={{ p: 1, textAlign: 'left', fontSize: 12, bgcolor: '#f8fafc', position: 'sticky', top: 0 }}>{column}</Box>)}</tr>
-        </thead>
-        <tbody>
-          {safeRows.slice(0, 100).map((row, idx) => (
-            <tr key={idx}>{columns.map((column) => <Box component="td" key={column} sx={{ p: 1, borderTop: '1px solid #e2e8f0', fontSize: 12, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(row[column] ?? '')}</Box>)}</tr>
-          ))}
-        </tbody>
-      </Box>
-    </Box>
-  );
-}
 
 function SummaryRow({ label, value }: { label: string; value: React.ReactNode }) {
   return <Stack direction="row" justifyContent="space-between" spacing={2}><Typography variant="body2" color="text.secondary">{label}</Typography><Typography variant="body2" sx={{ fontWeight: 800, textAlign: 'right' }}>{value}</Typography></Stack>;
@@ -191,10 +179,11 @@ function SummaryRow({ label, value }: { label: string; value: React.ReactNode })
 function ToggleCard({ checked, title, description, onChange }: { checked: boolean; title: string; description: string; onChange: (value: boolean) => void }) {
   return (
     <Paper variant="outlined" sx={{ p: 1.5, minHeight: 96, borderRadius: 3, borderColor: checked ? 'primary.main' : 'divider', bgcolor: checked ? 'rgba(37,99,235,.035)' : 'background.paper' }}>
-      <Stack direction="row" spacing={1} alignItems="flex-start">
-        <Checkbox checked={checked} onChange={(e) => onChange(e.target.checked)} sx={{ p: 0 }} />
-        <Stack><Typography variant="body2" sx={{ fontWeight: 850 }}>{title}</Typography><Typography variant="caption" color="text.secondary">{description}</Typography></Stack>
-      </Stack>
+      <FormControlLabel
+        sx={{ alignItems: 'flex-start', m: 0 }}
+        control={<Checkbox checked={checked} onChange={(e) => onChange(e.target.checked)} sx={{ p: 0, mr: 1 }} />}
+        label={<Stack><Typography variant="body2" sx={{ fontWeight: 850 }}>{title}</Typography><Typography variant="caption" color="text.secondary">{description}</Typography></Stack>}
+      />
     </Paper>
   );
 }
@@ -205,11 +194,11 @@ function AppShell({ snapshot, activeStage, setActiveStage, children }: { snapsho
   const matching = snapshot.matching ?? {};
   const preprocessing = snapshot.preprocessing ?? {};
   return (
-    <Box sx={{ bgcolor: '#eef7fb', minHeight: '100vh', p: { xs: 1, md: 2 }, borderRadius: 4 }}>
+    <Box sx={{ bgcolor: 'background.default', minHeight: '100vh', p: { xs: 1, md: 2 }, borderRadius: 4 }}>
       <Stack spacing={2}>
-        <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 }, borderRadius: 4, background: 'linear-gradient(135deg,#ffffff 0%,#f0fdfa 50%,#eff6ff 100%)', boxShadow: '0 18px 48px rgba(15,23,42,.08)' }}>
+        <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 }, borderRadius: 4, background: heroSurface, boxShadow: '0 18px 48px rgba(15,23,42,.08)' }}>
           <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems={{ xs: 'stretch', lg: 'center' }} justifyContent="space-between">
-            <Stack direction="row" spacing={1.5} alignItems="center"><MatchingIcon /><Stack><Typography variant="h5">Matching Table Generator</Typography><Typography variant="body2" color="text.secondary">Guided workflow for preprocessing tabular data and producing strict SSSOM matching tables</Typography></Stack></Stack>
+            <Stack direction="row" spacing={1.5} alignItems="center"><MatchingIcon /><Stack><Typography variant="h5" component="h2">Matching Table Generator</Typography><Typography variant="body2" color="text.secondary">Guided workflow for preprocessing tabular data and producing strict SSSOM matching tables</Typography></Stack></Stack>
             <Stepper nonLinear activeStep={activeStep} sx={{ minWidth: { lg: 760 } }}>{stages.map((stage, idx) => <Step key={stage.id} completed={idx < activeStep}><StepButton onClick={() => setActiveStage(stage.id)}><Stack spacing={0}><Typography variant="body2" sx={{ fontWeight: 800 }}>{stage.label}</Typography><Typography variant="caption" color="text.secondary">{stage.caption}</Typography></Stack></StepButton></Step>)}</Stepper>
           </Stack>
           <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4, 1fr)' }, gap: 1.2, mt: 2 }}>
@@ -243,17 +232,22 @@ function LoadPage({ snapshot, emit, goNext }: { snapshot: Snapshot; emit: (event
     emit({ type: 'upload_file', filename: uploaded.name, content_base64: window.btoa(binary), start_row: startRow });
   }
 
+  function loadDemo() {
+    emit({ type: 'upload_file', filename: DEMO_FILENAME, content_base64: demoCsvBase64(), start_row: 1 });
+  }
+
   return (
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: 'minmax(0,1fr) 360px' }, gap: 2 }}>
       <Stack spacing={2}>
         <Card variant="outlined"><CardContent><Stack spacing={1.5}>
           <Stack direction="row" justifyContent="space-between" alignItems="center"><Stack><Typography variant="subtitle1">1. Upload & Load Data</Typography><Typography variant="body2" color="text.secondary">Load CSV/XLSX/XLS data, choose an Excel sheet, and set the 1-based header row.</Typography></Stack><Chip label={data.has_table ? 'loaded' : 'waiting'} color={data.has_table ? 'success' : 'warning'} /></Stack>
-          <Paper variant="outlined" sx={{ p: 3, textAlign: 'center', borderStyle: 'dashed', borderRadius: 3, bgcolor: '#f8fafc' }}>
-            <Typography variant="h6">Upload data table</Typography>
+          <Paper variant="outlined" sx={{ p: 3, textAlign: 'center', borderStyle: 'dashed', borderRadius: 3, bgcolor: 'background.default' }}>
+            <Typography variant="h6" component="h3">Upload data table</Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: .5 }}>Supported: CSV, XLSX, XLS. The parser keeps text terms but excludes numeric/date-like values when generating mapping terms.</Typography>
             <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2} justifyContent="center" alignItems="center" sx={{ mt: 1.5 }}>
               <TextField type="number" label="Start parsing from row" value={startRow} inputProps={{ min: 1 }} onChange={(e) => setStartRow(Math.max(1, asNumber(e.target.value, 1)))} sx={{ maxWidth: 220 }} />
               <UploadButton component="label">Upload CSV / Excel<input hidden type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={handleUpload} /></UploadButton>
+              {!data.has_table && <Button variant="text" onClick={loadDemo}>Load demo dataset</Button>}
               {data.has_table && <RefreshActionButton onClick={() => emit({ type: 'set_start_row', start_row: startRow })}>Reload with row</RefreshActionButton>}
             </Stack>
           </Paper>
@@ -266,7 +260,17 @@ function LoadPage({ snapshot, emit, goNext }: { snapshot: Snapshot; emit: (event
           </Box>
           {file.load_error && <Alert severity="error" variant="outlined">{file.load_error}</Alert>}
           <Typography variant="subtitle2">Data Preview (first rows as loaded)</Typography>
-          <DataTable rows={data.preview} empty="No data preview available yet." />
+          {data.has_table ? (
+            <DataTable rows={data.preview} empty="No data preview available yet." />
+          ) : (
+            <EmptyState
+              icon={<TableChartOutlinedIcon />}
+              title="No data loaded yet"
+              description="Upload a CSV/XLSX research table, or try the bundled demo dataset to see the full matching-table workflow end to end."
+              primaryAction={<Button variant="contained" startIcon={<AutoAwesomeOutlinedIcon />} onClick={loadDemo}>Load demo dataset</Button>}
+              secondaryAction={<UploadButton component="label">Upload your own<input hidden type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={handleUpload} /></UploadButton>}
+            />
+          )}
         </Stack></CardContent></Card>
       </Stack>
       <Stack spacing={2}>
@@ -352,7 +356,7 @@ function PreprocessPage({ snapshot, emit, goNext }: { snapshot: Snapshot; emit: 
     <Card variant="outlined"><CardContent><Stack spacing={2}>
       <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="subtitle1">3. Preprocess Data</Typography><Typography variant="body2" color="text.secondary">Transformations are staged here and applied only when the matching table is generated.</Typography></Stack><Chip label={prep.transformations_prepared ? 'rules prepared' : 'optional'} color={prep.transformations_prepared ? 'success' : 'default'} /></Stack>
       <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}><Stack spacing={1.5}>
-        <Stack direction="row" justifyContent="space-between"><Stack><Typography variant="subtitle2">A) Split Columns by Position</Typography><Typography variant="caption" color="text.secondary">Example: split “Berlin, Germany” into City and Country columns.</Typography></Stack><Switch checked={splitEnabled} onChange={(e) => setSplitEnabled(e.target.checked)} /></Stack>
+        <Stack direction="row" justifyContent="space-between"><Stack><Typography variant="subtitle2">A) Split Columns by Position</Typography><Typography variant="caption" color="text.secondary">Example: split “Berlin, Germany” into City and Country columns.</Typography></Stack><Switch checked={splitEnabled} onChange={(e) => setSplitEnabled(e.target.checked)} inputProps={{ 'aria-label': 'Enable column splitting' }} /></Stack>
         <Collapse in={splitEnabled}><Stack spacing={1.2}>
           <FormControl fullWidth size="small"><InputLabel>Columns to split</InputLabel><Select multiple label="Columns to split" value={splitColumns} onChange={(e) => setSplitColumns(typeof e.target.value === 'string' ? e.target.value.split(',') : (e.target.value as string[]))} renderValue={(selected) => (selected as string[]).join(', ')}>{columns.map((column) => <MenuItem key={column} value={column}><Checkbox checked={splitColumns.includes(column)} />{column}</MenuItem>)}</Select></FormControl>
           <FormControlLabel control={<Checkbox checked={autoNames} onChange={(e) => setAutoNames(e.target.checked)} />} label="Auto-generate new names as <column>_1, <column>_2 (editable)" />
@@ -361,7 +365,7 @@ function PreprocessPage({ snapshot, emit, goNext }: { snapshot: Snapshot; emit: 
         </Stack></Collapse>
       </Stack></Paper>
       <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}><Stack spacing={1.5}>
-        <Stack direction="row" justifyContent="space-between"><Stack><Typography variant="subtitle2">B) Expand Codes to Indicator Columns</Typography><Typography variant="caption" color="text.secondary">Example: expand “CIP, TET” into boolean/code indicator columns.</Typography></Stack><Switch checked={expandEnabled} onChange={(e) => setExpandEnabled(e.target.checked)} /></Stack>
+        <Stack direction="row" justifyContent="space-between"><Stack><Typography variant="subtitle2">B) Expand Codes to Indicator Columns</Typography><Typography variant="caption" color="text.secondary">Example: expand “CIP, TET” into boolean/code indicator columns.</Typography></Stack><Switch checked={expandEnabled} onChange={(e) => setExpandEnabled(e.target.checked)} inputProps={{ 'aria-label': 'Enable code expansion' }} /></Stack>
         <Collapse in={expandEnabled}><Stack spacing={1.2}>
           <FormControl fullWidth size="small"><InputLabel>Column containing codes</InputLabel><Select label="Column containing codes" value={expandColumn} onChange={(e) => { setExpandColumn(String(e.target.value)); setExpandCodes([]); }}>{columns.map((column) => <MenuItem key={column} value={column}>{column}</MenuItem>)}</Select></FormControl>
           <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '.4fr 1fr auto' }, gap: 1 }}><TextField label="Codes delimiter" value={expandDelimiter} onChange={(e) => setExpandDelimiter(e.target.value)} /><TextField label="New column prefix" value={expandPrefix} onChange={(e) => setExpandPrefix(e.target.value)} /><SearchActionButton onClick={() => emit({ type: 'detect_expansion_codes', column: expandColumn, delimiter: expandDelimiter })}>Detect codes</SearchActionButton></Box>
@@ -417,7 +421,7 @@ function ExportPage({ snapshot, emit }: { snapshot: Snapshot; emit: (event: AppE
     <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">6. Matching Table Export</Typography><Typography variant="body2" color="text.secondary">Download the strict SSSOM matching table for reconciliation workflows.</Typography><SummaryRow label="Rows" value={matching.rows ?? 0} /><DownloadButton disabled={!matching.csv} onClick={() => { triggerDownload(matching.csv ?? '', matching.csv_filename ?? 'matching_table.csv', 'text/csv;charset=utf-8'); emit({ type: 'download_ack' }); }}>Download Matching Table (CSV)</DownloadButton></Stack></CardContent></Card>
     <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">7. Preprocessed Data Export</Typography><Typography variant="body2" color="text.secondary">Available after generation if transformations were applied. Use this as input for RDF generation.</Typography><Alert severity={downloads.preprocessed_available ? 'success' : 'info'} variant="outlined">{downloads.preprocessed_available ? 'Preprocessed data is ready for download.' : snapshot.preprocessing?.transformations_prepared ? 'Generate first to apply prepared transformations.' : 'No preprocessing was applied in the last run.'}</Alert><DownloadButton disabled={!downloads.preprocessed_csv} onClick={() => triggerDownload(downloads.preprocessed_csv ?? '', downloads.preprocessed_csv_filename ?? 'data_preprocessed.csv', 'text/csv;charset=utf-8')}>Download Preprocessed Data as CSV</DownloadButton><DownloadButton variant="outlined" disabled={!downloads.preprocessed_xlsx_base64} onClick={() => triggerBase64Download(downloads.preprocessed_xlsx_base64 ?? '', downloads.preprocessed_xlsx_filename ?? 'data_preprocessed.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}>Download Preprocessed Data as Excel (XLSX)</DownloadButton></Stack></CardContent></Card>
     <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Backend handoff</Typography><Typography variant="body2" color="text.secondary">Generated outputs are stored in the Python backend service for downstream reconciliation and RDF generator workflows.</Typography><Chip label={matching.has_table ? 'handoff ready' : 'handoff pending'} color={matching.has_table ? 'success' : 'warning'} /></Stack></CardContent></Card>
-    <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Reset workflow</Typography><Typography variant="body2" color="text.secondary">Clear uploaded data, transformations, generated tables, and handoff state.</Typography><ResetButton onClick={() => emit({ type: 'reset_all' })}>Reset Matching Table Generator</ResetButton></Stack></CardContent></Card>
+    <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Reset workflow</Typography><Typography variant="body2" color="text.secondary">Clear uploaded data, transformations, generated tables, and handoff state.</Typography><ConfirmActionButton ButtonComponent={ResetButton} dialogTitle="Reset Matching Table Generator?" dialogMessage="This permanently clears the uploaded table, prepared transformations, staged consolidations, the generated SSSOM matching table, and the backend handoff state. This cannot be undone." confirmLabel="Reset" onConfirm={() => emit({ type: 'reset_all' })}>Reset Matching Table Generator</ConfirmActionButton></Stack></CardContent></Card>
   </Box>;
 }
 

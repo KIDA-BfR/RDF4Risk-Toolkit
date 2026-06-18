@@ -8,9 +8,12 @@ all frontend rendering.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import logging
 import os
+import sys
+from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, Tuple
@@ -21,9 +24,11 @@ from Matching_Table_Generator import generator as matching_service
 from RDF_Generator import app as rdf_generator_service
 from RDF_to_Table import tablegenerator as rdf_to_table_service
 from agentic_reconciliation import agent_reconciliation_service as agent_service
+from agentic_reconciliation.agent_bioportal_service import list_bioportal_ontology_acronyms
 from agentic_reconciliation.agent_runtime_state import runtime_state as agent_runtime_state
 from agentic_reconciliation.agent_llm_service import get_default_model_options, get_provider_label, get_supported_llm_providers
 from semi_automatic_reconciliation import reconciliation_service as semi_service
+import project_store
 
 LOGGER = logging.getLogger("rdf4risk.mui_backend")
 
@@ -36,6 +41,11 @@ SERVICE_IDS = {
 }
 DEFAULT_MAX_EVENT_BODY_BYTES = 50 * 1024 * 1024
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+@lru_cache(maxsize=8)
+def _cached_bioportal_ontology_options(api_key: str, base_url: str) -> tuple[str, ...]:
+    return tuple(list_bioportal_ontology_acronyms(api_key, base_url=base_url))
 
 
 def _allowed_origins_from_env() -> set[str]:
@@ -130,12 +140,21 @@ def _agent_args() -> Dict[str, Any]:
     provider_labels = {provider: get_provider_label(provider) for provider in provider_options}
     model_labels = {model: agent_service._format_model_option_label(primary_catalog, model) for model in primary_models}
     model_details = agent_service._format_model_details_caption(primary_catalog, selected_model) if primary_catalog else None
-    ontology_options = sorted(
+    fallback_ontology_options = sorted(
         set(
             list((agent_service.CONFIG or {}).get("agent_reconciliation", {}).get("trusted_ontologies", ["MESH", "NCIT", "LOINC", "FOODON", "NCBITAXON"]))
             + list((agent_service.CONFIG or {}).get("agent_reconciliation", {}).get("bioportal_agent_ontologies", ["NCIT", "NIFSTD", "BERO", "OCHV", "SNOMEDCT"]))
             + ["MESH", "NCIT", "LOINC", "FOODON", "NCBITAXON", "NIFSTD", "BERO", "OCHV", "SNOMEDCT", "CHEBI", "QUDT"]
         )
+    )
+    bioportal_cfg = (agent_service.CONFIG or {}).get("bioportal", {})
+    bioportal_api_key = str(bioportal_cfg.get("api_key") or os.getenv("BIOPORTAL_API_KEY") or "").strip()
+    bioportal_base_url = str(bioportal_cfg.get("base_url") or "https://data.bioontology.org").strip()
+    live_ontology_options = list(_cached_bioportal_ontology_options(bioportal_api_key, bioportal_base_url)) if bioportal_api_key else []
+    ontology_options = sorted(
+        set(live_ontology_options or fallback_ontology_options)
+        | set(config.get("bioportal_ontologies") or [])
+        | set(config.get("trusted_ontologies") or [])
     )
     provider_kind = (
         "codex"
@@ -224,6 +243,39 @@ def _service_snapshot(service_id: str) -> Dict[str, Any]:
     raise KeyError(service_id)
 
 
+def _workspace_snapshot() -> Dict[str, Any]:
+    return {"projects": project_store.list_projects(), "history": project_store.HISTORY.listing()}
+
+
+def _workspace_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Cross-service workspace actions: project persistence + operation history."""
+    etype = str(event.get("type", "") or "")
+    if etype == "save_project":
+        return {"saved": project_store.save_project(str(event.get("name", "")), event.get("project_id"))}
+    if etype == "load_project":
+        return {"loaded": project_store.load_project(str(event.get("project_id", "")))}
+    if etype == "delete_project":
+        return {"deleted": project_store.delete_project(str(event.get("project_id", "")))}
+    if etype == "new_project":
+        project_store.HISTORY.reset()
+        return {"reset": True}
+    if etype == "revert_to":
+        try:
+            index = int(event.get("index"))
+        except (TypeError, ValueError):
+            return {"reverted": False}
+        return {"reverted": project_store.HISTORY.revert_to(index)}
+    if etype == "undo":
+        return {"undone": project_store.HISTORY.undo()}
+    if etype == "export_recipe":
+        return {"recipe_document": project_store.export_recipe()}
+    if etype == "import_recipe":
+        return project_store.import_recipe(event.get("recipe_document") or {})
+    if etype == "list_projects":
+        return {}
+    return {"error": f"Unknown workspace action: {etype}"}
+
+
 def _service_event(service_id: str, event: Dict[str, Any]) -> None:
     if service_id == "matching_table_generator":
         matching_service._init_state()
@@ -273,6 +325,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             if path == "api/health":
                 self._send_json({"ok": True, "services": sorted(SERVICE_IDS)})
                 return
+            if path == "api/workspace/snapshot":
+                self._send_json(_workspace_snapshot())
+                return
             parts = path.split("/")
             if len(parts) == 4 and parts[:2] == ["api", "services"] and parts[3] == "snapshot":
                 service_id = parts[2]
@@ -289,6 +344,18 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         try:
             path = urlparse(self.path).path.strip("/")
+            if path == "api/workspace/event":
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                if length > _max_event_body_bytes():
+                    self._send_json({"error": "Event payload is too large."}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                    return
+                event = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                if not isinstance(event, dict):
+                    self._send_json({"error": "Event payload must be a JSON object."}, HTTPStatus.BAD_REQUEST)
+                    return
+                result = _workspace_event(event)
+                self._send_json({**_workspace_snapshot(), **result})
+                return
             parts = path.split("/")
             if len(parts) == 4 and parts[:2] == ["api", "services"] and parts[3] == "event":
                 service_id = parts[2]
@@ -303,6 +370,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if not isinstance(event, dict):
                     self._send_json({"error": "Event payload must be a JSON object."}, HTTPStatus.BAD_REQUEST)
                     return
+                project_store.HISTORY.record_before(service_id, event)
                 _service_event(service_id, event)
                 self._send_json({"service": service_id, "args": _service_snapshot(service_id)})
                 return
@@ -317,7 +385,18 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 def run(host: str, port: int) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
-    httpd = ThreadingHTTPServer((host, port), RequestHandler)
+    try:
+        httpd = ThreadingHTTPServer((host, port), RequestHandler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            LOGGER.error(
+                "Port %s on %s is already in use. Stop the existing RDF4Risk backend "
+                "or start this one with --port <free-port>.",
+                port,
+                host,
+            )
+            sys.exit(1)
+        raise
     LOGGER.info("RDF4Risk MUI backend listening on http://%s:%s", host, port)
     httpd.serve_forever()
 
@@ -325,6 +404,6 @@ def run(host: str, port: int) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the RDF4Risk Python backend for the web app.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=8766)
     args = parser.parse_args()
     run(args.host, args.port)

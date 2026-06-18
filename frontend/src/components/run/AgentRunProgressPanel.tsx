@@ -11,7 +11,7 @@ import {
   Typography,
 } from '@mui/material';
 import StopCircleIcon from '@mui/icons-material/StopCircle';
-import { AnimatePresence, motion } from 'motion/react';
+import { AgentActivityTimeline } from './AgentActivityTimeline';
 
 const agentLoaderMp4 = new URL('../../assets/animations/agent-loader.mp4', import.meta.url).href;
 
@@ -194,9 +194,9 @@ export function AgentRunProgressPanel({
       variant="outlined"
       sx={{
         borderRadius: 5,
-        borderColor: '#FBFBFD',
+        borderColor: 'divider',
         overflow: 'hidden',
-        background: '#FBFBFD',
+        background: 'background.paper',
         boxShadow: '0 18px 60px rgba(15,23,42,.10)',
       }}
     >
@@ -219,76 +219,42 @@ export function AgentRunProgressPanel({
             )}
           </Stack>
 
-          <Box
-            component="video"
-            autoPlay
-            loop
-            muted
-            playsInline
-            preload="auto"
-            sx={{
-              width: { xs: 220, md: 280 },
-              height: { xs: 220, md: 280 },
-              objectFit: 'contain',
-              display: 'block',
-              mx: 'auto',
-            }}
-          >
-            <source src={agentLoaderMp4} type="video/mp4" />
-          </Box>
-
-          <Box sx={{ textAlign: 'center', width: '100%' }}>
-            <Typography variant="h5" fontWeight={900}>
-              Reconciling semantic mappings
-            </Typography>
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={visibleMessage}
-                initial={{ opacity: 0, y: 0 }}
-                animate={{
-                  opacity: [0, 1, 1, 0],
-                  y: [0, 0, 0, 0],
-                }}
-                exit={{ opacity: 0 }}
-                transition={{
-                  duration: 3,
-                  times: [0, 0.3, 0.7, 1],
-                  ease: 'easeInOut',
-                }}
-              >
-                <Typography
-                  variant="h6"
-                  sx={{
-                    mt: 1.25,
-                    minHeight: 40,
-                    color: 'primary.main',
-                    fontWeight: 850,
-                    letterSpacing: '-0.01em',
-                    textAlign: 'center',
-                  }}
-                >
-                  {visibleMessage}
-                </Typography>
-              </motion.div>
-            </AnimatePresence>
-          </Box>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="center" sx={{ width: '100%' }}>
+            <Box
+              component="video"
+              autoPlay
+              loop
+              muted
+              playsInline
+              preload="auto"
+              sx={{ width: 120, height: 120, objectFit: 'contain', display: 'block', flexShrink: 0 }}
+            >
+              <source src={agentLoaderMp4} type="video/mp4" />
+            </Box>
+            <Box sx={{ flex: 1, width: '100%', minWidth: 0 }}>
+              <Typography variant="h6" fontWeight={900} sx={{ mb: 0.5 }}>
+                Reconciling semantic mappings
+              </Typography>
+              <AgentActivityTimeline runStatus={runStatus} stageLabels={stageLabels} />
+            </Box>
+          </Stack>
 
           {runStatus.current_term && (
-            <Alert severity="info" variant="outlined" sx={{ width: '100%', borderRadius: 3, bgcolor: 'rgba(255,255,255,.72)' }}>
+            <Alert severity="info" variant="outlined" sx={{ width: '100%', borderRadius: 3, bgcolor: 'background.paper' }}>
               <strong>Current term:</strong> {runStatus.current_term}
             </Alert>
           )}
 
           <Box sx={{ width: '100%', display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 1.2 }}>
-            <Box sx={{ p: 1.5, borderRadius: 3, bgcolor: 'rgba(248,250,252,.86)', border: '1px solid', borderColor: 'divider' }}>
+            <Box sx={{ p: 1.5, borderRadius: 3, bgcolor: 'background.default', border: '1px solid', borderColor: 'divider' }}>
               <Typography variant="caption" color="text.secondary">Current phase</Typography>
               <Typography variant="body2" sx={{ fontWeight: 850 }}>{phaseLabel}</Typography>
             </Box>
-            <Box sx={{ p: 1.5, borderRadius: 3, bgcolor: 'rgba(248,250,252,.86)', border: '1px solid', borderColor: 'divider' }}>
+            <Box sx={{ p: 1.5, borderRadius: 3, bgcolor: 'background.default', border: '1px solid', borderColor: 'divider' }}>
               <Typography variant="caption" color="text.secondary">Elapsed</Typography>
               <Typography variant="body2" sx={{ fontWeight: 850 }}>{formatDuration(elapsedSeconds)}</Typography>
             </Box>
-            <Box sx={{ p: 1.5, borderRadius: 3, bgcolor: 'rgba(248,250,252,.86)', border: '1px solid', borderColor: 'divider' }}>
+            <Box sx={{ p: 1.5, borderRadius: 3, bgcolor: 'background.default', border: '1px solid', borderColor: 'divider' }}>
               <Typography variant="caption" color="text.secondary">Estimated remaining</Typography>
               <Typography variant="body2" sx={{ fontWeight: 850 }}>{remainingLabel || (hasRealProgress ? 'calculating…' : '—')}</Typography>
             </Box>

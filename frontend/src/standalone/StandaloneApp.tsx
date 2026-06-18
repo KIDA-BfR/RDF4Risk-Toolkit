@@ -15,10 +15,15 @@ import {
   ListItemText,
   Paper,
   Stack,
+  IconButton,
   Toolbar,
+  Tooltip,
   Typography,
   alpha,
 } from '@mui/material';
+import { useColorScheme } from '@mui/material/styles';
+import DarkModeIcon from '@mui/icons-material/DarkMode';
+import LightModeIcon from '@mui/icons-material/LightMode';
 import LoginIcon from '@mui/icons-material/Login';
 import LogoutIcon from '@mui/icons-material/Logout';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
@@ -30,21 +35,43 @@ import { RDFGeneratorApp } from '../apps/rdf-generator/RDFGeneratorApp';
 import { RDFToTableApp } from '../apps/rdf-to-table/RDFToTableApp';
 import { SemiAutomaticReconciliationApp } from '../apps/semi-automatic-reconciliation/SemiAutomaticReconciliationApp';
 import { setAppEventHandler, type AppEvent } from '../shared/appBridge';
-import { fetchSnapshot, postEvent, type BackendPayload } from './backendClient';
+import { fetchSnapshot, postEvent, fetchWorkspace, postWorkspaceEvent, type BackendPayload, type WorkspaceSnapshot } from './backendClient';
 import { serviceFromHash, services, type ServiceId } from './services';
+import { WorkspaceControls } from '../components/workspace/WorkspaceControls';
+import { HistoryDrawer } from '../components/workspace/HistoryDrawer';
 import rdf4RiskLogo from '../../../img/Logo_cropped_white.png';
 
 const drawerWidth = 312;
 
+// Light hero gradient in light mode; a flat paper surface in dark mode (the bright gradient
+// would glare against a dark page).
+const heroBg = (t: any) =>
+  t.palette.mode === 'dark' ? t.vars.palette.background.paper : 'linear-gradient(135deg,#ffffff 0%,#f0fdfa 50%,#eff6ff 100%)';
+
+function ColorModeToggle() {
+  const { mode, systemMode, setMode } = useColorScheme();
+  const resolved = mode === 'system' ? systemMode : mode;
+  if (!mode) return null; // not yet mounted
+  const isDark = resolved === 'dark';
+  return (
+    <Tooltip title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}>
+      <IconButton aria-label="Toggle color mode" onClick={() => setMode(isDark ? 'light' : 'dark')} size="small">
+        {isDark ? <LightModeIcon fontSize="small" /> : <DarkModeIcon fontSize="small" />}
+      </IconButton>
+    </Tooltip>
+  );
+}
+
 function HomeDashboard({ onOpen }: { onOpen: (service: ServiceId) => void }) {
   const workflowServices = services.filter((service) => service.id !== 'home');
   return (
-    <Box sx={{ bgcolor: '#eef7fb', minHeight: '100%', p: { xs: 2, md: 3 } }}>
+    <Box sx={{ bgcolor: 'background.default', minHeight: '100%', p: { xs: 2, md: 3 } }}>
       <Stack spacing={3}>
-        <Paper variant="outlined" sx={{ p: { xs: 3, md: 6 }, borderRadius: 5, background: 'linear-gradient(135deg,#ffffff 0%,#f0fdfa 48%,#eff6ff 100%)', boxShadow: '0 18px 48px rgba(15,23,42,.08)' }}>
+        <Paper variant="outlined" sx={{ p: { xs: 3, md: 6 }, borderRadius: 5, background: heroBg, boxShadow: '0 18px 48px rgba(15,23,42,.08)' }}>
           <Stack spacing={2}>
             <Chip label="RDF4Risk web app" sx={{ alignSelf: 'flex-start', color: '#0369a1', bgcolor: alpha('#0ea5e9', 0.1), fontWeight: 850 }} />
-            <Typography variant="h1" sx={{ maxWidth: 950, fontSize: 'clamp(2.35rem, 5vw, 4.8rem)', lineHeight: 0.98, fontWeight: 950, letterSpacing: '-0.055em' }}>
+            {/* Decorative hero wordmark — the page h1 lives in the title bar. */}
+            <Typography variant="h1" component="p" sx={{ maxWidth: 950, fontSize: 'clamp(2.35rem, 5vw, 4.8rem)', lineHeight: 0.98, fontWeight: 950, letterSpacing: '-0.055em' }}>
               RDF4Risk Toolkit
             </Typography>
             <Typography color="text.secondary" sx={{ maxWidth: 980, fontSize: '1.1rem', lineHeight: 1.75 }}>
@@ -60,9 +87,9 @@ function HomeDashboard({ onOpen }: { onOpen: (service: ServiceId) => void }) {
                 <CardContent sx={{ minHeight: 220, display: 'flex', flexDirection: 'column', gap: 1.4 }}>
                   <Stack direction="row" justifyContent="space-between" spacing={2}>
                     <Chip label={`Step ${service.step}`} sx={{ color: service.accent, bgcolor: alpha(service.accent, 0.08), fontWeight: 850 }} />
-                    <Box sx={{ color: '#fff', bgcolor: service.accent, borderRadius: '50%', width: 34, height: 34, display: 'grid', placeItems: 'center', fontWeight: 900 }}>→</Box>
+                    <Box aria-hidden="true" sx={{ color: '#fff', bgcolor: service.accent, borderRadius: '50%', width: 34, height: 34, display: 'grid', placeItems: 'center', fontWeight: 900 }}>→</Box>
                   </Stack>
-                  <Typography variant="h5">{service.title}</Typography>
+                  <Typography variant="h5" component="h2">{service.title}</Typography>
                   <Typography sx={{ color: service.accent, fontWeight: 850, textTransform: 'uppercase', fontSize: '.78rem', letterSpacing: '.08em' }}>{service.short}</Typography>
                   <Typography color="text.secondary" sx={{ lineHeight: 1.65 }}>{service.description}</Typography>
                 </CardContent>
@@ -111,6 +138,8 @@ export function StandaloneApp() {
   const [payload, setPayload] = useState<BackendPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [workspace, setWorkspace] = useState<WorkspaceSnapshot>({ projects: [], history: [] });
+  const [historyOpen, setHistoryOpen] = useState(false);
   const activeServiceRef = useRef(activeService);
   const handleEventRef = useRef<(event: AppEvent) => void>(() => undefined);
 
@@ -139,6 +168,14 @@ export function StandaloneApp() {
     }
   }, [activeService]);
 
+  const refreshWorkspace = useCallback(async () => {
+    try {
+      setWorkspace(await fetchWorkspace());
+    } catch {
+      // workspace is non-critical; ignore transient failures
+    }
+  }, []);
+
   const emitEvent = useCallback(async (event: AppEvent) => {
     const service = activeServiceRef.current;
     if (service === 'home') return;
@@ -146,12 +183,63 @@ export function StandaloneApp() {
     setError(null);
     try {
       setPayload(await postEvent(service, event));
+      refreshWorkspace(); // a mutating event may have added a history entry
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [refreshWorkspace]);
+
+  // Run a cross-service workspace action (project save/open/delete, history revert/undo), then
+  // re-fetch the active service since load/revert restore backend state under the current view.
+  const runWorkspace = useCallback(async (event: Record<string, unknown>, options?: { reloadService?: boolean }) => {
+    setLoading(true);
+    setError(null);
+    try {
+      setWorkspace(await postWorkspaceEvent(event));
+      if (options?.reloadService) await refresh(activeServiceRef.current);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [refresh]);
+
+  // Export the whole-pipeline configuration as a downloadable, paper-attachable JSON recipe.
+  const exportRecipe = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await postWorkspaceEvent({ type: 'export_recipe' });
+      const doc = (result as any).recipe_document;
+      const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `rdf4risk_recipe_${new Date().toISOString().slice(0, 10)}.json`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const importRecipe = useCallback(async (file: File) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const document = JSON.parse(await file.text());
+      setWorkspace(await postWorkspaceEvent({ type: 'import_recipe', recipe_document: document }));
+      await refresh(activeServiceRef.current);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not read the recipe file.');
+    } finally {
+      setLoading(false);
+    }
+  }, [refresh]);
 
   useEffect(() => { handleEventRef.current = emitEvent; }, [emitEvent]);
   useEffect(() => { activeServiceRef.current = activeService; refresh(activeService); }, [activeService, refresh]);
@@ -171,6 +259,7 @@ export function StandaloneApp() {
   }, []);
 
   useEffect(() => setAppEventHandler((event: AppEvent) => handleEventRef.current(event)), []);
+  useEffect(() => { refreshWorkspace(); }, [refreshWorkspace]);
 
   const args = payload?.args as any;
   let content: React.ReactNode = <HomeDashboard onOpen={openService} />;
@@ -181,10 +270,10 @@ export function StandaloneApp() {
   if (activeService === 'rdf_to_table') content = <RDFToTableApp args={args} />;
 
   return (
-    <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: '#eef7fb' }}>
-      <Drawer variant="permanent" sx={{ width: drawerWidth, flexShrink: 0, '& .MuiDrawer-paper': { width: drawerWidth, boxSizing: 'border-box', borderRight: '1px solid #dbeafe', bgcolor: '#f8fafc' } }}>
-        <Toolbar sx={{ alignItems: 'flex-start', flexDirection: 'column', py: 2, bgcolor: '#FFFFFF' }}>
-          <Typography variant="h6">RDF4Risk Toolkit</Typography>
+    <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
+      <Drawer variant="permanent" sx={{ width: drawerWidth, flexShrink: 0, '& .MuiDrawer-paper': { width: drawerWidth, boxSizing: 'border-box', borderRight: '1px solid', borderColor: 'divider', bgcolor: 'background.default' } }}>
+        <Toolbar sx={{ alignItems: 'flex-start', flexDirection: 'column', py: 2, bgcolor: 'background.paper' }}>
+          <Typography variant="h6" component="p">RDF4Risk Toolkit</Typography>
           <Typography variant="caption" color="text.secondary">RDF4Risk app</Typography>
           <Box
             component="img"
@@ -196,7 +285,7 @@ export function StandaloneApp() {
               mt: 1.5,
               borderRadius: 2,
               objectFit: 'contain',
-              bgcolor: '#fff',
+              bgcolor: 'common.white',
             }}
           />
         </Toolbar>
@@ -210,22 +299,59 @@ export function StandaloneApp() {
         </List>
         <Box sx={{ mt: 'auto' }}>
           {activeService === 'agent_reconciliation' && <AgentSidebarInfo args={args} onEvent={emitEvent} />}
+          <Divider sx={{ mb: 1 }} />
+          <WorkspaceControls
+            projects={workspace.projects}
+            historyCount={workspace.history.length}
+            onSave={(name) => runWorkspace({ type: 'save_project', name })}
+            onOpen={(id) => runWorkspace({ type: 'load_project', project_id: id }, { reloadService: true })}
+            onDelete={(id) => runWorkspace({ type: 'delete_project', project_id: id })}
+            onNew={() => runWorkspace({ type: 'new_project' })}
+            onOpenHistory={() => setHistoryOpen(true)}
+            onExportRecipe={exportRecipe}
+            onImportRecipe={importRecipe}
+          />
           <Box sx={{ px: 2, pb: 2 }}>
             <Button fullWidth variant="outlined" startIcon={<RefreshIcon />} onClick={() => refresh()} disabled={loading || activeService === 'home'}>Refresh service</Button>
           </Box>
         </Box>
       </Drawer>
+      <HistoryDrawer
+        open={historyOpen}
+        history={workspace.history}
+        onClose={() => setHistoryOpen(false)}
+        onRevert={(index) => runWorkspace({ type: 'revert_to', index }, { reloadService: true })}
+        onUndo={() => runWorkspace({ type: 'undo' }, { reloadService: true })}
+      />
       <Box component="main" sx={{ flexGrow: 1, minWidth: 0 }}>
-        <Paper square elevation={0} sx={{ position: 'sticky', top: 0, zIndex: 5, px: 3, py: 1.5, borderBottom: '1px solid #dbeafe', bgcolor: 'rgba(255,255,255,.92)', backdropFilter: 'blur(10px)' }}>
+        <Paper square elevation={0} sx={{ position: 'sticky', top: 0, zIndex: 5, px: 3, py: 1.5, borderBottom: '1px solid', borderColor: 'divider', bgcolor: (t) => alpha(t.palette.background.paper, 0.92), backdropFilter: 'blur(10px)' }}>
           <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={2}>
             <Box>
-              <Typography variant="h6">{activeMeta.title}</Typography>
+              {/* The page-title bar carries the single h1 of every view (visually h6-sized). */}
+              <Typography variant="h6" component="h1">{activeMeta.title}</Typography>
               <Typography variant="caption" color="text.secondary">{activeMeta.description}</Typography>
             </Box>
-            {loading && <CircularProgress size={24} />}
+            <Stack direction="row" alignItems="center" spacing={1}>
+              {loading && <CircularProgress size={24} />}
+              <ColorModeToggle />
+            </Stack>
           </Stack>
         </Paper>
-        {error && <Alert severity="error" sx={{ m: 2, whiteSpace: 'pre-wrap' }}>{error}</Alert>}
+        {error && (
+          <Alert
+            severity="error"
+            role="alert"
+            sx={{ m: 2, whiteSpace: 'pre-wrap' }}
+            onClose={() => setError(null)}
+            action={
+              <Button color="inherit" size="small" onClick={() => refresh()}>
+                Retry
+              </Button>
+            }
+          >
+            {error}
+          </Alert>
+        )}
         <Box sx={{ p: { xs: 1, md: 2 } }}>{content}</Box>
       </Box>
     </Box>

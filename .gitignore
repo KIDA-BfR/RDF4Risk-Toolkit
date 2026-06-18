@@ -99,3 +99,4 @@ cache/
 *.temp
 *.log
 agentic_reconciliation/data/*cache*.json
+.rdf4risk_projects/

@@ -101,6 +101,9 @@ class AgentRunConfig:
     allow_unverified_candidate_suggestions: bool = True
     candidate_review_mode: str = "conservative"
     allow_heuristic_fallback: bool = True
+    enable_wikidata_fallback: bool = True
+    bioportal_use_all_ontologies: bool = False
+    enable_candidate_adjudication: bool = True
     reasoning_effort: str = "none"
     stop_on_llm_error: bool = True
     enable_second_pass_related_retry: bool = False
@@ -116,6 +119,16 @@ class AgentRunConfig:
         if review_mode not in {"conservative", "exploratory"}:
             review_mode = "conservative"
         self.candidate_review_mode = review_mode
+        self.bioportal_agent_ontologies = [
+            str(item).strip().upper()
+            for item in (self.bioportal_agent_ontologies or [])
+            if str(item).strip()
+        ]
+        self.trusted_ontologies = [
+            str(item).strip().upper()
+            for item in (self.trusted_ontologies or [])
+            if str(item).strip()
+        ]
 
 
 @dataclass

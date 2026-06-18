@@ -168,7 +168,7 @@ function ToolCard({ tool }: { tool: Tool }) {
 export function HomeApp() {
 
   return (
-    <Box sx={{ bgcolor: '#eef7fb', minHeight: '100vh', color: 'text.primary', py: { xs: 2, md: 3 } }}>
+    <Box sx={{ bgcolor: 'background.default', minHeight: '100vh', color: 'text.primary', py: { xs: 2, md: 3 } }}>
       <Container maxWidth="xl">
         <Stack spacing={3.5}>
           <Paper
@@ -228,9 +228,9 @@ export function HomeApp() {
                 RDF4Risk brings together practical tools for turning tabular research data into FAIR Linked Data for risk assessment and life sciences. Prepare matching tables, reconcile terms with trusted vocabularies, generate RDF, and review or export results through one guided workflow workspace.
               </Typography>
               <Stack direction="row" flexWrap="wrap" gap={1.5} sx={{ pt: 1 }}>
-                <Chip label={<><Box component="strong" sx={{ color: '#0f766e', mr: 1 }}>5</Box> workflow services</>} sx={{ bgcolor: '#fff', border: `1px solid ${alpha('#94a3b8', 0.35)}`, boxShadow: '0 8px 22px rgba(15, 23, 42, 0.06)', color: '#334155' }} />
-                <Chip label="Guided workflow workspace" sx={{ bgcolor: '#fff', border: `1px solid ${alpha('#94a3b8', 0.35)}`, boxShadow: '0 8px 22px rgba(15, 23, 42, 0.06)', color: '#334155' }} />
-                <Chip label="Linked Data generation pipeline" sx={{ bgcolor: '#fff', border: `1px solid ${alpha('#94a3b8', 0.35)}`, boxShadow: '0 8px 22px rgba(15, 23, 42, 0.06)', color: '#334155' }} />
+                <Chip label={<><Box component="strong" sx={{ color: '#0f766e', mr: 1 }}>5</Box> workflow services</>} sx={{ bgcolor: 'background.paper', border: `1px solid ${alpha('#94a3b8', 0.35)}`, boxShadow: '0 8px 22px rgba(15, 23, 42, 0.06)', color: '#334155' }} />
+                <Chip label="Guided workflow workspace" sx={{ bgcolor: 'background.paper', border: `1px solid ${alpha('#94a3b8', 0.35)}`, boxShadow: '0 8px 22px rgba(15, 23, 42, 0.06)', color: '#334155' }} />
+                <Chip label="Linked Data generation pipeline" sx={{ bgcolor: 'background.paper', border: `1px solid ${alpha('#94a3b8', 0.35)}`, boxShadow: '0 8px 22px rgba(15, 23, 42, 0.06)', color: '#334155' }} />
               </Stack>
             </Stack>
           </Paper>

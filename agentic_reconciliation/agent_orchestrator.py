@@ -273,6 +273,7 @@ def run_agent_batch_on_dataframe(
     source_name: str = "input",
     resume_skip_processed_terms: bool = False,
     stop_requested_callback: Optional[Callable[[], bool]] = None,
+    on_partial_dataframe: Optional[Callable[[pd.DataFrame], None]] = None,
 ) -> pd.DataFrame:
     definitions_lookup = definitions_lookup or {}
     df_out = ensure_agent_output_columns(df)
@@ -291,31 +292,57 @@ def run_agent_batch_on_dataframe(
     )
 
     def _run_term_decision(local_term: str, local_definition: str, *, related_retry: bool = False) -> AgentDecision:
-        if config.workflow == "bioportal_wikidata_multiagent":
-            return run_bioportal_wikidata_multiagent(
-                local_term,
-                local_definition,
-                config,
-                bioportal_api_key=bioportal_api_key,
-                source_name=source_name,
-                related_wikidata_bias=bool(related_retry),
-            )
+        try:
+            if config.workflow == "bioportal_wikidata_multiagent":
+                return run_bioportal_wikidata_multiagent(
+                    local_term,
+                    local_definition,
+                    config,
+                    bioportal_api_key=bioportal_api_key,
+                    source_name=source_name,
+                    related_wikidata_bias=bool(related_retry),
+                )
 
-        if related_retry:
+            if related_retry:
+                return run_wikidata_deep_agent(
+                    local_term,
+                    local_definition,
+                    config,
+                    source_name=source_name,
+                    search_profile="focus_related",
+                )
+
             return run_wikidata_deep_agent(
                 local_term,
                 local_definition,
                 config,
                 source_name=source_name,
-                search_profile="focus_related",
             )
-
-        return run_wikidata_deep_agent(
-            local_term,
-            local_definition,
-            config,
-            source_name=source_name,
-        )
+        except Exception as exc:  # noqa: BLE001
+            # Per-term isolation: a transient provider/network failure for ONE term
+            # (e.g. a BioPortal/Wikidata read timeout) must never abort the whole
+            # batch and discard already-processed terms. Convert it into an error
+            # decision so the batch records the failure, keeps every completed term,
+            # and moves on to the next one. run_id is left empty so this term is
+            # treated as still-unreconciled and re-attempted on a later resume.
+            return AgentDecision(
+                term=local_term,
+                definition=local_definition,
+                candidate=None,
+                skos=None,
+                status="error",
+                explanation=(
+                    f"Reconciliation failed for this term and was skipped: {type(exc).__name__}: {exc}"
+                ),
+                run_id="",
+                source_name=source_name,
+                trace_metadata={
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "transient_runtime_error": True,
+                    "second_pass_related_retry": bool(related_retry),
+                },
+            )
 
     def _build_progress_event(
         *,
@@ -464,6 +491,13 @@ def run_agent_batch_on_dataframe(
 
         first_pass_results.append(result)
         df_out = apply_agent_decision_to_dataframe(df_out, row_index, decision, config)
+        # Publish the evolving table after every applied term so a hard failure
+        # (or the user navigating away) never discards already-completed work.
+        if on_partial_dataframe is not None:
+            try:
+                on_partial_dataframe(df_out)
+            except Exception:  # noqa: BLE001 - partial-commit is best-effort telemetry
+                pass
         progress_event = _build_progress_event(
             term=term,
             decision=decision,
@@ -563,6 +597,7 @@ def run_agent_batch(
     progress_callback: Optional[Callable[[BatchRunState], None]] = None,
     resume_skip_processed_terms: bool = False,
     stop_requested_callback: Optional[Callable[[], bool]] = None,
+    on_partial_dataframe: Optional[Callable[[str, pd.DataFrame], None]] = None,
 ) -> Dict[str, pd.DataFrame]:
     outputs: Dict[str, pd.DataFrame] = {}
     tables = list(input_tables)
@@ -650,6 +685,11 @@ def run_agent_batch(
             source_name=table.source_name,
             resume_skip_processed_terms=resume_skip_processed_terms,
             stop_requested_callback=stop_requested_callback,
+            on_partial_dataframe=(
+                (lambda df_partial, _src=table.source_name: on_partial_dataframe(_src, df_partial))
+                if on_partial_dataframe is not None
+                else None
+            ),
         )
 
         if state.stop_reason == "llm_error":

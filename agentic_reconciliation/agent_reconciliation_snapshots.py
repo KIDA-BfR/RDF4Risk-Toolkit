@@ -66,6 +66,16 @@ def _build_data_status_snapshot(required_columns) -> Dict[str, object]:
 
     rows = len(schema_df) if isinstance(schema_df, pd.DataFrame) else 0
     columns = len(schema_df.columns) if isinstance(schema_df, pd.DataFrame) else 0
+    # Recognize rows that arrive already reconciled (a real URI present, not "No Match"):
+    # only the unreconciled ones will be sent to the agent / for definition generation.
+    unreconciled_rows = 0
+    if isinstance(schema_df, pd.DataFrame) and rows:
+        try:
+            from semi_automatic_reconciliation.shared_table_io import get_unreconciled_indices
+            unreconciled_rows = len(get_unreconciled_indices(schema_df, "No Match"))
+        except Exception:
+            unreconciled_rows = rows
+    reconciled_rows = max(0, rows - unreconciled_rows)
     required_detected = bool(isinstance(schema_df, pd.DataFrame) and all(col in schema_df.columns for col in required_columns))
     legacy_detected = bool(isinstance(schema_df, pd.DataFrame) and all(col in schema_df.columns for col in LEGACY_REQUIRED_MATCHING_TABLE_COLUMNS))
     schema_message = "No table loaded"
@@ -83,6 +93,8 @@ def _build_data_status_snapshot(required_columns) -> Dict[str, object]:
         "source_name": source_name,
         "rows": rows,
         "columns": columns,
+        "reconciled_rows": reconciled_rows,
+        "unreconciled_rows": unreconciled_rows,
         "loaded_sources": len(input_tables) if isinstance(input_tables, list) else 0,
         "required_columns_detected": required_detected or legacy_detected,
         "schema_message": schema_message,
@@ -116,9 +128,9 @@ def _build_run_status_snapshot(readiness_state: Dict[str, object]) -> Dict[str, 
         or stop_event.get("stop_reason")
         or ""
     ).strip()
-    stopped = bool(live_status.get("stopped", False) or stop_reason == "user_stopped")
+    stopped = bool(live_status.get("stopped", False) or stop_reason in {"user_stopped", "llm_error"})
     error = None
-    if stop_reason and stop_reason != "user_stopped":
+    if stop_reason and stop_reason not in {"user_stopped", "llm_error"}:
         error = stop_reason
     status_message = runtime_state.get("agent_mui_status_message")
     if isinstance(status_message, dict) and status_message.get("severity") == "error":
@@ -142,7 +154,7 @@ def _build_run_status_snapshot(readiness_state: Dict[str, object]) -> Dict[str, 
         "stop_requested": bool(live_status.get("stop_requested", False)),
         "stop_reason": stop_reason or None,
         "stop_event": stop_event,
-        "can_resume": bool(stopped and total and processed < total),
+        "can_resume": bool(stopped and total and (processed < total or stop_reason == "llm_error")),
         "can_restart": bool(stopped or results or error),
         "finished": bool(results) and not stopped and not error,
         "error": error,
@@ -220,8 +232,17 @@ def _normalize_review_status_for_mui(agent_df: pd.DataFrame, row_index) -> str:
     return "pending"
 
 
+# Upper bound on rows surfaced to the review UI (and the count chips) in one snapshot. Kept
+# high so large reconciliation runs of several thousand terms are fully reviewable; it exists
+# only to bound the JSON payload / grid size, not to limit normal runs.
+MAX_REVIEW_ITEMS = 10000
+
+
 def _build_review_snapshot(agent_df: Optional[pd.DataFrame]) -> Dict[str, object]:
     selected_source = runtime_state.get(AGENT_SELECTED_SOURCE_KEY) or "agent_reconciliation"
+    # Acceptance-score display: only active when the auto-accept policy is on. When off,
+    # the frontend falls back to showing raw match confidence.
+    auto_accept_active = bool(runtime_state.get("agent_auto_accept_enabled", False))
     items: List[Dict[str, object]] = []
     counts = {"pending": 0, "matched": 0, "candidate_suggested": 0, "accepted": 0, "rejected": 0, "no_match": 0}
     if isinstance(agent_df, pd.DataFrame):
@@ -232,7 +253,7 @@ def _build_review_snapshot(agent_df: Optional[pd.DataFrame]) -> Dict[str, object
         if "Suggested URI" in agent_df.columns:
             suggested_uri = agent_df["Suggested URI"].astype(str).str.strip()
             candidate_indices.update(agent_df[suggested_uri != ""].index.tolist())
-        for idx in sorted(candidate_indices, key=lambda value: str(value))[:500]:
+        for idx in sorted(candidate_indices, key=lambda value: str(value))[:MAX_REVIEW_ITEMS]:
             status = _normalize_review_status_for_mui(agent_df, idx)
             counts[status] = counts.get(status, 0) + 1
             match_type = normalize_mapping_type(_get_review_cell_value(agent_df, idx, "Suggested Match Type"))
@@ -264,6 +285,25 @@ def _build_review_snapshot(agent_df: Optional[pd.DataFrame]) -> Dict[str, object
                         trace_metadata = parsed_trace
                 except Exception:
                     trace_metadata = {}
+            is_auto_accepted = _get_review_cell_value(agent_df, idx, "Auto Accepted").strip().lower() == "true"
+            # Re-derive the displayed score into two bands so an auto-accepted row always
+            # outranks a held one, yet a strong held row can still read as "High":
+            #   auto-accepted -> [0.90, 1.0]  (reserved top band; keeps its real score when >=0.90)
+            #   held          -> [.., 0.85]   (can reach High >=0.80, never enters the top band)
+            # This only changes the displayed number; the accept decision is untouched. When
+            # auto-accept is off, acceptance_score stays None and the UI shows raw confidence.
+            acceptance_score = None
+            if auto_accept_active:
+                raw_auto_score = _get_review_cell_value(agent_df, idx, "Auto Acceptance Score")
+                try:
+                    auto_score_value = float(raw_auto_score)
+                except (TypeError, ValueError):
+                    auto_score_value = None
+                if auto_score_value is not None:
+                    if is_auto_accepted:
+                        acceptance_score = round(min(1.0, max(auto_score_value, 0.90)), 4)
+                    else:
+                        acceptance_score = round(min(auto_score_value, 0.85), 4)
             items.append(
                 {
                     "mapping_id": f"{selected_source}::{idx}",
@@ -289,6 +329,8 @@ def _build_review_snapshot(agent_df: Optional[pd.DataFrame]) -> Dict[str, object
                     "review_mode": trace_metadata.get("candidate_review_mode", ""),
                     "explanation": _get_review_cell_value(agent_df, idx, "Agent Explanation"),
                     "auto_accept_reason": _get_review_cell_value(agent_df, idx, "Auto Accept Reason"),
+                    "auto_accepted": is_auto_accepted,
+                    "acceptance_score": acceptance_score,
                 }
             )
     return {"items": items, "counts": counts, "selected_source": selected_source}

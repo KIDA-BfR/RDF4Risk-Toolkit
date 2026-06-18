@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 
 from .agent_models import DefinitionRecord
-from .agent_llm_service import generate_text_completion
+from .agent_llm_service import generate_structured_completion, generate_text_completion
 from semi_automatic_reconciliation.shared_table_io import sync_matching_table_schemas
 
 
@@ -193,6 +193,109 @@ def generate_concise_definitions(
             reasoning_effort=reasoning_effort,
         )
     return definitions
+
+
+def generate_brief_definitions_from_term_list(
+    terms: Iterable[str],
+    *,
+    filename: str,
+    model_name: str = "o4-mini",
+    provider: str = "openai",
+    api_key_env: str = "OPENAI_API_KEY",
+    reasoning_effort: str = "none",
+) -> Dict[str, str]:
+    """Infer terse term senses from the whole source list and filename."""
+    term_list = []
+    seen = set()
+    for raw_term in terms:
+        term = str(raw_term or "").strip()
+        if not term or term.lower() in seen:
+            continue
+        seen.add(term.lower())
+        term_list.append(term)
+    if not term_list:
+        return {}
+
+    numbered_terms = "\n".join(f"{index + 1}. {term}" for index, term in enumerate(term_list))
+    payload = generate_structured_completion(
+        provider,
+        model_name,
+        system_prompt=(
+            "You infer concise domain-specific meanings for reconciliation input terms. "
+            "Use the filename and the complete term list to infer the dataset domain. "
+            "Return only JSON with a `definitions` array."
+        ),
+        user_prompt=(
+            f"Filename: {filename or 'input'}\n\n"
+            f"Complete term list:\n{numbered_terms}\n\n"
+            "For every term, provide one very brief description of what the term means in this list. "
+            "Keep each description under 20 words and do not invent identifiers.\n\n"
+            "JSON schema:\n"
+            "{\n"
+            "  \"domain_summary\": \"short phrase\",\n"
+            "  \"definitions\": [\n"
+            "    {\"term\": \"original term\", \"definition\": \"brief meaning\"}\n"
+            "  ]\n"
+            "}"
+        ),
+        api_key_env=api_key_env,
+        temperature=0,
+        max_tokens=min(6000, max(1200, len(term_list) * 45)),
+        reasoning_effort=reasoning_effort,
+        retries_on_parse_failure=1,
+        interaction_purpose="term_list_definition_inference",
+    )
+    rows = payload.get("definitions", [])
+    if not isinstance(rows, list):
+        return {}
+
+    definitions: Dict[str, str] = {}
+    original_by_lower = {term.lower(): term for term in term_list}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_term = str(row.get("term", "") or "").strip()
+        definition = str(row.get("definition", "") or "").strip()
+        if not raw_term or not definition:
+            continue
+        original = original_by_lower.get(raw_term.lower(), raw_term)
+        if original in term_list:
+            definitions[original] = definition
+    return definitions
+
+
+def fill_missing_definitions_from_term_list(
+    terms: Iterable[str],
+    existing_definitions: Optional[Dict[str, str]],
+    *,
+    filename: str,
+    model_name: str = "o4-mini",
+    provider: str = "openai",
+    api_key_env: str = "OPENAI_API_KEY",
+    reasoning_effort: str = "none",
+) -> Dict[str, str]:
+    """Return existing definitions plus inferred brief definitions for missing terms."""
+    merged = {
+        str(term).strip(): str(definition).strip()
+        for term, definition in (existing_definitions or {}).items()
+        if str(term).strip() and str(definition).strip()
+    }
+    missing = [str(term).strip() for term in terms if str(term).strip() and not merged.get(str(term).strip())]
+    if not missing:
+        return merged
+    inferred = generate_brief_definitions_from_term_list(
+        terms,
+        filename=filename,
+        model_name=model_name,
+        provider=provider,
+        api_key_env=api_key_env,
+        reasoning_effort=reasoning_effort,
+    )
+    for term in missing:
+        definition = str(inferred.get(term, "") or "").strip()
+        if definition:
+            merged[term] = definition
+    return merged
 
 
 def prepare_used_definitions_df(

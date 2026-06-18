@@ -23,6 +23,7 @@ from .agent_candidate_scoring import (
     _finalize_best_candidate,
     _mapping_priority,
     _merge_candidate_trace_metadata,
+    _normalize_mapping_type,
     _provider_is_trusted,
     _safe_confidence,
     _score_meets_suggestion_policy,
@@ -304,6 +305,119 @@ def _build_notebook_faithful_multiagent_config(config: AgentRunConfig) -> AgentR
     )
 
 
+def _adjudicate_candidate_scores(
+    term: str,
+    definition: str,
+    scores: List[CandidateScore],
+    config: AgentRunConfig,
+    stats: AgenticExecutionStats,
+    trace_metadata: Dict[str, Any],
+) -> Optional[CandidateScore]:
+    eligible = [
+        score for score in scores
+        if score is not None
+        and (
+            _score_meets_verified_policy(score, config)
+            or _score_meets_suggestion_policy(score, config)
+        )
+    ]
+    if len(eligible) < 2 or not bool(getattr(config, "enable_candidate_adjudication", True)):
+        return _finalize_best_candidate(eligible or scores)
+
+    ranked = sorted(
+        eligible,
+        key=lambda item: (_mapping_priority(item.mapping_type), float(item.confidence or 0.0)),
+        reverse=True,
+    )[: min(6, max(2, int(getattr(config, "candidate_pool_limit", 6) or 6)))]
+    candidate_lines = []
+    for index, score in enumerate(ranked, start=1):
+        candidate = score.candidate
+        candidate_lines.append(
+            "\n".join(
+                [
+                    f"{index}. uri: {candidate.uri}",
+                    f"   label: {candidate.label}",
+                    f"   provider: {candidate.source_provider}",
+                    f"   description: {candidate.description or ''}",
+                    f"   skos: {score.mapping_type}",
+                    f"   confidence: {round(float(score.confidence or 0.0), 4)}",
+                    f"   evidence_source: {score.explanation_source}",
+                    f"   fallback: {score.from_fallback}",
+                    f"   rationale: {score.explanation or ''}",
+                ]
+            )
+        )
+
+    try:
+        stats.total_llm_calls_used += 1
+        payload = globals().get("generate_structured_completion", _default_generate_structured_completion)(
+            config.model_provider,
+            config.model_name,
+            system_prompt=(
+                "You are a final semantic adjudicator for ontology reconciliation. "
+                "Choose the single candidate that best matches the input term and definition. "
+                "Prefer exact semantic fit over provider order or raw confidence."
+            ),
+            user_prompt=(
+                f"Input term: {term}\n"
+                f"Input definition: {definition or '(missing)'}\n\n"
+                "Candidate shortlist:\n\n"
+                + "\n\n".join(candidate_lines)
+                + "\n\nReturn JSON only:\n"
+                "{\n"
+                "  \"selected_uri\": \"candidate uri or empty string\",\n"
+                "  \"skos\": \"skos:exactMatch|skos:closeMatch|skos:relatedMatch|no_match\",\n"
+                "  \"confidence\": 0.0,\n"
+                "  \"explanation\": \"brief reason\"\n"
+                "}"
+            ),
+            api_key_env=_resolve_model_api_key_env(config),
+            temperature=0,
+            max_tokens=900,
+            reasoning_effort=config.reasoning_effort,
+            retries_on_parse_failure=1,
+            interaction_purpose="candidate_adjudication",
+        )
+    except Exception as exc:
+        trace_metadata["candidate_adjudication_error_type"] = type(exc).__name__
+        trace_metadata["candidate_adjudication_error_message"] = str(exc)[:300]
+        return _finalize_best_candidate(ranked)
+
+    selected_uri = str(payload.get("selected_uri", "") or "").strip()
+    if not selected_uri:
+        trace_metadata["candidate_adjudication_selected"] = ""
+        return _finalize_best_candidate(ranked)
+    selected = next(
+        (
+            score for score in ranked
+            if str(score.candidate.uri).strip() == selected_uri
+            or str(score.candidate.raw_identifier or "").strip() == selected_uri
+        ),
+        None,
+    )
+    if selected is None:
+        trace_metadata["candidate_adjudication_selected_unknown_uri"] = selected_uri
+        return _finalize_best_candidate(ranked)
+
+    mapping_type = _normalize_mapping_type(payload.get("skos", ""))
+    confidence = _safe_confidence(payload.get("confidence"), default=selected.confidence)
+    explanation = str(payload.get("explanation", "") or "").strip()
+    if mapping_type and mapping_type != "no_match":
+        selected.mapping_type = mapping_type
+        if selected.skos_decision is not None:
+            selected.skos_decision.mapping_type = mapping_type
+            selected.skos_decision.confidence = confidence
+            selected.skos_decision.explanation = explanation or selected.skos_decision.explanation
+            selected.skos_decision.decision_source = "llm_adjudication"
+    selected.confidence = confidence
+    selected.explanation_source = "llm_adjudication"
+    selected.explanation = explanation or selected.explanation
+    trace_metadata["candidate_adjudication_used"] = True
+    trace_metadata["candidate_adjudication_selected"] = selected.candidate.uri
+    trace_metadata["candidate_adjudication_candidate_count"] = len(ranked)
+    return selected
+
+
 def run_wikidata_deep_agent(
     term: str,
     definition: str,
@@ -556,6 +670,7 @@ def run_bioportal_wikidata_multiagent(
     def _search_pipeline() -> Optional[CandidateScore]:
         best_score: Optional[CandidateScore] = None
         best_priority = -1
+        scored_candidates: List[CandidateScore] = []
 
         def _suggested_best_score_or_none() -> Optional[CandidateScore]:
             if _score_meets_suggestion_policy(best_score, effective_config):
@@ -564,11 +679,45 @@ def run_bioportal_wikidata_multiagent(
                 trace_metadata["suggestion_policy_rejected"] = True
             return None
 
-        ontologies = effective_config.bioportal_agent_ontologies
-        if bioportal_api_key and not ontologies:
+        def _remember_score(candidate_score: CandidateScore) -> None:
+            nonlocal best_score, best_priority
+            scored_candidates.append(candidate_score)
+            priority = _mapping_priority(candidate_score.mapping_type)
+            if priority > best_priority:
+                best_priority = priority
+                best_score = candidate_score
+            elif priority == best_priority and best_score is not None:
+                if candidate_score.confidence > best_score.confidence:
+                    best_score = candidate_score
+
+        use_all_bioportal_ontologies = bool(getattr(effective_config, "bioportal_use_all_ontologies", False))
+        ontologies = [] if use_all_bioportal_ontologies else effective_config.bioportal_agent_ontologies
+        trace_metadata["bioportal_use_all_ontologies"] = use_all_bioportal_ontologies
+        trace_metadata["bioportal_selected_ontologies"] = list(ontologies or [])
+        if bioportal_api_key and not ontologies and not use_all_bioportal_ontologies:
             ontologies = recommend_ontology_acronyms([term], bioportal_api_key, min_valid=5)
 
         if bioportal_api_key:
+            if use_all_bioportal_ontologies:
+                search_candidates = search_bioportal_candidates(
+                    term,
+                    api_key=bioportal_api_key,
+                    ontologies=None,
+                    page_size=max(10, int(effective_config.candidate_pool_limit or 10)),
+                )
+                trace_metadata["bioportal_attempts"] = 1
+                trace_metadata["bioportal_global_search_candidate_count"] = len(search_candidates)
+                for candidate in search_candidates[: max(1, int(effective_config.max_iterations or 1))]:
+                    candidate_score = _score_candidate(
+                        term,
+                        definition,
+                        candidate,
+                        effective_config,
+                        stats=stats,
+                        enrich_with_wikidata_details=False,
+                    )
+                    _remember_score(candidate_score)
+
             for ontology in ontologies[: effective_config.max_iterations]:
                 trace_metadata["bioportal_attempts"] = int(trace_metadata.get("bioportal_attempts", 0)) + 1
 
@@ -643,18 +792,10 @@ def run_bioportal_wikidata_multiagent(
                                     if candidate_score.skos_decision:
                                         candidate_score.skos_decision.mapping_type = "close"
                             _apply_provider_signal_boost(candidate_score, term)
-                            
-                            priority = _mapping_priority(candidate_score.mapping_type)
-                            if priority > best_priority:
-                                best_priority = priority
-                                best_score = candidate_score
-                            elif priority == best_priority and best_score is not None:
-                                if candidate_score.confidence > best_score.confidence:
-                                    best_score = candidate_score
+                            _remember_score(candidate_score)
 
                             if enforce_verified_match and _score_meets_verified_policy(candidate_score, effective_config):
                                 trace_metadata["bioportal_verified_match_found"] = True
-                                return candidate_score
                     continue
 
                 best_definition = find_best_definition(term, ontology, api_key=bioportal_api_key, exact=True)
@@ -691,35 +832,37 @@ def run_bioportal_wikidata_multiagent(
                     skos_decision=decision,
                 )
                 _apply_provider_signal_boost(candidate_score, term)
-                priority = _mapping_priority(candidate_score.mapping_type)
-                if priority > best_priority:
-                    best_priority = priority
-                    best_score = candidate_score
-                elif priority == best_priority and best_score is not None:
-                    if candidate_score.confidence > best_score.confidence:
-                        best_score = candidate_score
-                if not enforce_verified_match and priority >= 2:
-                    return best_score
+                _remember_score(candidate_score)
 
                 if enforce_verified_match and _score_meets_verified_policy(candidate_score, effective_config):
                     trace_metadata["bioportal_verified_match_found"] = True
-                    return candidate_score
 
             if best_score is None:
                 search_candidates = search_bioportal_candidates(term, api_key=bioportal_api_key, ontologies=ontologies[:5] if ontologies else None)
                 if search_candidates:
-                    fallback_candidate = search_candidates[0]
-                    fallback_score = _score_candidate(
-                        term,
-                        definition,
-                        fallback_candidate,
-                        effective_config,
-                        stats=stats,
-                    )
-                    best_score = fallback_score
+                    for fallback_candidate in search_candidates[: max(1, int(effective_config.max_iterations or 1))]:
+                        fallback_score = _score_candidate(
+                            term,
+                            definition,
+                            fallback_candidate,
+                            effective_config,
+                            stats=stats,
+                            enrich_with_wikidata_details=False,
+                        )
+                        _remember_score(fallback_score)
                     trace_metadata["bioportal_search_fallback_used"] = True
 
         if best_score is not None:
+            adjudicated = _adjudicate_candidate_scores(
+                term,
+                definition,
+                scored_candidates,
+                effective_config,
+                stats,
+                trace_metadata,
+            )
+            if adjudicated is not None:
+                best_score = adjudicated
             trace_metadata["bioportal_best_mapping_type"] = best_score.mapping_type
             trace_metadata["bioportal_best_confidence"] = float(best_score.confidence)
             trace_metadata["bioportal_best_verified"] = bool(_score_meets_verified_policy(best_score, effective_config))
@@ -731,6 +874,11 @@ def run_bioportal_wikidata_multiagent(
                 return best_score
 
             trace_metadata["bioportal_best_rejected_by_verified_policy"] = True
+
+        if not bool(getattr(effective_config, "enable_wikidata_fallback", True)):
+            trace_metadata["provider_escalation_used"] = False
+            trace_metadata["wikidata_fallback_disabled"] = True
+            return _suggested_best_score_or_none()
 
         trace_metadata["provider_escalation_used"] = True
         trace_metadata["provider_escalation_from"] = "BioPortal"
@@ -801,6 +949,17 @@ def run_bioportal_wikidata_multiagent(
             skos_decision=wikidata_skos,
         )
         _apply_provider_signal_boost(wikidata_score, term)
+        scored_candidates.append(wikidata_score)
+        adjudicated_with_wikidata = _adjudicate_candidate_scores(
+            term,
+            definition,
+            scored_candidates,
+            effective_config,
+            stats,
+            trace_metadata,
+        )
+        if adjudicated_with_wikidata is not None:
+            wikidata_score = adjudicated_with_wikidata
         if _score_meets_verified_policy(wikidata_score, effective_config) or _score_meets_suggestion_policy(wikidata_score, effective_config):
             trace_metadata["wikidata_second_pass_accepted_by_outer_policy"] = True
             return wikidata_score

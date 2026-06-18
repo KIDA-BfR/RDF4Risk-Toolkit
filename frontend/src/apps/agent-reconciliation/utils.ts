@@ -2,7 +2,7 @@ import type { AdvancedConfig, AutoAcceptPolicy, ProvenanceConfig, Stage, Workflo
 
 export const workflows = [
   { id: 'wikidata_deep_agent', title: 'Wikidata Deep Agent', badge: 'FAST & BROAD', badgeColor: '#2563eb', description: 'Searches Wikidata only. Optimized for general-purpose entities and high-speed reconciliation.', bullets: ['Broad coverage', 'Fast execution', 'General purpose'] },
-  { id: 'bioportal_wikidata_multiagent', title: 'BioPortal + Wikidata', badge: 'DOMAIN FOCUS', badgeColor: '#059669', description: 'Prioritizes domain-specific ontologies via BioPortal, using Wikidata as a fallback.', bullets: ['Domain-aware', 'Scientific/medical data', 'Expert terminology'] },
+  { id: 'bioportal_wikidata_multiagent', title: 'BioPortal + Wikidata', badge: 'DOMAIN FOCUS', badgeColor: '#047857', description: 'Prioritizes domain-specific ontologies via BioPortal, using Wikidata as a fallback.', bullets: ['Domain-aware', 'Scientific/medical data', 'Expert terminology'] },
 ];
 
 export const stages: { id: Stage; label: string; caption: string }[] = [
@@ -139,6 +139,9 @@ export function normalizeConfig(raw: Partial<WorkflowConfig> | undefined, provid
     langsmith_project: raw?.langsmith_project || '',
     expert_mode: raw?.expert_mode ?? false,
     allow_heuristic_fallback: raw?.allow_heuristic_fallback ?? true,
+    enable_wikidata_fallback: raw?.enable_wikidata_fallback ?? true,
+    bioportal_use_all_ontologies: raw?.bioportal_use_all_ontologies ?? false,
+    enable_candidate_adjudication: raw?.enable_candidate_adjudication ?? true,
     use_different_models: raw?.use_different_models ?? false,
     definition_model: raw?.definition_model || raw?.model || models[0] || 'gpt-5.1',
     definition_preparation: raw?.definition_preparation ?? false,

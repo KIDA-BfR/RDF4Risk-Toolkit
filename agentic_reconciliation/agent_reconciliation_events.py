@@ -14,7 +14,7 @@ from typing import Dict, Optional
 import pandas as pd
 
 from .agent_codex_subscription_service import clear_codex_credentials, start_codex_authorization_flow
-from .agent_definition_service import build_definition_lookup, prepare_used_definitions_df
+from .agent_definition_service import build_definition_lookup, fill_missing_definitions_from_term_list, prepare_used_definitions_df
 from .agent_file_service import make_input_table
 from .agent_langsmith_monitoring import (
     build_run_url,
@@ -32,7 +32,114 @@ from .agent_reconciliation_ui_review import _apply_review_action
 from .agent_reconciliation_ui_state import _build_run_input_tables, _store_input_tables, _sync_selected_source_dataframe
 from .agent_runtime_state import runtime_state
 from semi_automatic_reconciliation.reconciliation_core import CONFIG
-from semi_automatic_reconciliation.shared_table_io import finalize_accepted_results, get_unreconciled_indices
+from semi_automatic_reconciliation.shared_table_io import ensure_agent_output_columns, finalize_accepted_results, get_unreconciled_indices
+
+
+def _mark_stopped_term_skipped_for_resume() -> bool:
+    stop_event = runtime_state.get(AGENT_STOP_EVENT_KEY, {})
+    if not isinstance(stop_event, dict) or stop_event.get("stop_reason") not in {"llm_error", "runtime_error"}:
+        runtime_state["agent_mui_status_message"] = {
+            "severity": "info",
+            "text": "No timeout or LLM-error term is waiting to be skipped.",
+        }
+        return False
+
+    source_name = str(stop_event.get("file") or runtime_state.get(AGENT_SELECTED_SOURCE_KEY) or "").strip()
+    stopped_term = str(stop_event.get("term") or "").strip()
+    results = runtime_state.get(AGENT_RESULTS_BY_SOURCE_KEY, {})
+    if not isinstance(results, dict):
+        results = {}
+
+    candidate_df = results.get(source_name) if source_name else None
+    if not isinstance(candidate_df, pd.DataFrame):
+        candidate_df = runtime_state.get(AGENT_DATAFRAME_STATE_KEY)
+    if not isinstance(candidate_df, pd.DataFrame):
+        runtime_state["agent_mui_status_message"] = {
+            "severity": "warning",
+            "text": "No working table is available for the stopped run.",
+        }
+        return False
+
+    df = ensure_agent_output_columns(candidate_df.copy())
+    row_index = None
+    if stopped_term and "Term" in df.columns:
+        matches = df.index[df["Term"].astype(str).str.strip().eq(stopped_term)].tolist()
+        if matches:
+            row_index = matches[0]
+    if row_index is None and stopped_term and "subject_label" in df.columns:
+        matches = df.index[df["subject_label"].astype(str).str.strip().eq(stopped_term)].tolist()
+        if matches:
+            row_index = matches[0]
+    if row_index is None:
+        runtime_state["agent_mui_status_message"] = {
+            "severity": "warning",
+            "text": f"Could not find the stopped term '{stopped_term or '(unknown term)'}' in the working table.",
+        }
+        return False
+
+    run_id = str(df.at[row_index, "Run ID"] or "").strip()
+    df.at[row_index, "Run ID"] = run_id or f"skipped-timeout-{int(time.time())}"
+    df.at[row_index, "Review Status"] = "timeout"
+    df.at[row_index, "Agent Decision Status"] = "skipped"
+    df.at[row_index, "Agent Explanation"] = (
+        str(df.at[row_index, "Agent Explanation"] or "").strip()
+        or "Skipped by curator after the agent workflow stopped on this term."
+    )
+    if "URI" in df.columns:
+        df.at[row_index, "URI"] = "No Match"
+    if "object_id" in df.columns:
+        df.at[row_index, "object_id"] = "No Match"
+
+    if source_name:
+        results[source_name] = df
+        runtime_state[AGENT_RESULTS_BY_SOURCE_KEY] = results
+        runtime_state[AGENT_SELECTED_SOURCE_KEY] = source_name
+    runtime_state[AGENT_DATAFRAME_STATE_KEY] = df
+    _sync_selected_source_dataframe()
+    return True
+
+
+def _terms_for_missing_definition_inference(dataframe: pd.DataFrame) -> list[str]:
+    if dataframe is None or dataframe.empty:
+        return []
+    local = ensure_agent_output_columns(dataframe.copy())
+    if "Term" not in local.columns:
+        return []
+    indices = get_unreconciled_indices(local, "No Match")
+    terms = []
+    seen = set()
+    for row_index in indices:
+        term = str(local.at[row_index, "Term"] or "").strip()
+        if not term or term.lower() in seen:
+            continue
+        seen.add(term.lower())
+        terms.append(term)
+    return terms
+
+
+def _materialize_input_definitions(dataframe: pd.DataFrame, definitions: Dict[str, str]) -> pd.DataFrame:
+    if dataframe is None or dataframe.empty or not definitions:
+        return dataframe
+    local = ensure_agent_output_columns(dataframe.copy())
+    if "Term" not in local.columns or "Definition" not in local.columns:
+        return local
+    lookup = {
+        str(term).strip().lower(): str(definition).strip()
+        for term, definition in definitions.items()
+        if str(term).strip() and str(definition).strip()
+    }
+    if not lookup:
+        return local
+    for row_index in get_unreconciled_indices(local, "No Match"):
+        current = str(local.at[row_index, "Definition"] or "").strip()
+        if current:
+            continue
+        term = str(local.at[row_index, "Term"] or "").strip().lower()
+        definition = lookup.get(term, "")
+        if definition:
+            local.at[row_index, "Definition"] = definition
+    return local
+
 
 def _execute_agent_reconciliation_run(
     input_tables,
@@ -55,7 +162,7 @@ def _execute_agent_reconciliation_run(
         manual_resume = bool(
             resume_previous_requested
             and isinstance(stop_event, dict)
-            and stop_event.get("stop_reason") == "user_stopped"
+            and stop_event.get("stop_reason") in {"user_stopped", "runtime_error"}
         )
         llm_resume = bool(continue_with_heuristics and isinstance(stop_event, dict) and stop_event.get("stop_reason") == "llm_error")
         resume_previous = bool(manual_resume or llm_resume)
@@ -127,16 +234,43 @@ def _execute_agent_reconciliation_run(
                     used_defs_df = prepare_used_definitions_df(table.dataframe, strategy, uploaded_definitions_df=uploaded_defs)
                 else:
                     context_text = runtime_state.get("agent_reference_publication_text", "") if strategy == "reference_publication" else runtime_state.get("agent_definition_context_text", "")
-                    used_defs_df = prepare_used_definitions_df(
-                        table.dataframe,
-                        strategy,
-                        context_text=context_text,
-                        model_name=config.definition_model_name,
-                        provider=config.definition_model_provider,
-                        api_key_env=config.definition_model_api_key_env,
-                        reasoning_effort=config.reasoning_effort,
-                    )
+                    if str(context_text or "").strip():
+                        used_defs_df = prepare_used_definitions_df(
+                            table.dataframe,
+                            strategy,
+                            context_text=context_text,
+                            model_name=config.definition_model_name,
+                            provider=config.definition_model_provider,
+                            api_key_env=config.definition_model_api_key_env,
+                            reasoning_effort=config.reasoning_effort,
+                        )
+                    else:
+                        used_defs_df = pd.DataFrame(columns=["Term", "Definition"])
             definitions_by_source[table.source_name] = build_definition_lookup(used_defs_df)
+            if isinstance(table.dataframe, pd.DataFrame) and "Term" in table.dataframe.columns and "Definition" in table.dataframe.columns:
+                for raw_term, raw_definition in zip(table.dataframe["Term"], table.dataframe["Definition"]):
+                    term = str(raw_term or "").strip()
+                    definition = str(raw_definition or "").strip()
+                    if term and definition and not definitions_by_source[table.source_name].get(term):
+                        definitions_by_source[table.source_name][term] = definition
+            source_terms = _terms_for_missing_definition_inference(table.dataframe)
+            if source_terms:
+                definitions_by_source[table.source_name] = fill_missing_definitions_from_term_list(
+                    source_terms,
+                    definitions_by_source[table.source_name],
+                    filename=getattr(table, "filename", None) or table.source_name,
+                    model_name=config.definition_model_name,
+                    provider=config.definition_model_provider,
+                    api_key_env=config.definition_model_api_key_env,
+                    reasoning_effort=config.reasoning_effort,
+                )
+                used_defs_df = pd.DataFrame(
+                    {
+                        "Term": list(definitions_by_source[table.source_name].keys()),
+                        "Definition": list(definitions_by_source[table.source_name].values()),
+                    }
+                )
+            table.dataframe = _materialize_input_definitions(table.dataframe, definitions_by_source[table.source_name])
             runtime_state[AGENT_DEFINITIONS_BY_SOURCE_KEY][table.source_name] = used_defs_df
 
         latest_batch_state: Dict[str, object] = {"state": None}
@@ -212,6 +346,17 @@ def _execute_agent_reconciliation_run(
                     monitoring_state["langsmith"] = langsmith_dict
                 runtime_state[AGENT_MONITORING_STATE_KEY] = monitoring_state
 
+        def _store_partial_output(source_name: str, df_partial) -> None:
+            """Commit the in-progress table to the review state after every term so a
+            mid-run failure or navigation never discards already-completed work."""
+            results = runtime_state.get(AGENT_RESULTS_BY_SOURCE_KEY, {})
+            if not isinstance(results, dict):
+                results = {}
+            results[source_name] = df_partial
+            runtime_state[AGENT_RESULTS_BY_SOURCE_KEY] = results
+            if not runtime_state.get(AGENT_SELECTED_SOURCE_KEY):
+                runtime_state[AGENT_SELECTED_SOURCE_KEY] = source_name
+
         outputs = run_agent_batch(
             tables_for_run,
             config,
@@ -220,6 +365,7 @@ def _execute_agent_reconciliation_run(
             progress_callback=_progress_callback,
             resume_skip_processed_terms=resume_previous,
             stop_requested_callback=_stop_requested,
+            on_partial_dataframe=_store_partial_output,
         )
         runtime_state[AGENT_RESULTS_BY_SOURCE_KEY] = outputs
         if outputs and not runtime_state.get(AGENT_SELECTED_SOURCE_KEY):
@@ -237,26 +383,31 @@ def _execute_agent_reconciliation_run(
             final_processed = int(getattr(latest_state_obj, "processed_terms", final_processed) or 0)
         final_stop_reason = str(getattr(latest_state_obj, "stop_reason", "") or "").strip() if latest_state_obj is not None else ""
         stopped_by_user = final_stop_reason == "user_stopped"
+        stopped_by_llm_error = final_stop_reason == "llm_error"
         runtime_state[AGENT_RUN_STATUS_STATE_KEY] = {
             **runtime_state.get(AGENT_RUN_STATUS_STATE_KEY, {}),
             "running": False,
-            "finished": not stopped_by_user,
-            "stopped": stopped_by_user,
-            "stage": "preparing_review" if stopped_by_user else "writing_output",
+            "finished": not (stopped_by_user or stopped_by_llm_error),
+            "stopped": stopped_by_user or stopped_by_llm_error,
+            "stage": "preparing_review" if (stopped_by_user or stopped_by_llm_error) else "writing_output",
             "message": (
                 f"Run stopped after {final_processed}/{total_terms_for_run} term(s)."
                 if stopped_by_user
+                else f"Run stopped on a timeout or LLM/API error after {final_processed}/{total_terms_for_run} term(s)."
+                if stopped_by_llm_error
                 else "Run completed; preparing review output"
             ),
             "processed_count": final_processed,
             "total_count": total_terms_for_run,
             "elapsed_seconds": final_elapsed_seconds,
-            "estimated_remaining_seconds": None if stopped_by_user else 0,
+            "estimated_remaining_seconds": None if (stopped_by_user or stopped_by_llm_error) else 0,
             "stop_requested": False,
             "stop_reason": final_stop_reason or None,
             "last_activity": (
                 "Agent run stopped by user. Resume continues at the next unprocessed term."
                 if stopped_by_user
+                else "Agent run stopped on an LLM/API error. Review completed terms or skip the failed term to continue."
+                if stopped_by_llm_error
                 else "Agent run completed and review suggestions are ready."
             ),
         }
@@ -335,17 +486,82 @@ def _execute_agent_reconciliation_run(
             langsmith_dict["message"] = (existing + " " if existing else "") + f"Run failed: {exc}"
             monitoring_state["langsmith"] = langsmith_dict
             runtime_state[AGENT_MONITORING_STATE_KEY] = monitoring_state
-        runtime_state[AGENT_RUN_STATUS_STATE_KEY] = {
-            **runtime_state.get(AGENT_RUN_STATUS_STATE_KEY, {}),
-            "running": False,
-            "finished": False,
-            "error": str(exc),
-            "stage": "preparing_review",
-            "message": f"Agent-based reconciliation failed: {exc}",
-            "elapsed_seconds": time.perf_counter() - run_started_perf if "run_started_perf" in locals() else None,
-            "last_activity": f"Run failed: {exc}",
-        }
-        runtime_state["agent_mui_status_message"] = {"severity": "error", "text": f"Agent-based reconciliation failed: {exc}"}
+
+        # Per-term failures are isolated upstream (one bad term never aborts the
+        # batch), so reaching here means a rarer run-level failure. Even then we must
+        # not discard the curator's completed mappings: if any terms finished, expose
+        # them and land in the recoverable "stopped" state (review / resume) instead
+        # of the dead-end error state.
+        partial_results = runtime_state.get(AGENT_RESULTS_BY_SOURCE_KEY, {})
+        has_partial = isinstance(partial_results, dict) and bool(partial_results)
+        elapsed_on_error = time.perf_counter() - run_started_perf if "run_started_perf" in locals() else None
+        latest_state_obj = latest_batch_state.get("state") if "latest_batch_state" in locals() else None
+        processed_so_far = int(getattr(latest_state_obj, "processed_terms", 0) or 0) if latest_state_obj is not None else 0
+        total_for_run = total_terms_for_run if "total_terms_for_run" in locals() else 0
+        last_term = None
+        if latest_state_obj is not None:
+            term_events = getattr(latest_state_obj, "term_events", []) or []
+            if term_events:
+                last_term = str(term_events[-1].get("term") or "").strip() or None
+
+        if has_partial:
+            if not runtime_state.get(AGENT_SELECTED_SOURCE_KEY):
+                runtime_state[AGENT_SELECTED_SOURCE_KEY] = next(iter(partial_results.keys()))
+            try:
+                _sync_selected_source_dataframe()
+            except Exception:  # noqa: BLE001
+                pass
+            runtime_error_stop_event = {
+                "stop_reason": "runtime_error",
+                "term": last_term,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "processed_terms": processed_so_far,
+                "total_terms": total_for_run,
+            }
+            runtime_state[AGENT_STOP_EVENT_KEY] = runtime_error_stop_event
+            if isinstance(monitoring_state, dict):
+                monitoring_state["stop_reason"] = "runtime_error"
+                monitoring_state["stop_event"] = runtime_error_stop_event
+                runtime_state[AGENT_MONITORING_STATE_KEY] = monitoring_state
+            runtime_state[AGENT_RUN_STATUS_STATE_KEY] = {
+                **runtime_state.get(AGENT_RUN_STATUS_STATE_KEY, {}),
+                "running": False,
+                "finished": False,
+                "stopped": True,
+                "stop_requested": False,
+                "stop_reason": "runtime_error",
+                "stop_event": runtime_error_stop_event,
+                "error": str(exc),
+                "stage": "preparing_review",
+                "message": (
+                    f"Run stopped on an unexpected error after {processed_so_far}/{total_for_run} term(s). "
+                    "Completed mappings are preserved — review them or resume the remaining terms."
+                ),
+                "processed_count": processed_so_far,
+                "total_count": total_for_run,
+                "elapsed_seconds": elapsed_on_error,
+                "last_activity": f"Run stopped on error: {type(exc).__name__}: {exc}",
+            }
+            runtime_state["agent_mui_status_message"] = {
+                "severity": "warning",
+                "text": (
+                    f"Run stopped on an error after {processed_so_far}/{total_for_run} term(s); "
+                    "completed mappings are preserved for review or resume."
+                ),
+            }
+        else:
+            runtime_state[AGENT_RUN_STATUS_STATE_KEY] = {
+                **runtime_state.get(AGENT_RUN_STATUS_STATE_KEY, {}),
+                "running": False,
+                "finished": False,
+                "error": str(exc),
+                "stage": "preparing_review",
+                "message": f"Agent-based reconciliation failed: {exc}",
+                "elapsed_seconds": elapsed_on_error,
+                "last_activity": f"Run failed: {exc}",
+            }
+            runtime_state["agent_mui_status_message"] = {"severity": "error", "text": f"Agent-based reconciliation failed: {exc}"}
 
 def _start_agent_reconciliation_run_async(
     input_tables,
@@ -459,7 +675,22 @@ def _handle_agent_mui_event(event: object, readiness_state: Dict[str, object], r
                     f"Agent-based reconciliation data successfully loaded from uploaded CSV matching table: {filename}.",
                 )
                 runtime_state[AGENT_UPLOADED_SOURCE_SIGNATURE_KEY] = f"{filename}:{len(content)}"
-                runtime_state["agent_mui_status_message"] = {"severity": "success", "text": f"CSV matching table '{filename}' loaded into the agent workflow."}
+                # Tell the user which rows arrive already reconciled — only the unreconciled
+                # ones will be sent to the agent (and for definition generation).
+                total_rows = len(dataframe)
+                try:
+                    to_reconcile = len(get_unreconciled_indices(dataframe, "No Match"))
+                except Exception:
+                    to_reconcile = total_rows
+                already_reconciled = max(0, total_rows - to_reconcile)
+                if already_reconciled:
+                    load_message = (
+                        f"CSV '{filename}' loaded: {total_rows} rows — {already_reconciled} already reconciled "
+                        f"(will be skipped), {to_reconcile} to reconcile."
+                    )
+                else:
+                    load_message = f"CSV matching table '{filename}' loaded into the agent workflow ({total_rows} rows)."
+                runtime_state["agent_mui_status_message"] = {"severity": "success", "text": load_message}
             except Exception as exc:
                 runtime_state["agent_mui_status_message"] = {"severity": "error", "text": f"Failed to parse uploaded CSV file: {exc}"}
         should_rerun = True
@@ -533,6 +764,28 @@ def _handle_agent_mui_event(event: object, readiness_state: Dict[str, object], r
             resume_previous=bool(event.get("resume_previous", False)),
         )
         should_rerun = True
+    elif event_type == "review_partial_results":
+        runtime_state[AGENT_ACTIVE_STEP_KEY] = "Review"
+        runtime_state["agent_mui_status_message"] = {
+            "severity": "info",
+            "text": "Showing the mapping suggestions that were completed before the run stopped.",
+        }
+        should_rerun = True
+    elif event_type == "skip_failed_term_and_resume":
+        if _mark_stopped_term_skipped_for_resume():
+            started = _start_agent_reconciliation_run_async(
+                runtime_state.get(AGENT_INPUT_TABLES_KEY, []),
+                runtime_context.get("missing_provider_keys", []),
+                runtime_context.get("primary_provider", "openai"),
+                runtime_context.get("effective_primary_env", get_default_api_key_env("openai")),
+                resume_previous=True,
+            )
+            if started:
+                runtime_state["agent_mui_status_message"] = {
+                    "severity": "info",
+                    "text": "Skipped the failed term and resumed reconciliation from the remaining terms.",
+                }
+        should_rerun = True
     elif event_type == "stop_run":
         cancel_event = runtime_state.get(AGENT_RUN_CANCEL_EVENT_STATE_KEY)
         live_status = runtime_state.get(AGENT_RUN_STATUS_STATE_KEY, {})
@@ -567,6 +820,34 @@ def _handle_agent_mui_event(event: object, readiness_state: Dict[str, object], r
             )
             runtime_state["agent_mui_status_message"] = {"severity": "success", "text": f"Mapping {action} action applied."}
             should_rerun = True
+    elif event_type in {"accept_mappings", "reject_mappings", "reset_mappings"}:
+        # Batch variant of accept/reject/reset for facet-driven bulk review. Accepts a list of
+        # mapping ids; for accept, an optional per-id match-type map. Reuses the single-row logic.
+        action = {"accept_mappings": "accept", "reject_mappings": "reject", "reset_mappings": "reset"}[event_type]
+        mapping_ids = event.get("mapping_ids")
+        match_types = event.get("match_types") if action == "accept" else None
+        if isinstance(match_types, dict):
+            match_types = {str(k): str(v or "") for k, v in match_types.items()}
+        else:
+            match_types = {}
+        applied = 0
+        if isinstance(mapping_ids, (list, tuple)):
+            for mapping_id in mapping_ids:
+                source_name, row_index = _parse_mapping_id(mapping_id)
+                if source_name is None or row_index is None:
+                    continue
+                _apply_review_action(
+                    source_name,
+                    row_index,
+                    action,
+                    selected_match_type=match_types.get(str(mapping_id), ""),
+                )
+                applied += 1
+        runtime_state["agent_mui_status_message"] = {
+            "severity": "success" if applied else "info",
+            "text": f"{action.capitalize()} applied to {applied} mapping(s)." if applied else "No mappings were updated.",
+        }
+        should_rerun = True
     elif event_type == "save_configuration":
         provider = str(runtime_state.get("agent_model_provider", runtime_context.get("primary_provider", "openai")) or "openai")
         model = str(runtime_state.get("agent_model_name", "") or "")

@@ -54,6 +54,9 @@ export type WorkflowConfig = {
   langsmith_project?: string;
   expert_mode: boolean;
   allow_heuristic_fallback?: boolean;
+  enable_wikidata_fallback?: boolean;
+  bioportal_use_all_ontologies?: boolean;
+  enable_candidate_adjudication?: boolean;
   use_different_models?: boolean;
   definition_model?: string;
   definition_preparation?: boolean;
@@ -79,6 +82,8 @@ export type DataStatus = {
   source_name?: string;
   rows?: number;
   columns?: number;
+  reconciled_rows?: number;
+  unreconciled_rows?: number;
   loaded_sources?: number;
   required_columns_detected?: boolean;
   schema_message?: string;
@@ -157,6 +162,8 @@ export type ReviewItem = {
   review_mode?: string;
   explanation?: string;
   auto_accept_reason?: string;
+  auto_accepted?: boolean;
+  acceptance_score?: number | null;
   input_uri?: string;
   accepted_match_type?: string;
   subject_label?: string;
