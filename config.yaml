@@ -1,68 +1,61 @@
 app_version: PoC
-user_agent_template: 'RDF4RiskToolkit/1.0'
+user_agent_template: RDF4RiskToolkit/{version}
+contact_email: ""
+
 wikidata:
   api_url: https://www.wikidata.org/w/api.php
+
 ncbi:
   tool_name: RDF4RiskReconTool
+  email: ""
   eutils_base_url: https://eutils.ncbi.nlm.nih.gov/entrez/eutils/
   default_databases:
-  - taxonomy
-  - bioproject
-  - gene
+    - taxonomy
+    - bioproject
+    - gene
   default_retmax: 10
+
 bioportal:
   base_url: https://data.bioontology.org
-  default_ontologies: NCIT,MESH,SNOMEDCT,GO
+  default_ontologies: ""
   default_pagesize: 15
   include_fields: prefLabel,synonym,definition
-  preferred_ontologies: NCIT,PO,uberon
+  preferred_ontologies: ""
+
 ols:
   base_url: https://www.ebi.ac.uk/ols4/api
-  default_ontologies: go,chebi,doid,hp,mondo
+  default_ontologies: ""
   default_rows: 15
   query_fields: label,synonym,description,short_form,obo_id,iri
   field_list: iri,label,synonym,description,ontology_prefix
-  preferred_ontologies: chebi
+  preferred_ontologies: ""
+
 agroportal:
   base_url: https://data.agroportal.lirmm.fr
   default_pagesize: 15
   include_fields: prefLabel,synonym,definition
-  preferred_ontologies: Agrovoc,Foodon,Foodex2
+  preferred_ontologies: ""
+
 earthportal:
   base_url: https://data.earthportal.eu
   default_pagesize: 15
   include_fields: prefLabel,synonym,definition
-  preferred_ontologies: Sweet
+  preferred_ontologies: ""
+
 semlookp:
-  preferred_ontologies: mesh
+  preferred_ontologies: ""
+
 agent_reconciliation:
-  openai_compatible_base_url: http://127.0.0.1:1234
+  openai_compatible_base_url: ""
   preferred_model_provider: openai_codex
-  preferred_model_name: gpt-5.4-mini
+  preferred_model_name: ""
   timeout_seconds: 180
   max_iterations: 3
   max_workers: 4
   default_batch_size: 10
-  langsmith_project: RDF4RiskAssessment
-  trusted_ontologies:
-  - CHEBI
-  - MESH
-  - NCIT
-  - LOINC
-  - FOODON
-  - NCBITAXON
-  - QUDT
-  - QUDT2
-  bioportal_agent_ontologies:
-  - CHEBI
-  - NCIT
-  - NIFSTD
-  - BERO
-  - OCHV
-  - SNOMEDCT
-  - QUDT
-  - QUDT2
-  - FOODON
+  langsmith_project: ""
+  trusted_ontologies: []
+  bioportal_agent_ontologies: []
   enable_agentic_refinement: false
   agentic_trigger_policy: no_exact_or_low_confidence
   agentic_min_confidence_to_skip_refinement: 0.8
@@ -71,16 +64,18 @@ agent_reconciliation:
   agentic_total_llm_call_budget: 4
   agentic_max_candidate_rescore: 0
   candidate_pool_limit: 6
+  enable_wikidata_fallback: true
+  bioportal_use_all_ontologies: false
+  enable_candidate_adjudication: true
   enable_second_pass_related_retry: false
-  openai_compatible_model_registry:
-  - qwen3.5-4b
+  openai_compatible_model_registry: []
   provenance_defaults:
-    author_id:
-    author_label:
-    reviewer_id:
-    reviewer_label:
-    creator_id: ''
-    creator_label: ''
+    author_id: ""
+    author_label: ""
+    reviewer_id: ""
+    reviewer_label: ""
+    creator_id: ""
+    creator_label: ""
     mapping_tool: RDF4Risk Agent-Based Reconciliation
-    mapping_tool_version: '1.0'
-    publication_date: ''
+    mapping_tool_version: "1.0"
+    publication_date: ""
