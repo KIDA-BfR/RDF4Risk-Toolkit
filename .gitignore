@@ -38,6 +38,10 @@ htmlcov/
 .env.*
 !.env.example
 /config.yaml
+
+# Local run logs / trace artifacts (per-run log_<timestamp> folders)
+/logs/
+agentic_reconciliation/trace_runs/
 *.local
 *.key
 *.pem

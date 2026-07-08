@@ -124,9 +124,12 @@ export function TriageDialog({
             <Stack direction="row" alignItems="center" spacing={1}>
               <Chip size="small" label={statusLabel(item.status)} />
               <Box sx={{ ml: 'auto' }}>
-                {typeof item.acceptance_score === 'number'
-                  ? <ConfidenceCell value={item.acceptance_score} trace={item.trace_metadata} rawConfidence={item.confidence} acceptanceMode autoAccepted={item.auto_accepted} />
-                  : <ConfidenceCell value={item.confidence} trace={item.trace_metadata} />}
+                {(() => {
+                  const noCandidate = isNoMatch(item) || !String(item.suggested_uri || '').trim();
+                  return typeof item.acceptance_score === 'number'
+                    ? <ConfidenceCell value={item.acceptance_score} trace={item.trace_metadata} rawConfidence={item.confidence} acceptanceMode autoAccepted={item.auto_accepted} noCandidate={noCandidate} />
+                    : <ConfidenceCell value={item.confidence} trace={item.trace_metadata} noCandidate={noCandidate} />;
+                })()}
               </Box>
             </Stack>
             {/* Side-by-side input vs suggestion so the reviewer compares both term names AND

@@ -468,11 +468,13 @@ def _fetch_google_model_objects_from_endpoint(api_key: str, endpoint_url: str) -
     page_token: Optional[str] = None
 
     for _ in range(MAX_MODEL_PAGES):
-        params: Dict[str, str] = {"key": api_key, "pageSize": str(MODEL_PAGE_SIZE)}
+        # Key goes into the header, not the query string, so it never leaks into
+        # error messages, logs, or trace artifacts via the request URL.
+        params: Dict[str, str] = {"pageSize": str(MODEL_PAGE_SIZE)}
         if page_token:
             params["pageToken"] = page_token
 
-        response = requests.get(endpoint_url, params=params, timeout=20)
+        response = requests.get(endpoint_url, params=params, headers={"x-goog-api-key": api_key}, timeout=20)
         response.raise_for_status()
 
         payload = _ensure_dict(response.json())
@@ -927,6 +929,10 @@ def generate_text_completion(
     interaction_purpose: Optional[str] = None,
     term_id: Optional[str] = None,
     run_id: Optional[str] = None,
+    row_index: Optional[object] = None,
+    stage: Optional[str] = None,
+    purpose: Optional[str] = None,
+    call_id: Optional[str] = None,
 ) -> str:
     api_key = resolve_api_key(provider, api_key_env)
     if provider not in {"openai_codex", OPENAI_COMPATIBLE_PROVIDER} and not api_key:
@@ -1081,8 +1087,8 @@ def generate_text_completion(
             if thinking_config:
                 generation_config["thinkingConfig"] = thinking_config
             response = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}",
-                headers={"Content-Type": "application/json"},
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
+                headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
                 json={
                     "systemInstruction": {"parts": [{"text": system_prompt}]},
                     "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -1109,8 +1115,12 @@ def generate_text_completion(
             user_prompt=user_prompt,
             response_text=text,
             interaction_purpose=interaction_purpose,
+            stage=stage or interaction_purpose,
+            purpose=purpose or interaction_purpose,
+            call_id=call_id,
             term_id=term_id,
             run_id=run_id,
+            row_index=row_index,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_usd=cost_usd,
@@ -1126,8 +1136,12 @@ def generate_text_completion(
             user_prompt=user_prompt,
             error=f"{type(exc).__name__}: {exc}",
             interaction_purpose=interaction_purpose,
+            stage=stage or interaction_purpose,
+            purpose=purpose or interaction_purpose,
+            call_id=call_id,
             term_id=term_id,
             run_id=run_id,
+            row_index=row_index,
         )
         raise
 
@@ -1180,6 +1194,10 @@ def generate_json_completion(
     interaction_purpose: Optional[str] = None,
     term_id: Optional[str] = None,
     run_id: Optional[str] = None,
+    row_index: Optional[object] = None,
+    stage: Optional[str] = None,
+    purpose: Optional[str] = None,
+    call_id: Optional[str] = None,
 ) -> Dict:
     json_prompt = (
         user_prompt.rstrip()
@@ -1197,6 +1215,10 @@ def generate_json_completion(
         interaction_purpose=interaction_purpose,
         term_id=term_id,
         run_id=run_id,
+        row_index=row_index,
+        stage=stage or interaction_purpose,
+        purpose=purpose or interaction_purpose,
+        call_id=call_id,
     )
     return _extract_first_json_object(response_text)
 
@@ -1221,6 +1243,10 @@ def generate_structured_completion(
     interaction_purpose: Optional[str] = None,
     term_id: Optional[str] = None,
     run_id: Optional[str] = None,
+    row_index: Optional[object] = None,
+    stage: Optional[str] = None,
+    purpose: Optional[str] = None,
+    call_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Generate strict JSON with bounded parse retries.
 
@@ -1242,6 +1268,10 @@ def generate_structured_completion(
                 interaction_purpose=interaction_purpose,
                 term_id=term_id,
                 run_id=run_id,
+                row_index=row_index,
+                stage=stage or interaction_purpose,
+                purpose=purpose or interaction_purpose,
+                call_id=call_id,
             )
             normalized = _normalize_structured_completion_payload(payload)
             if normalized:

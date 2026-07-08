@@ -54,6 +54,13 @@ class AgentRunConfig:
     definition_model_name: str = "o4-mini"
     timeout_seconds: int = 180
     max_iterations: int = 3
+    ontology_scan_limit: Optional[int] = None
+    candidate_score_limit: int = 6
+    agent_step_limit: int = 3
+    per_ontology_candidate_limit: int = 3
+    global_candidate_pool_limit: int = 20
+    shortlist_context_limit: int = 3
+    shortlist_llm_limit: int = 3
     batch_size: int = 10
     max_workers: int = 4
     parallel_start_interval_seconds: float = 0.25
@@ -98,15 +105,66 @@ class AgentRunConfig:
     verified_match_min_confidence_related: Optional[float] = None
     verified_match_require_llm_decision: bool = False
     verified_match_require_no_fallback: bool = False
+    verified_match_allow_domain_penalized: bool = False
+    # Strong-exact-identity verification: lets a confident exact match verify even when
+    # the ontology class has weak definition/context evidence (e.g. material/polymer
+    # concepts in MESH/SNOMEDCT). Never applies to obsolete/hard-mismatch/placeholder.
+    enable_strong_exact_verify: bool = True
+    strong_exact_min_llm: float = 0.93
+    strong_exact_min_lexical: float = 0.95
+    strong_exact_min_provider: float = 0.70
+    verified_match_allow_placeholder: bool = False
+    # Optional batch/domain context (e.g. "packaging", "material") — when set,
+    # material/polymer/chemical ontology concepts are treated as domain-compatible.
+    batch_domain_context: Optional[str] = None
     allow_unverified_candidate_suggestions: bool = True
     candidate_review_mode: str = "conservative"
     allow_heuristic_fallback: bool = True
     enable_wikidata_fallback: bool = True
+    ontology_search_mode: str = "configured_only"
     bioportal_use_all_ontologies: bool = False
+    # broad_retrieval_registry_scored (recommended default candidate): broad BioPortal
+    # recall, then use the registry AFTER retrieval as candidate scoring/verification
+    # context -- never as a hard pre-retrieval ontology filter.
+    broad_registry_scored_pool_limit: int = 30
+    broad_registry_scored_enable_targeted_fallback: bool = True
+    broad_registry_scored_min_suitability: float = 0.70
+    broad_registry_scored_ambiguous_min_suitability: float = 0.85
+    broad_registry_scored_category_informative_min: float = 0.35
+    enable_bioportal_annotator_rescue: bool = True
+    annotator_rescue_max_variants: int = 8
+    annotator_rescue_max_candidates: int = 20
+    annotator_rescue_timeout_seconds: int = 30
+    annotator_rescue_debug_broad_ontologies: bool = False
     enable_candidate_adjudication: bool = True
+    enable_ontology_context_enrichment: bool = True
+    ontology_context_children_limit: int = 5
     reasoning_effort: str = "none"
     stop_on_llm_error: bool = True
     enable_second_pass_related_retry: bool = False
+    # Ontology routing / suitability scoring (decides WHICH ontologies to query;
+    # never used as candidate confidence). Disabled by default -> behavior unchanged.
+    enable_ontology_routing: bool = False
+    ontology_routing_use_llm: bool = True
+    ontology_routing_llm_model: Optional[str] = None
+    ontology_routing_top_n: int = 5
+    ontology_routing_prefilter_limit: int = 20
+    ontology_routing_min_score: float = 0.40
+    ontology_routing_strong_score: float = 0.80
+    ontology_routing_confident_margin: float = 0.10
+    ontology_routing_include_default_core: bool = True
+    ontology_routing_trace: bool = True
+    ontology_routing_project_context: Optional[str] = None
+    # Ontology quality gate (trustworthy/usable in general — NOT match confidence).
+    ontology_quality_blocklist: List[str] = field(default_factory=list)
+    ontology_quality_allowlist: List[str] = field(default_factory=list)
+    allow_excluded_ontologies_for_debug: bool = False
+    trace_level: str = "summary"
+    trace_llm_prompts: bool = False  # capture routing/adjudication prompts into trace (debug)
+    trace_raw_candidates: bool = False
+    trace_discarded_candidates: bool = True
+    trace_api_payloads: bool = False
+    trace_output_dir: Optional[str] = None
 
     def __post_init__(self):
         if (
@@ -129,6 +187,27 @@ class AgentRunConfig:
             for item in (self.trusted_ontologies or [])
             if str(item).strip()
         ]
+        # Only two ontology search modes are supported: "configured_only" and
+        # "broad_retrieval_registry_scored". Legacy/removed identifiers (the old
+        # all-ontology, registry-routed and table-aware modes) degrade to the broad
+        # registry-scored mode, which preserves their broad-recall intent.
+        mode = str(self.ontology_search_mode or "").strip().lower()
+        _legacy_broad_modes = {
+            "registry_routed_all", "direct_all_debug", "bioportal_all_direct", "table_aware_hybrid",
+        }
+        if mode in _legacy_broad_modes:
+            mode = "broad_retrieval_registry_scored"
+        if mode not in {"configured_only", "broad_retrieval_registry_scored"}:
+            mode = "broad_retrieval_registry_scored" if self.bioportal_use_all_ontologies else "configured_only"
+        self.ontology_search_mode = mode
+        # Neither supported mode uses a hard pre-retrieval "all ontologies" filter:
+        # configured_only queries the configured set; broad retrieval does an
+        # unrestricted BioPortal search and scores with the registry afterwards.
+        self.bioportal_use_all_ontologies = False
+        trace_level = str(self.trace_level or "summary").strip().lower()
+        if trace_level not in {"summary", "detailed", "forensic"}:
+            trace_level = "summary"
+        self.trace_level = trace_level
 
 
 @dataclass
@@ -140,6 +219,8 @@ class AgentCandidate:
     source_workflow: str = ""
     raw_identifier: Optional[str] = None
     score: Optional[float] = None
+    ontology_context: Dict[str, Any] = field(default_factory=dict)
+    source_links: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -169,6 +250,14 @@ class CandidateScore:
     explanation: str = ""
     skos_decision: Optional[SKOSDecision] = None
     trace_metadata: Dict[str, Any] = field(default_factory=dict)
+    lexical_score: Optional[float] = None
+    definition_score: Optional[float] = None
+    ontology_context_score: Optional[float] = None
+    provider_score: Optional[float] = None
+    llm_confidence: Optional[float] = None
+    combined_confidence: Optional[float] = None
+    relation_type: Optional[str] = None
+    confidence_explanation: str = ""
 
 
 @dataclass
@@ -231,6 +320,7 @@ class BatchRunState:
     stop_event: Dict[str, Any] = field(default_factory=dict)
     messages: List[str] = field(default_factory=list)
     term_events: List[Dict[str, Any]] = field(default_factory=list)
+    telemetry_summary: Dict[str, Any] = field(default_factory=dict)
 
 
 class SKOSMatch(BaseModel):

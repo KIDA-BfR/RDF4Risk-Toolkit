@@ -263,11 +263,19 @@ def _build_review_snapshot(agent_df: Optional[pd.DataFrame]) -> Dict[str, object
             if is_no_match_outcome:
                 match_type = "no_match"
             confidence = _get_review_cell_value(agent_df, idx, "Suggested Confidence")
+            raw_suggested_uri = _get_review_cell_value(agent_df, idx, "Suggested URI")
+            # A row that carries a live suggestion (has a URI and is not a terminal
+            # no_match) must never surface match_type "no_match"/"" — that value is what
+            # the grid uses to decide "there is nothing to show/accept". Floor the SKOS
+            # relation to relatedMatch so a candidate_suggested/matched row with a valid
+            # URI always renders label+URI+accept, even if the relation column was blank.
+            if (not is_no_match_outcome) and str(raw_suggested_uri or "").strip():
+                if not match_type or match_type == "no_match":
+                    match_type = normalize_mapping_type("related")
             try:
                 confidence_value: object = round(float(confidence), 4)
             except (TypeError, ValueError):
                 confidence_value = confidence
-            raw_suggested_uri = _get_review_cell_value(agent_df, idx, "Suggested URI")
             raw_suggested_label = _get_review_cell_value(agent_df, idx, "Suggested Label")
             raw_suggested_description = _get_review_cell_value(agent_df, idx, "Suggested Description")
             stale_candidate_note = ""
@@ -304,6 +312,16 @@ def _build_review_snapshot(agent_df: Optional[pd.DataFrame]) -> Dict[str, object
                         acceptance_score = round(min(1.0, max(auto_score_value, 0.90)), 4)
                     else:
                         acceptance_score = round(min(auto_score_value, 0.85), 4)
+            # Explicit UI contract — the single source of truth the grid renders from, so
+            # display never has to reverse-engineer "is there a suggestion?" from match_type
+            # (which caused candidate_suggested rows with a blank relation to read as no_match).
+            ui_label = "" if is_no_match_outcome else raw_suggested_label
+            ui_uri = "" if is_no_match_outcome else raw_suggested_uri
+            has_suggestion = bool((not is_no_match_outcome) and str(raw_suggested_uri or "").strip())
+            review_action_available = bool(has_suggestion and status in {"candidate_suggested", "matched", "pending"})
+            accepted_suggestion_persistable = bool(
+                has_suggestion and str(ui_uri or "").strip() and str(ui_label or "").strip()
+            )
             items.append(
                 {
                     "mapping_id": f"{selected_source}::{idx}",
@@ -319,6 +337,11 @@ def _build_review_snapshot(agent_df: Optional[pd.DataFrame]) -> Dict[str, object
                     "candidate_label": raw_suggested_label,
                     "candidate_description": raw_suggested_description,
                     "can_accept": bool((not is_no_match_outcome) and raw_suggested_uri),
+                    "final_ui_status": status,
+                    "final_ui_label": ui_label,
+                    "final_ui_uri": ui_uri,
+                    "review_action_available": review_action_available,
+                    "accepted_suggestion_persistable": accepted_suggestion_persistable,
                     "no_match_note": stale_candidate_note,
                     "match_type": match_type or "no_match",
                     "provider": _get_review_cell_value(agent_df, idx, "Suggested Provider"),

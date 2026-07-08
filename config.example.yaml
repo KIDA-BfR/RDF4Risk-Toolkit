@@ -51,6 +51,13 @@ agent_reconciliation:
   preferred_model_name: ""
   timeout_seconds: 180
   max_iterations: 3
+  ontology_scan_limit: null
+  candidate_score_limit: 6
+  agent_step_limit: 3
+  per_ontology_candidate_limit: 3
+  global_candidate_pool_limit: 20
+  shortlist_context_limit: 3
+  shortlist_llm_limit: 3
   max_workers: 4
   default_batch_size: 10
   langsmith_project: ""
@@ -65,10 +72,78 @@ agent_reconciliation:
   agentic_max_candidate_rescore: 0
   candidate_pool_limit: 6
   enable_wikidata_fallback: true
+  # Two ontology search modes are supported:
+  # configured_only: query only the project's configured ontology list
+  # broad_retrieval_registry_scored: broad BioPortal recall (no hard registry pre-filter),
+  #   then use the registry AFTER retrieval as candidate scoring, ontology-suitability and
+  #   verification context ("can we trust THIS candidate's ontology for this term/category?").
+  #   Recommended as the default. (Legacy values registry_routed_all / direct_all_debug /
+  #   table_aware_hybrid are accepted for backward compatibility and map to this mode.)
+  ontology_search_mode: configured_only
   bioportal_use_all_ontologies: false
+  # --- broad_retrieval_registry_scored tunables ---
+  broad_registry_scored_pool_limit: 30           # top-N raw candidates from the broad (all-ontology) search
+  broad_registry_scored_enable_targeted_fallback: true  # term-type core fallback only when the broad pool is weak
+  broad_registry_scored_min_suitability: 0.70    # min ontology_suitability_score to verify an informative-category match
+  broad_registry_scored_ambiguous_min_suitability: 0.85  # ambiguous common words need strong ontology suitability
+  broad_registry_scored_category_informative_min: 0.35   # below this term-type confidence the suitability gate is relaxed
+  enable_bioportal_annotator_rescue: true        # rescue weak/empty broad pools with one BioPortal Annotator call over LLM variants
+  annotator_rescue_max_variants: 8               # bounded synonym/canonical/formula variants sent to Annotator
+  annotator_rescue_max_candidates: 20            # max grouped Annotator candidates merged into the pool
+  annotator_rescue_timeout_seconds: 30           # HTTP timeout for the Annotator rescue call
+  annotator_rescue_debug_broad_ontologies: false # false keeps Annotator scoped to term-type ontologies
   enable_candidate_adjudication: true
   enable_second_pass_related_retry: false
+  # Ontology routing / suitability scoring: decides WHICH ontologies to query for a
+  # term (NOT the final mapping confidence). Disabled by default; when off the
+  # reconciliation cascade behaves exactly as before.
+  enable_ontology_routing: false
+  ontology_routing_use_llm: true
+  ontology_routing_llm_model: null
+  ontology_routing_top_n: 5
+  ontology_routing_prefilter_limit: 20
+  ontology_routing_min_score: 0.40
+  ontology_routing_strong_score: 0.80
+  ontology_routing_confident_margin: 0.10
+  ontology_routing_include_default_core: true
+  ontology_routing_trace: true
+  ontology_routing_project_context: null
+  # Ontology quality gate (trustworthy/usable in general — NOT match confidence).
+  # Hard-excludes deprecated/invalid/private/test/broken ontologies from routing;
+  # dampens (does not exclude) views/flat/sparse ontologies.
+  ontology_quality_blocklist: []
+  ontology_quality_allowlist: []
+  allow_excluded_ontologies_for_debug: false
+  # Strong exact-identity verification: lets a confident exact match verify even when
+  # the ontology class lacks definition/context evidence (e.g. material/polymer matches
+  # in MESH/SNOMEDCT). Never applies to obsolete / hard-mismatch / placeholder values.
+  enable_strong_exact_verify: true
+  strong_exact_min_llm: 0.93
+  strong_exact_min_lexical: 0.95
+  strong_exact_min_provider: 0.70
+  verified_match_allow_placeholder: false
+  # Optional batch/domain context ("packaging"/"material"/...). Auto-inferred from the
+  # source table name when empty; treats material/polymer concepts as domain-compatible.
+  batch_domain_context: null
+  # Per-term execution trace. summary is compact; detailed writes decision events;
+  # forensic includes timings, prompt/response capture when enabled, and raw summaries.
+  trace_level: summary
+  # Debug: capture routing + candidate-adjudication LLM prompts/responses into trace
+  # metadata. Never includes quality_raw or administrative metadata. Off by default.
+  trace_llm_prompts: false
+  trace_raw_candidates: false
+  trace_discarded_candidates: true
+  trace_api_payloads: false
+  # Base directory for run trace artifacts. Relative paths are resolved from the repo
+  # root, so "logs" writes to <repo>/logs (git-ignored). Every run creates its own
+  # timestamped subfolder inside it (log_YYYYMMDD_HHMMSS). Set an absolute path to
+  # override, or null/empty to fall back to <repo>/logs.
+  trace_output_dir: logs
   openai_compatible_model_registry: []
+  # Written by the agent app's options dialog ("Save settings"): a snapshot of the
+  # data-independent UI preferences (auto-accept, SKOS matching, monitoring, tracing,
+  # advanced limits, ...). Restored automatically on the next backend start.
+  # ui_settings: {}
   provenance_defaults:
     author_id: ""
     author_label: ""

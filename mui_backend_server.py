@@ -25,6 +25,13 @@ from RDF_Generator import app as rdf_generator_service
 from RDF_to_Table import tablegenerator as rdf_to_table_service
 from agentic_reconciliation import agent_reconciliation_service as agent_service
 from agentic_reconciliation.agent_bioportal_service import list_bioportal_ontology_acronyms
+from agentic_reconciliation.agent_bioportal_context_service import _ONTOLOGY_REGISTRY
+from agentic_reconciliation.agent_registry_jobs import (
+    cancel_bioportal_registry_job,
+    get_bioportal_registry_job_status,
+    latest_bioportal_registry_job,
+    start_bioportal_catalog_refresh,
+)
 from agentic_reconciliation.agent_runtime_state import runtime_state as agent_runtime_state
 from agentic_reconciliation.agent_llm_service import get_default_model_options, get_provider_label, get_supported_llm_providers
 from semi_automatic_reconciliation import reconciliation_service as semi_service
@@ -140,6 +147,15 @@ def _agent_args() -> Dict[str, Any]:
     provider_labels = {provider: get_provider_label(provider) for provider in provider_options}
     model_labels = {model: agent_service._format_model_option_label(primary_catalog, model) for model in primary_models}
     model_details = agent_service._format_model_details_caption(primary_catalog, selected_model) if primary_catalog else None
+    if not model_details and isinstance(primary_catalog, dict) and str(primary_catalog.get("source", "")) in {"fetch_failed", "error"}:
+        # Surface catalog failures instead of silently falling back to the built-in
+        # model list — otherwise a broken API key just looks like "pricing disappeared".
+        catalog_reason = str(primary_catalog.get("message", "") or "").split(";")[0].strip()
+        model_details = (
+            "Live model catalog unavailable — showing the built-in model list without pricing."
+            + (f" Reason: {catalog_reason}." if catalog_reason else "")
+            + " Check the provider API key, then use 'Reload models & pricing' in Options."
+        )
     fallback_ontology_options = sorted(
         set(
             list((agent_service.CONFIG or {}).get("agent_reconciliation", {}).get("trusted_ontologies", ["MESH", "NCIT", "LOINC", "FOODON", "NCBITAXON"]))
@@ -299,6 +315,56 @@ def _service_event(service_id: str, event: Dict[str, Any]) -> None:
         raise KeyError(service_id)
 
 
+def _bioportal_api_key() -> Any:
+    key = os.environ.get("BIOPORTAL_API_KEY")
+    if key:
+        return key
+    try:
+        cfg = getattr(agent_service, "CONFIG", None) or {}
+        return (cfg.get("bioportal", {}) or {}).get("api_key")
+    except Exception:
+        return None
+
+
+def _registry_job_preview() -> Dict[str, Any]:
+    api_key = _bioportal_api_key()
+    if not api_key:
+        return {"error": "missing_bioportal_api_key", "total_discovered": 0, "already_in_registry": 0, "planned_for_fetch": 0}
+    acronyms = list_bioportal_ontology_acronyms(api_key)
+    entries = _ONTOLOGY_REGISTRY.load()
+    present = sum(1 for acr in acronyms if acr in entries)
+    return {
+        "total_discovered": len(acronyms),
+        "already_in_registry": present,
+        "planned_for_fetch": max(0, len(acronyms) - present),
+        "has_api_key": True,
+    }
+
+
+def _start_registry_job(event: Dict[str, Any]) -> Dict[str, Any]:
+    mode = str(event.get("mode", "catalog") or "catalog")
+    dry_run = bool(event.get("dry_run", False))
+    confirmed = bool(event.get("confirmed", False))
+    max_requests = event.get("max_requests")
+    api_key = _bioportal_api_key()
+    if not api_key and not dry_run:
+        return {"error": "missing_bioportal_api_key"}
+    if not confirmed and not dry_run:
+        return {"error": "confirmation_required"}
+    job_id = start_bioportal_catalog_refresh(
+        mode=mode,
+        all_bioportal=bool(event.get("all_bioportal", True)),
+        acronyms=event.get("acronyms"),
+        api_key=api_key,
+        refresh=bool(event.get("refresh", False)),
+        max_requests=int(max_requests) if str(max_requests or "").strip() not in {"", "None"} else None,
+        dry_run=dry_run,
+        confirmed=confirmed,
+        run_async=True,
+    )
+    return {"job_id": job_id, "status": get_bioportal_registry_job_status(job_id)}
+
+
 class RequestHandler(BaseHTTPRequestHandler):
     server_version = "RDF4RiskMUIBackend/1.0"
 
@@ -328,6 +394,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             if path == "api/workspace/snapshot":
                 self._send_json(_workspace_snapshot())
                 return
+            if path == "api/agent/registry-job/status":
+                job_id = (urlparse(self.path).query.split("job_id=", 1)[-1].split("&", 1)[0]
+                          if "job_id=" in urlparse(self.path).query else "")
+                status = get_bioportal_registry_job_status(job_id) if job_id else latest_bioportal_registry_job()
+                self._send_json({"status": status})
+                return
+            if path == "api/agent/registry-job/preview":
+                self._send_json(_registry_job_preview())
+                return
             parts = path.split("/")
             if len(parts) == 4 and parts[:2] == ["api", "services"] and parts[3] == "snapshot":
                 service_id = parts[2]
@@ -355,6 +430,21 @@ class RequestHandler(BaseHTTPRequestHandler):
                     return
                 result = _workspace_event(event)
                 self._send_json({**_workspace_snapshot(), **result})
+                return
+            if path in {"api/agent/registry-job/start", "api/agent/registry-job/cancel"}:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                if length > _max_event_body_bytes():
+                    self._send_json({"error": "Event payload is too large."}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                    return
+                event = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                if not isinstance(event, dict):
+                    self._send_json({"error": "Event payload must be a JSON object."}, HTTPStatus.BAD_REQUEST)
+                    return
+                if path.endswith("/cancel"):
+                    cancelled = cancel_bioportal_registry_job(str(event.get("job_id", "")))
+                    self._send_json({"cancelled": bool(cancelled), "status": get_bioportal_registry_job_status(str(event.get("job_id", "")))})
+                else:
+                    self._send_json(_start_registry_job(event))
                 return
             parts = path.split("/")
             if len(parts) == 4 and parts[:2] == ["api", "services"] and parts[3] == "event":

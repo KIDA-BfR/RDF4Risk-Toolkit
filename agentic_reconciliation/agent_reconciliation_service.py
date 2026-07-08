@@ -499,6 +499,96 @@ def _save_preferred_provenance_defaults(defaults: Dict[str, str]) -> tuple[bool,
     except Exception as exc:
         return False, f"Unable to save preferred provenance defaults: {exc}"
 
+USER_SETTINGS_CONFIG_KEY = "ui_settings"
+
+# Data-independent, non-secret workflow-config keys that the options dialog persists.
+# Excluded on purpose: openai_compatible_api_key (secret; stored via provider_api_keys),
+# uploaded definition/reference payloads (session data), provenance field values
+# (stored under provenance_defaults by _save_preferred_provenance_defaults).
+_USER_SETTINGS_PERSISTED_KEYS = (
+    "workflow",
+    "provider",
+    "model",
+    "reasoning_effort",
+    "candidate_review_mode",
+    "custom_model_override",
+    "provider_api_key_env",
+    "openai_compatible_base_url",
+    "skos_matching",
+    "auto_accept",
+    "auto_accept_policy",
+    "langsmith",
+    "langsmith_project",
+    "expert_mode",
+    "allow_heuristic_fallback",
+    "enable_wikidata_fallback",
+    "ontology_search_mode",
+    "bioportal_use_all_ontologies",
+    "enable_candidate_adjudication",
+    "trace_level",
+    "trace_llm_prompts",
+    "trace_raw_candidates",
+    "trace_discarded_candidates",
+    "trace_api_payloads",
+    "trace_output_dir",
+    "use_different_models",
+    "definition_model",
+    "definition_preparation",
+    "definition_strategy",
+    "agentic_trigger_policy",
+    "planner_provider",
+    "planner_model",
+    "trusted_ontologies",
+    "bioportal_ontologies",
+    "advanced",
+)
+
+def _build_user_settings_snapshot() -> Dict[str, object]:
+    config = _build_workflow_config_from_state()
+    snapshot: Dict[str, object] = {}
+    for key in _USER_SETTINGS_PERSISTED_KEYS:
+        if key in config:
+            snapshot[key] = config[key]
+    provenance = config.get("provenance")
+    if isinstance(provenance, dict):
+        snapshot["provenance"] = {"enabled": bool(provenance.get("enabled", False))}
+    return snapshot
+
+def _save_user_settings() -> tuple[bool, str]:
+    """Persist the current UI settings so the next backend start restores them."""
+    snapshot = _build_user_settings_snapshot()
+    config_path = _get_reconciliation_config_path()
+    try:
+        loaded = {}
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+        if not isinstance(loaded, dict):
+            loaded = {}
+
+        agent_cfg = loaded.setdefault("agent_reconciliation", {})
+        if not isinstance(agent_cfg, dict):
+            agent_cfg = {}
+            loaded["agent_reconciliation"] = agent_cfg
+
+        agent_cfg[USER_SETTINGS_CONFIG_KEY] = snapshot
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(loaded, f, sort_keys=False, allow_unicode=True)
+
+        global CONFIG
+        if not isinstance(CONFIG, dict):
+            CONFIG = {}
+        runtime_agent_cfg = CONFIG.setdefault("agent_reconciliation", {})
+        if not isinstance(runtime_agent_cfg, dict):
+            runtime_agent_cfg = {}
+            CONFIG["agent_reconciliation"] = runtime_agent_cfg
+        runtime_agent_cfg[USER_SETTINGS_CONFIG_KEY] = snapshot
+
+        return True, "Settings saved to config.yaml."
+    except Exception as exc:
+        return False, f"Unable to save settings: {exc}"
+
 def _register_openai_compatible_model_from_override(
     custom_model_override: str,
     provider: str,
@@ -798,6 +888,7 @@ def _sync_event_dependencies() -> None:
         "_resolve_api_key_env_for_provider",
         "_save_preferred_model_selection",
         "_save_preferred_provenance_defaults",
+        "_save_user_settings",
         "_stage_from_component",
     ):
         setattr(_event_impl, name, globals()[name])

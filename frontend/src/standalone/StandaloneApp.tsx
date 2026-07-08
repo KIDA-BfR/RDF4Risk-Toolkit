@@ -24,9 +24,6 @@ import {
 import { useColorScheme } from '@mui/material/styles';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
 import LightModeIcon from '@mui/icons-material/LightMode';
-import LoginIcon from '@mui/icons-material/Login';
-import LogoutIcon from '@mui/icons-material/Logout';
-import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { WorkflowConfigPanel } from '../apps/agent-reconciliation/AgentReconciliationApp';
 import { HomeApp } from '../apps/home/HomeApp';
@@ -102,37 +99,6 @@ function HomeDashboard({ onOpen }: { onOpen: (service: ServiceId) => void }) {
   );
 }
 
-function AgentSidebarInfo({ args, onEvent }: { args?: Record<string, any>; onEvent: (event: AppEvent) => void }) {
-  const auth = args?.codexAuthStatus;
-  const providerKind = args?.providerKind;
-  if (!args || providerKind !== 'codex') {
-    return (
-      <Alert severity="info" variant="outlined" sx={{ mx: 2, mb: 2 }}>
-        Select the ChatGPT Subscription provider in Agent-Based Reconciliation to manage subscription login here.
-      </Alert>
-    );
-  }
-  return (
-    <Box sx={{ mx: 2, mb: 2 }}>
-      <Stack spacing={1}>
-        <Typography variant="subtitle2">ChatGPT Subscription</Typography>
-        <Alert severity={auth?.authenticated ? 'success' : 'warning'} variant="outlined" sx={{ py: 0.5 }}>
-          {auth?.authenticated ? 'Connected' : 'Not connected'}
-        </Alert>
-        {auth?.pending_auth_url && <Button size="small" href={auth.pending_auth_url} target="_blank" variant="outlined" startIcon={<OpenInNewIcon fontSize="small" />}>Open login link</Button>}
-        <Stack direction="row" spacing={1}>
-          {auth?.authenticated ? (
-            <Button size="small" color="error" variant="outlined" startIcon={<LogoutIcon fontSize="small" />} onClick={() => onEvent({ type: 'codex_auth_signout' })}>Log out</Button>
-          ) : (
-            <Button size="small" variant="contained" startIcon={<LoginIcon fontSize="small" />} onClick={() => onEvent({ type: 'codex_auth_signin' })}>Log in</Button>
-          )}
-          <Button size="small" variant="outlined" startIcon={<RefreshIcon fontSize="small" />} onClick={() => onEvent({ type: 'codex_auth_refresh' })}>Refresh</Button>
-        </Stack>
-      </Stack>
-    </Box>
-  );
-}
-
 export function StandaloneApp() {
   const [activeService, setActiveService] = useState<ServiceId>(() => serviceFromHash());
   const [payload, setPayload] = useState<BackendPayload | null>(null);
@@ -157,12 +123,15 @@ export function StandaloneApp() {
       setError(null);
       return;
     }
-    if (!options?.quiet) setLoading(true);
-    setError(null);
+    if (!options?.quiet) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       setPayload(await fetchSnapshot(service));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // Quiet background polls keep the last good payload instead of flashing an error banner.
+      if (!options?.quiet) setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (!options?.quiet) setLoading(false);
     }
@@ -244,7 +213,9 @@ export function StandaloneApp() {
   useEffect(() => { handleEventRef.current = emitEvent; }, [emitEvent]);
   useEffect(() => { activeServiceRef.current = activeService; refresh(activeService); }, [activeService, refresh]);
   const runStatus = (payload?.args as any)?.run_status;
-  const shouldPollActiveRun = activeService !== 'home' && Boolean(runStatus?.running);
+  // Semi-automatic reconciliation reports background-queue progress under snapshot.run.
+  const snapshotRun = (payload?.args as any)?.snapshot?.run;
+  const shouldPollActiveRun = activeService !== 'home' && Boolean(runStatus?.running || snapshotRun?.processing_active);
   useEffect(() => {
     if (!shouldPollActiveRun) return undefined;
     const timer = window.setInterval(() => {
@@ -298,7 +269,6 @@ export function StandaloneApp() {
           ))}
         </List>
         <Box sx={{ mt: 'auto' }}>
-          {activeService === 'agent_reconciliation' && <AgentSidebarInfo args={args} onEvent={emitEvent} />}
           <Divider sx={{ mb: 1 }} />
           <WorkspaceControls
             projects={workspace.projects}

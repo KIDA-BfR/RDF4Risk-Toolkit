@@ -13,6 +13,7 @@ import io
 import logging
 import os
 import tempfile
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -591,7 +592,15 @@ def _apply_provider_queue(provider_queue: list[str]):
     _ensure_ontology_options_for_queue()
 
 
-def _process_reconciliation_queue():
+def _start_reconciliation_queue_processing():
+    """Validate the queue configuration, then process it in a background thread.
+
+    The event handler must return quickly so the HTTP response (and subsequent
+    snapshot polling) can report live progress while the queue is running.
+    """
+    if STATE.get("processing_active"):
+        STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "info", "text": "Processing is already running."}
+        return
     df = STATE.get("df")
     if not isinstance(df, pd.DataFrame):
         STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": "Cannot start processing: no table is loaded."}
@@ -617,7 +626,26 @@ def _process_reconciliation_queue():
     STATE["provider_has_results"] = set()
     for provider in provider_queue:
         STATE["provider_status"][provider] = {"status": "running", "results_count": 0, "error_msg": "", "progress": 0.0}
+    STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "info", "text": f"Processing {len(total_indices)} term(s) across {len(provider_queue)} provider(s)…"}
+    threading.Thread(
+        target=_process_reconciliation_queue,
+        args=(df, total_indices, provider_queue),
+        name="semi-auto-reconciliation-queue",
+        daemon=True,
+    ).start()
 
+
+def _process_reconciliation_queue(df: pd.DataFrame, total_indices: list, provider_queue: list[str]):
+    try:
+        _process_reconciliation_queue_inner(df, total_indices, provider_queue)
+    except Exception as exc:
+        logger.error("Reconciliation queue processing failed: %s", exc, exc_info=True)
+        STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": f"Processing failed: {exc}"}
+    finally:
+        STATE["processing_active"] = False
+
+
+def _process_reconciliation_queue_inner(df: pd.DataFrame, total_indices: list, provider_queue: list[str]):
     for position, actual_df_index in enumerate(total_indices):
         if STATE.get("stop_processing_requested"):
             break
@@ -665,19 +693,26 @@ def _process_reconciliation_queue():
                     STATE["provider_status"][provider_name]["error_msg"] = str(exc)
         STATE["processed_terms_count"] += 1
 
-    STATE["current_term_index_processing"] = len(total_indices)
-    STATE["processing_active"] = False
+    stopped = bool(STATE.get("stop_processing_requested"))
+    processed = int(STATE.get("processed_terms_count", 0) or 0)
+    STATE["current_term_index_processing"] = processed if stopped else len(total_indices)
     for provider in provider_queue:
-        if STATE["provider_status"].get(provider, {}).get("status") not in {"error", "stopped"}:
-            STATE["provider_status"][provider]["status"] = "completed"
+        if STATE["provider_status"].get(provider, {}).get("status") not in {"error"}:
+            STATE["provider_status"][provider]["status"] = "stopped" if stopped else "completed"
     if len(STATE.get("provider_has_results", set())) >= 2:
         STATE["display_mixed_results"] = True
         STATE["display_provider"] = None
     elif STATE.get("provider_has_results"):
         STATE["display_provider"] = sorted(STATE.get("provider_has_results"))[0]
         STATE["display_mixed_results"] = False
-    STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Processing queue finished. Review provider suggestions in the Reconcile step."}
-    STATE[RECONCILIATION_MUI_ACTIVE_STAGE_KEY] = "reconcile"
+    if stopped:
+        STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {
+            "severity": "info",
+            "text": f"Processing stopped after {processed} of {len(total_indices)} term(s). Suggestions fetched so far remain available in the Reconcile step.",
+        }
+    else:
+        STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Processing queue finished. Review provider suggestions in the Reconcile step."}
+        STATE[RECONCILIATION_MUI_ACTIVE_STAGE_KEY] = "reconcile"
 
 
 def _apply_reconciliation_selection(row_index, selected_option: dict, match_type: str | None = None):
@@ -871,7 +906,14 @@ def _handle_reconciliation_mui_event(event: object) -> bool:
             STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": f"Indexed {len(resources)} local resource(s)."}
         return True
     if event_type == "start_processing":
-        _process_reconciliation_queue()
+        _start_reconciliation_queue_processing()
+        return True
+    if event_type == "stop_processing":
+        if STATE.get("processing_active"):
+            STATE["stop_processing_requested"] = True
+            STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "info", "text": "Stop requested — finishing the current term…"}
+        else:
+            STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "info", "text": "No processing run is currently active."}
         return True
     if event_type == "select_display_provider":
         provider = str(event.get("provider", "") or "")

@@ -1,8 +1,8 @@
 import type { AdvancedConfig, AutoAcceptPolicy, ProvenanceConfig, Stage, WorkflowConfig } from './types';
 
 export const workflows = [
-  { id: 'wikidata_deep_agent', title: 'Wikidata Deep Agent', badge: 'FAST & BROAD', badgeColor: '#2563eb', description: 'Searches Wikidata only. Optimized for general-purpose entities and high-speed reconciliation.', bullets: ['Broad coverage', 'Fast execution', 'General purpose'] },
-  { id: 'bioportal_wikidata_multiagent', title: 'BioPortal + Wikidata', badge: 'DOMAIN FOCUS', badgeColor: '#047857', description: 'Prioritizes domain-specific ontologies via BioPortal, using Wikidata as a fallback.', bullets: ['Domain-aware', 'Scientific/medical data', 'Expert terminology'] },
+  { id: 'wikidata_deep_agent', title: 'Wikidata Deep Agent', badge: 'FAST & BROAD', badgeColor: 'primary' as const, description: 'Searches Wikidata only. Optimized for general-purpose entities and high-speed reconciliation.', bullets: ['Broad coverage', 'Fast execution', 'General purpose'] },
+  { id: 'bioportal_wikidata_multiagent', title: 'BioPortal + Wikidata', badge: 'DOMAIN FOCUS', badgeColor: 'success' as const, description: 'Prioritizes domain-specific ontologies via BioPortal, using Wikidata as a fallback.', bullets: ['Domain-aware', 'Scientific/medical data', 'Expert terminology'] },
 ];
 
 export const stages: { id: Stage; label: string; caption: string }[] = [
@@ -20,6 +20,28 @@ export function normalizeCandidateReviewMode(value: unknown): 'conservative' | '
   return String(value || '').trim().toLowerCase() === 'exploratory' ? 'exploratory' : 'conservative';
 }
 
+export function normalizeTraceLevel(value: unknown): 'summary' | 'detailed' | 'forensic' {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'detailed' || normalized === 'forensic' ? normalized : 'summary';
+}
+
+// Only two ontology search modes are supported. Persisted/legacy configs may still
+// carry a removed identifier (bioportal_all_direct, direct_all_debug, registry_routed_all,
+// table_aware_hybrid); all of those broad/all-ontology modes degrade to the broad
+// registry-scored mode, preserving their intent.
+export function normalizeOntologySearchMode(
+  value: unknown,
+  bioportalUseAllOntologies?: unknown,
+): 'configured_only' | 'broad_retrieval_registry_scored' {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'configured_only') return 'configured_only';
+  if (normalized === 'broad_retrieval_registry_scored') return 'broad_retrieval_registry_scored';
+  if (['bioportal_all_direct', 'direct_all_debug', 'registry_routed_all', 'table_aware_hybrid'].includes(normalized)) {
+    return 'broad_retrieval_registry_scored';
+  }
+  return bioportalUseAllOntologies ? 'broad_retrieval_registry_scored' : 'configured_only';
+}
+
 export function formatReviewMode(value?: string) {
   return normalizeCandidateReviewMode(value) === 'exploratory' ? 'Exploratory' : 'Conservative';
 }
@@ -27,8 +49,8 @@ export function formatReviewMode(value?: string) {
 export function statusLabel(status?: string) {
   const value = String(status || '').trim();
   if (value === 'matched') return 'Matched';
-  if (value === 'candidate_suggested') return 'Review suggested candidate';
-  if (value === 'no_match') return 'No match';
+  if (value === 'candidate_suggested') return 'Review suggestion';
+  if (value === 'no_match') return 'No suitable candidate';
   if (value === 'pending') return 'Pending review';
   if (value === 'accepted') return 'Accepted';
   if (value === 'rejected') return 'Rejected';
@@ -140,11 +162,18 @@ export function normalizeConfig(raw: Partial<WorkflowConfig> | undefined, provid
     expert_mode: raw?.expert_mode ?? false,
     allow_heuristic_fallback: raw?.allow_heuristic_fallback ?? true,
     enable_wikidata_fallback: raw?.enable_wikidata_fallback ?? true,
-    bioportal_use_all_ontologies: raw?.bioportal_use_all_ontologies ?? false,
+    ontology_search_mode: normalizeOntologySearchMode(raw?.ontology_search_mode, raw?.bioportal_use_all_ontologies),
+    bioportal_use_all_ontologies: false,
     enable_candidate_adjudication: raw?.enable_candidate_adjudication ?? true,
+    trace_level: normalizeTraceLevel(raw?.trace_level),
+    trace_llm_prompts: raw?.trace_llm_prompts ?? false,
+    trace_raw_candidates: raw?.trace_raw_candidates ?? false,
+    trace_discarded_candidates: raw?.trace_discarded_candidates ?? true,
+    trace_api_payloads: raw?.trace_api_payloads ?? false,
+    trace_output_dir: raw?.trace_output_dir || '',
     use_different_models: raw?.use_different_models ?? false,
     definition_model: raw?.definition_model || raw?.model || models[0] || 'gpt-5.1',
-    definition_preparation: raw?.definition_preparation ?? false,
+    definition_preparation: raw?.definition_preparation ?? true,
     definition_strategy: raw?.definition_strategy || 'generate_single_shot',
     definition_context_text: raw?.definition_context_text || '',
     definition_uploaded_filename: raw?.definition_uploaded_filename || '',

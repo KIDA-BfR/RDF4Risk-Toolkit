@@ -41,11 +41,27 @@ import { ConfidenceCell } from '../../components/review/ConfidenceCell';
 import { confidenceBand, toConfidenceNumber, type ConfidenceBand } from '../../components/review/confidence';
 import { TriageDialog } from './TriageDialog';
 
+// The displayed URI/label: prefer the backend's explicit UI contract, fall back to the
+// legacy suggestion fields for older snapshots.
+function suggestionUri(item: ReviewItem) {
+  return String(item.final_ui_uri ?? item.suggested_uri ?? '').trim();
+}
+function suggestionLabel(item: ReviewItem) {
+  return String(item.final_ui_label ?? item.suggested_label ?? '').trim();
+}
+// "No suggestion" is a property of the STATUS + whether a candidate URI survived — NOT of
+// match_type. A candidate_suggested/matched row with a valid URI but a weak/blank SKOS
+// relation must still render its label/URI and stay acceptable.
 function isNoMatch(item: ReviewItem) {
-  return String(item.status || '').toLowerCase() === 'no_match' || String(item.match_type || '').toLowerCase() === 'no_match';
+  const status = String(item.final_ui_status || item.status || '').toLowerCase();
+  if (status === 'no_match' || status === 'timeout') return true;
+  return !suggestionUri(item);
 }
 function canAcceptItem(item: ReviewItem) {
-  return item.can_accept !== false && !isNoMatch(item) && Boolean(String(item.suggested_uri || '').trim());
+  if (typeof item.review_action_available === 'boolean') {
+    return item.can_accept !== false && item.review_action_available;
+  }
+  return item.can_accept !== false && !isNoMatch(item) && Boolean(suggestionUri(item));
 }
 
 export function ReviewGrid({
@@ -160,6 +176,7 @@ export function ReviewGrid({
       valueGetter: (_v, row) => scoreOf(row) ?? -1,
       renderCell: (p: GridRenderCellParams<ReviewItem>) => {
         const acc = typeof p.row.acceptance_score === 'number';
+        const noCandidate = isNoMatch(p.row) || !suggestionUri(p.row);
         return (
           <ConfidenceCell
             value={acc ? p.row.acceptance_score : p.row.confidence}
@@ -167,6 +184,7 @@ export function ReviewGrid({
             rawConfidence={acc ? p.row.confidence : undefined}
             acceptanceMode={acc}
             autoAccepted={p.row.auto_accepted}
+            noCandidate={noCandidate}
           />
         );
       },
@@ -193,7 +211,7 @@ export function ReviewGrid({
       },
     },
     { field: 'provider', headerName: 'Provider', width: 120, renderCell: (p) => (isNoMatch(p.row) ? '—' : p.row.provider) },
-    { field: 'suggested_label', headerName: 'Suggested label', flex: 1, minWidth: 140, renderCell: (p) => (isNoMatch(p.row) ? <Typography variant="body2" color="text.secondary">No suggestion</Typography> : p.row.suggested_label) },
+    { field: 'suggested_label', headerName: 'Suggested label', flex: 1, minWidth: 140, renderCell: (p) => (isNoMatch(p.row) ? <Typography variant="body2" color="text.secondary">No suggestion</Typography> : suggestionLabel(p.row)) },
     {
       field: 'suggested_uri',
       headerName: 'Suggested URI',
@@ -201,7 +219,7 @@ export function ReviewGrid({
       minWidth: 200,
       renderCell: (p: GridRenderCellParams<ReviewItem>) => {
         if (isNoMatch(p.row)) return <Typography variant="body2" color="text.secondary">—</Typography>;
-        const uri = String(p.row.suggested_uri ?? '');
+        const uri = suggestionUri(p.row);
         return (
           <Stack direction="row" spacing={0.5} alignItems="center" sx={{ width: '100%' }}>
             <Tooltip title={uri}><Typography variant="body2" noWrap sx={{ flex: 1 }}>{uri}</Typography></Tooltip>

@@ -156,6 +156,11 @@ def _execute_agent_reconciliation_run(
     try:
         runtime_state["agent_prov_last_run_mapping_date"] = date.today().isoformat()
         config = _build_run_config_from_state()
+        base_trace_dir = str(getattr(config, "trace_output_dir", "") or "").strip()
+        if base_trace_dir:
+            # Each run gets its own timestamped subfolder so artifacts never mix across runs.
+            run_folder = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            config.trace_output_dir = os.path.join(base_trace_dir, run_folder)
         stop_event = runtime_state.get(AGENT_STOP_EVENT_KEY, {})
         stop_decision = str(runtime_state.get("agent_llm_error_stop_decision", "Fix issue and rerun") or "Fix issue and rerun")
         continue_with_heuristics = stop_decision == "Continue with heuristic fallback"
@@ -232,8 +237,8 @@ def _execute_agent_reconciliation_run(
                 if strategy == "uploaded_sheet":
                     uploaded_defs = runtime_state.get(AGENT_DEFINITIONS_BY_SOURCE_KEY, {}).get("__uploaded_sheet__")
                     used_defs_df = prepare_used_definitions_df(table.dataframe, strategy, uploaded_definitions_df=uploaded_defs)
-                else:
-                    context_text = runtime_state.get("agent_reference_publication_text", "") if strategy == "reference_publication" else runtime_state.get("agent_definition_context_text", "")
+                elif strategy == "reference_publication":
+                    context_text = runtime_state.get("agent_reference_publication_text", "")
                     if str(context_text or "").strip():
                         used_defs_df = prepare_used_definitions_df(
                             table.dataframe,
@@ -246,6 +251,8 @@ def _execute_agent_reconciliation_run(
                         )
                     else:
                         used_defs_df = pd.DataFrame(columns=["Term", "Definition"])
+                else:
+                    used_defs_df = pd.DataFrame(columns=["Term", "Definition"])
             definitions_by_source[table.source_name] = build_definition_lookup(used_defs_df)
             if isinstance(table.dataframe, pd.DataFrame) and "Term" in table.dataframe.columns and "Definition" in table.dataframe.columns:
                 for raw_term, raw_definition in zip(table.dataframe["Term"], table.dataframe["Definition"]):
@@ -253,7 +260,7 @@ def _execute_agent_reconciliation_run(
                     definition = str(raw_definition or "").strip()
                     if term and definition and not definitions_by_source[table.source_name].get(term):
                         definitions_by_source[table.source_name][term] = definition
-            source_terms = _terms_for_missing_definition_inference(table.dataframe)
+            source_terms = _terms_for_missing_definition_inference(table.dataframe) if definition_preparation_enabled else []
             if source_terms:
                 definitions_by_source[table.source_name] = fill_missing_definitions_from_term_list(
                     source_terms,
@@ -853,6 +860,27 @@ def _handle_agent_mui_event(event: object, readiness_state: Dict[str, object], r
         model = str(runtime_state.get("agent_model_name", "") or "")
         ok, msg = _save_preferred_model_selection(provider, model)
         runtime_state["agent_mui_status_message"] = {"severity": "success" if ok else "error", "text": msg}
+        should_rerun = True
+    elif event_type == "save_user_settings":
+        # One-click persistence for the options dialog: ui_settings block, preferred
+        # model selection, and provenance defaults are all written to config.yaml.
+        results = [_save_user_settings()]
+        provider = str(runtime_state.get("agent_model_provider", runtime_context.get("primary_provider", "openai")) or "openai")
+        model = str(runtime_state.get("agent_model_name", "") or "")
+        if provider and model:
+            results.append(_save_preferred_model_selection(provider, model))
+        prov_defaults = _build_provenance_defaults_from_state()
+        if not prov_defaults.get("mapping_tool"):
+            prov_defaults["mapping_tool"] = provenance_defaults_cfg.get("mapping_tool", "RDF4Risk Agent-Based Reconciliation")
+        results.append(_save_preferred_provenance_defaults(prov_defaults))
+        failures = [msg for ok, msg in results if not ok]
+        if failures:
+            runtime_state["agent_mui_status_message"] = {"severity": "error", "text": " ".join(failures)}
+        else:
+            runtime_state["agent_mui_status_message"] = {
+                "severity": "success",
+                "text": "Settings saved to config.yaml. They will be restored the next time the app starts.",
+            }
         should_rerun = True
     elif event_type == "reload_models":
         provider = str(runtime_state.get("agent_model_provider", runtime_context.get("primary_provider", "openai")) or "openai")

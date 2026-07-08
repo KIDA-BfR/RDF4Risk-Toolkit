@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import csv
+import copy
+import hashlib
 import json
 import os
+from functools import lru_cache
 from io import StringIO
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 
@@ -19,6 +22,7 @@ from .agent_llm_service import (
 )
 from .agent_codex_subscription_service import is_codex_authenticated
 from .agent_models import SKOSDecision, SKOSMatch
+from .agent_bioportal_context_service import summarize_candidate_context
 
 try:
     import Levenshtein  # type: ignore
@@ -27,6 +31,8 @@ except Exception:  # pragma: no cover
 
 
 DEFAULT_SKOS_TRAINING_CSV = Path(__file__).resolve().parent / "data" / "agent_skos_training_terms.csv"
+SKOS_PROMPT_VERSION = "skos-classifier-v2"
+_SKOS_CLASSIFICATION_CACHE: Dict[Tuple[str, ...], SKOSDecision] = {}
 
 
 def _clamp_confidence(value: Optional[float], default: float = 0.0) -> float:
@@ -39,6 +45,69 @@ def _clamp_confidence(value: Optional[float], default: float = 0.0) -> float:
     if candidate > 1:
         return 1.0
     return candidate
+
+
+def clear_skos_classification_cache() -> None:
+    _SKOS_CLASSIFICATION_CACHE.clear()
+
+
+def _hash_text(value: str) -> str:
+    return hashlib.sha256(str(value or "").strip().encode("utf-8")).hexdigest()
+
+
+def _stable_json_hash(value: Any) -> str:
+    try:
+        payload = json.dumps(value or {}, sort_keys=True, default=str, separators=(",", ":"))
+    except Exception:
+        payload = str(value or "")
+    return _hash_text(payload)
+
+
+def _candidate_uri_from_context(candidate_context: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(candidate_context, dict):
+        return ""
+    for key in ("candidate_uri", "uri", "class_uri"):
+        value = str(candidate_context.get(key, "") or "").strip()
+        if value:
+            return value
+    links = candidate_context.get("class_links")
+    if isinstance(links, dict):
+        for key in ("self", "ui", "mappings"):
+            value = str(links.get(key, "") or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _skos_cache_key(
+    *,
+    term_a: str,
+    gen_def: str,
+    term_b: str,
+    onto_def: str,
+    provider: str,
+    model_name: str,
+    reasoning_effort: str,
+    training_path: Optional[str],
+    candidate_context: Optional[Dict[str, Any]],
+) -> Tuple[str, ...]:
+    ontology_acronym = ""
+    if isinstance(candidate_context, dict):
+        ontology_acronym = str(candidate_context.get("ontology_acronym", "") or "").strip().upper()
+    return (
+        SKOS_PROMPT_VERSION,
+        str(provider or "").strip(),
+        str(model_name or "").strip(),
+        str(reasoning_effort or "").strip(),
+        str(training_path or "").strip(),
+        str(term_a or "").strip().lower(),
+        _hash_text(gen_def),
+        _candidate_uri_from_context(candidate_context),
+        str(term_b or "").strip().lower(),
+        _hash_text(onto_def),
+        ontology_acronym,
+        _stable_json_hash(candidate_context),
+    )
 
 
 def _heuristic_confidence(term_similarity: float, definition_similarity: float, overlap: float) -> float:
@@ -118,6 +187,13 @@ def build_skos_example_blocks(training_df: Optional[pd.DataFrame] = None) -> Dic
     }
 
 
+@lru_cache(maxsize=8)
+def _cached_skos_example_blocks(training_path: str) -> Tuple[Dict[str, str], str]:
+    path = training_path or ""
+    blocks = build_skos_example_blocks(load_skos_training_examples(path or None))
+    return blocks, SKOS_PROMPT_VERSION
+
+
 def normalize_mapping_type(mapping_type: str) -> str:
     normalized = (mapping_type or "").strip().lower()
     mapping = {
@@ -165,6 +241,13 @@ def heuristic_classify_skos_match(term_a: str, gen_def: str, term_b: str, onto_d
     )
 
 
+def _format_candidate_context(candidate_context: Optional[Dict[str, Any]]) -> str:
+    context_block = summarize_candidate_context(candidate_context)
+    if not context_block or context_block == "Ontology context: not available":
+        return ""
+    return f"\nOntology and hierarchy context for Concept B:\n{context_block}\n"
+
+
 def classify_skos_match(
     term_a: str,
     gen_def: str,
@@ -177,6 +260,8 @@ def classify_skos_match(
     use_llm: bool = True,
     allow_heuristic_fallback: bool = True,
     reasoning_effort: str = "none",
+    candidate_context: Optional[Dict[str, Any]] = None,
+    use_cache: bool = True,
 ) -> SKOSDecision:
     """Classify the semantic relation between two concepts into SKOS categories."""
     provider_normalized = str(provider or "").strip()
@@ -218,7 +303,22 @@ def classify_skos_match(
             decision.fallback_reason = "missing_api_key"
             return decision
 
-        blocks = build_skos_example_blocks(load_skos_training_examples(training_path))
+        cache_key = _skos_cache_key(
+            term_a=term_a,
+            gen_def=gen_def,
+            term_b=term_b,
+            onto_def=onto_def,
+            provider=provider_normalized,
+            model_name=model_name,
+            reasoning_effort=reasoning_effort,
+            training_path=training_path,
+            candidate_context=candidate_context,
+        )
+        if use_cache and cache_key in _SKOS_CLASSIFICATION_CACHE:
+            return copy.deepcopy(_SKOS_CLASSIFICATION_CACHE[cache_key])
+
+        blocks, prompt_version = _cached_skos_example_blocks(str(training_path or ""))
+        candidate_context_block = _format_candidate_context(candidate_context)
         user_prompt = f"""
 You are comparing semantic similarities between two concepts. Each concept is represented by a term and a definition.
 Decide whether the relationship is exact, close, related, or none.
@@ -239,6 +339,7 @@ Definition: {gen_def}
 Concept B:
 Term: {term_b}
 Definition: {onto_def}
+{candidate_context_block}
 
 Return JSON with keys exact_match, close_match, related_match, explanation.
 """
@@ -279,7 +380,7 @@ Return JSON with keys exact_match, close_match, related_match, explanation.
             elif mapping_type == "close":
                 calibrated = min(1.0, calibrated + 0.05)
                 
-            return SKOSDecision(
+            decision = SKOSDecision(
                 mapping_type=mapping_type,
                 explanation=getattr(structured, "explanation", None) or "",
                 input_term=term_a,
@@ -291,6 +392,10 @@ Return JSON with keys exact_match, close_match, related_match, explanation.
                 confidence=calibrated,
                 llm_confidence=llm_confidence_val,
             )
+            if use_cache:
+                _SKOS_CLASSIFICATION_CACHE[cache_key] = copy.deepcopy(decision)
+            _ = prompt_version
+            return decision
         except Exception as exc:
             if not allow_heuristic_fallback:
                 return SKOSDecision(

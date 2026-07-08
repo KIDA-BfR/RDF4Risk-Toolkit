@@ -71,3 +71,70 @@ export async function postWorkspaceEvent(event: Record<string, unknown>): Promis
   if (!response.ok) throw await parseError(response);
   return response.json();
 }
+
+// ---- BioPortal ontology registry maintenance (admin) ----
+export type RegistryJobStatus = {
+  job_id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  mode: 'catalog' | 'full_context';
+  all_bioportal: boolean;
+  dry_run: boolean;
+  total: number;
+  processed: number;
+  percent: number;
+  current_acronym: string | null;
+  fetched: number;
+  skipped: number;
+  failed: number;
+  errors_sample: Array<{ acronym: string; error: string }>;
+  error: string;
+} | null;
+
+export type RegistryJobPreview = {
+  total_discovered: number;
+  already_in_registry: number;
+  planned_for_fetch: number;
+  has_api_key?: boolean;
+  error?: string;
+};
+
+export async function fetchRegistryJobPreview(): Promise<RegistryJobPreview> {
+  const response = await fetch(`${API_BASE}/api/agent/registry-job/preview?_=${Date.now()}`, { cache: 'no-store' });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
+export async function fetchRegistryJobStatus(jobId?: string): Promise<RegistryJobStatus> {
+  const q = jobId ? `&job_id=${encodeURIComponent(jobId)}` : '';
+  const response = await fetch(`${API_BASE}/api/agent/registry-job/status?_=${Date.now()}${q}`, { cache: 'no-store' });
+  if (!response.ok) throw await parseError(response);
+  const body = await response.json();
+  return body?.status ?? null;
+}
+
+export async function startRegistryJob(payload: {
+  mode: 'catalog' | 'full_context';
+  all_bioportal?: boolean;
+  dry_run?: boolean;
+  confirmed: boolean;
+  max_requests?: number | null;
+  refresh?: boolean;
+}): Promise<{ job_id?: string; status?: RegistryJobStatus; error?: string }> {
+  const response = await fetch(`${API_BASE}/api/agent/registry-job/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
+export async function cancelRegistryJob(jobId: string): Promise<{ cancelled: boolean; status: RegistryJobStatus }> {
+  const response = await fetch(`${API_BASE}/api/agent/registry-job/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ job_id: jobId }),
+  });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}

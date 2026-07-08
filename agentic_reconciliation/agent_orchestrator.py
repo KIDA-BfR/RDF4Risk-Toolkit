@@ -19,6 +19,14 @@ from .agent_bioportal_service import (
     recommend_ontology_acronyms,
     search_bioportal_candidates,
 )
+from .agent_bioportal_annotator_rescue import (
+    run_bioportal_annotator_rescue,
+    should_run_annotator_rescue,
+)
+from .agent_bioportal_context_service import (
+    enrich_bioportal_candidate_context,
+    summarize_candidate_context,
+)
 from .agent_llm_service import generate_structured_completion
 from . import agent_orchestrator_workflows as _workflow_impl
 from .agent_orchestrator_runtime import (
@@ -95,10 +103,14 @@ def _sync_workflow_dependencies() -> None:
         "find_term_in_ontology",
         "find_term_in_ontology_with_definition",
         "generate_structured_completion",
+        "enrich_bioportal_candidate_context",
         "load_candidate_by_qid",
         "normalize_mapping_type",
         "recommend_ontology_acronyms",
+        "run_bioportal_annotator_rescue",
         "search_bioportal_candidates",
+        "should_run_annotator_rescue",
+        "summarize_candidate_context",
         "search_wikidata_candidates",
         "search_wikidata_candidates_multiquery",
         "search_wikidata_candidates_with_options",
@@ -168,6 +180,74 @@ def run_bioportal_wikidata_multiagent(*args, **kwargs):
 
 
 _ORCHESTRATOR_RUN_WIKIDATA_WRAPPER = run_wikidata_deep_agent
+
+
+def build_run_telemetry_summary(term_events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate per-term trace telemetry into a compact run-level summary.
+
+    Per-term metrics are already recorded on each decision's ``trace_metadata``;
+    this rolls them up across the whole batch so the run can report cost and
+    coverage at a glance (average LLM/BioPortal calls per term, outcome counts,
+    adjudication short-circuit/cache behavior, and close/related survival).
+    """
+    terms = 0
+    total_llm_calls = 0
+    total_bioportal_calls = 0
+    total_adjudication_calls = 0
+    adjudication_short_circuited = 0
+    cache_hits = 0
+    cache_misses = 0
+    matched = 0
+    suggested = 0
+    no_match = 0
+    errors = 0
+    close_related_survived = 0
+
+    for event in term_events or []:
+        if not isinstance(event, dict):
+            continue
+        terms += 1
+        trace = event.get("trace_metadata")
+        trace = trace if isinstance(trace, dict) else {}
+        total_llm_calls += int(trace.get("total_llm_calls_used", 0) or 0)
+        total_bioportal_calls += int(trace.get("bioportal_attempts", 0) or 0)
+        total_adjudication_calls += int(trace.get("candidate_adjudication_llm_calls", 0) or 0)
+        if trace.get("candidate_adjudication_short_circuited"):
+            adjudication_short_circuited += 1
+        cache_hits += int(trace.get("candidate_adjudication_cache_hit", 0) or 0)
+        cache_misses += int(trace.get("candidate_adjudication_cache_miss", 0) or 0)
+
+        status = str(event.get("decision_status") or event.get("status") or "").strip().lower()
+        if status == "matched":
+            matched += 1
+        elif status == "candidate_suggested":
+            suggested += 1
+        elif status == "no_match":
+            no_match += 1
+        elif status in {"error", "timeout", "failed"}:
+            errors += 1
+
+        relation = str(trace.get("final_relation") or event.get("mapping_type") or "").strip().lower()
+        if relation in {"close", "skos:closematch", "related", "skos:relatedmatch"}:
+            close_related_survived += 1
+
+    denom = max(1, terms)
+    return {
+        "terms": terms,
+        "avg_llm_calls_per_term": round(total_llm_calls / denom, 4),
+        "avg_bioportal_calls_per_term": round(total_bioportal_calls / denom, 4),
+        "total_llm_calls": total_llm_calls,
+        "total_bioportal_calls": total_bioportal_calls,
+        "total_adjudication_llm_calls": total_adjudication_calls,
+        "adjudication_short_circuited_count": adjudication_short_circuited,
+        "adjudication_cache_hits": cache_hits,
+        "adjudication_cache_misses": cache_misses,
+        "matched_count": matched,
+        "suggested_count": suggested,
+        "no_match_count": no_match,
+        "error_count": errors,
+        "close_related_survival_count": close_related_survived,
+    }
 
 
 def apply_agent_decision_to_dataframe(df: pd.DataFrame, row_index, decision: AgentDecision, config: AgentRunConfig) -> pd.DataFrame:
@@ -284,6 +364,12 @@ def run_agent_batch_on_dataframe(
 
     first_pass_results: List[Dict[str, Any]] = []
     stopped_due_to_llm_error = False
+
+    # The multiagent workflow accepts an optional pre-built table context; the two
+    # supported ontology search modes (configured_only, broad_retrieval_registry_scored)
+    # do not use whole-table profiling, so none is built here.
+    table_reconciliation_context = None
+
     max_workers = _coerce_positive_int(getattr(config, "max_workers", 1), 1, upper_bound=MAX_BATCH_WORKERS)
     batch_size = _coerce_positive_int(getattr(config, "batch_size", max_workers), max_workers)
     effective_workers = min(max_workers, batch_size, max(1, len(indices)))
@@ -291,7 +377,7 @@ def run_agent_batch_on_dataframe(
         getattr(config, "parallel_start_interval_seconds", 0.25)
     )
 
-    def _run_term_decision(local_term: str, local_definition: str, *, related_retry: bool = False) -> AgentDecision:
+    def _run_term_decision(local_term: str, local_definition: str, *, row_index=None, related_retry: bool = False) -> AgentDecision:
         try:
             if config.workflow == "bioportal_wikidata_multiagent":
                 return run_bioportal_wikidata_multiagent(
@@ -300,7 +386,9 @@ def run_agent_batch_on_dataframe(
                     config,
                     bioportal_api_key=bioportal_api_key,
                     source_name=source_name,
+                    row_index=row_index,
                     related_wikidata_bias=bool(related_retry),
+                    table_context=table_reconciliation_context,
                 )
 
             if related_retry:
@@ -340,6 +428,7 @@ def run_agent_batch_on_dataframe(
                     "error_type": type(exc).__name__,
                     "error_message": str(exc),
                     "transient_runtime_error": True,
+                    "row_index": row_index,
                     "second_pass_related_retry": bool(related_retry),
                 },
             )
@@ -468,7 +557,7 @@ def run_agent_batch_on_dataframe(
                 "elapsed_ms": round((time.perf_counter() - term_started) * 1000.0, 2),
                 "skip": True,
             }
-        decision = _run_term_decision(term, definition, related_retry=False)
+        decision = _run_term_decision(term, definition, row_index=row_index, related_retry=False)
         elapsed_ms = round((time.perf_counter() - term_started) * 1000.0, 2)
         return {
             "row_index": row_index,
@@ -579,7 +668,7 @@ def run_agent_batch_on_dataframe(
             row_index = item["row_index"]
             term = item["term"]
             definition = item["definition"]
-            retry_decision = _run_term_decision(term, definition, related_retry=True)
+            retry_decision = _run_term_decision(term, definition, row_index=row_index, related_retry=True)
             retry_trace = dict(getattr(retry_decision, "trace_metadata", {}) or {})
             retry_trace["second_pass_related_retry"] = True
             retry_trace["second_pass_trigger"] = "initial_no_match"
@@ -722,6 +811,7 @@ def run_agent_batch(
         state.status = "stopped_user"
     else:
         state.status = "completed"
+    state.telemetry_summary = build_run_telemetry_summary(state.term_events)
     if progress_callback:
         progress_callback(state)
     return outputs

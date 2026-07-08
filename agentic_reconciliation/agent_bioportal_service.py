@@ -113,6 +113,14 @@ def _match_label_or_synonym(entry: Dict[str, any], term: str, case_sensitive: bo
     return ""
 
 
+def _match_evidence(match_type: str) -> Dict[str, str]:
+    if match_type == "exact":
+        return {"match_source": "prefLabel", "lexical_match_type": "exact_label"}
+    if match_type == "synonym":
+        return {"match_source": "synonym", "lexical_match_type": "exact_synonym"}
+    return {"match_source": "", "lexical_match_type": ""}
+
+
 def find_term_in_ontology(
     term: str,
     ontology: str,
@@ -138,10 +146,12 @@ def find_term_in_ontology(
             return find_term_in_ontology(term, ontology, exact=False, case_sensitive=case_sensitive, api_key=api_key, base_url=base_url)
         return "", ""
 
+    exact_match_types = {"exact", "synonym"}
     filtered = []
     if exact:
         for entry in entries:
-            if _match_label_or_synonym(entry, term, case_sensitive=case_sensitive) == "exact":
+            match_type = _match_label_or_synonym(entry, term, case_sensitive=case_sensitive)
+            if match_type in exact_match_types:
                 filtered.append(entry)
     else:
         filtered = entries
@@ -182,10 +192,11 @@ def find_term_in_ontology_with_definition(
             return find_term_in_ontology_with_definition(term, ontology, exact=False, case_sensitive=case_sensitive, api_key=api_key, base_url=base_url, allow_fallback=False)
         return None
 
+    exact_match_types = {"exact", "synonym"}
     filtered = []
     for entry in entries:
         match_type = _match_label_or_synonym(entry, term, case_sensitive=case_sensitive)
-        if exact and match_type != "exact":
+        if exact and match_type not in exact_match_types:
             continue
         filtered.append((entry, match_type or ("exact" if exact else "broad")))
 
@@ -205,10 +216,12 @@ def find_term_in_ontology_with_definition(
     return {
         "mapped_id": best.get("@id", ""),
         "mapped_type": match_type,
+        **_match_evidence(match_type),
         "label": best.get("prefLabel", "") or "",
         "definition": _extract_definition(best),
         "synonyms": synonyms,
         "acronym": acronym,
+        "links": best.get("links", {}) or {},
     }
 
 
@@ -304,6 +317,9 @@ def find_best_definition(
                 "definition_source": "original",
                 "definition_source_ontology": mapped_id,
                 "label": label,
+                "match_source": direct.get("match_source", ""),
+                "lexical_match_type": direct.get("lexical_match_type", ""),
+                "links": direct.get("links", {}) or {},
             }
 
         indirect = find_indirect_definition(term, ontology, api_key=api_key, base_url=base_url)
@@ -315,6 +331,9 @@ def find_best_definition(
                 "definition_source": "indirect",
                 "definition_source_ontology": indirect.get("iri", ""),
                 "label": indirect.get("label", label),
+                "match_source": direct.get("match_source", ""),
+                "lexical_match_type": direct.get("lexical_match_type", ""),
+                "links": direct.get("links", {}) or {},
             }
 
         return {
@@ -324,6 +343,9 @@ def find_best_definition(
             "definition_source": "",
             "definition_source_ontology": "",
             "label": label,
+            "match_source": direct.get("match_source", ""),
+            "lexical_match_type": direct.get("lexical_match_type", ""),
+            "links": direct.get("links", {}) or {},
         }
     except Exception:
         return None
@@ -338,7 +360,7 @@ def search_bioportal_candidates(
 ) -> List[AgentCandidate]:
     params = {
         "q": term,
-        "include": "prefLabel,synonym,definition",
+        "include": "prefLabel,synonym,definition,notation,cui,semanticType",
         "page": 1,
         "pagesize": page_size,
         "display_context": "false",
@@ -355,6 +377,10 @@ def search_bioportal_candidates(
         uri = entry.get("@id", "")
         ontology_link = entry.get("links", {}).get("ontology", "")
         ontology_acronym = urlparse(ontology_link).path.split("/")[-1] if ontology_link else "BioPortal"
+        synonyms = entry.get("synonym") or []
+        if isinstance(synonyms, str):
+            synonyms = [synonyms]
+        match_type = _match_label_or_synonym(entry, term, case_sensitive=False)
         suggestions.append(
             AgentCandidate(
                 uri=uri,
@@ -363,6 +389,14 @@ def search_bioportal_candidates(
                 source_provider=ontology_acronym or "BioPortal",
                 source_workflow="bioportal_wikidata_multiagent",
                 raw_identifier=uri,
+                ontology_context={
+                    "ontology_acronym": ontology_acronym or "",
+                    "class_links": entry.get("links", {}) or {},
+                    "synonyms": synonyms,
+                    "notation": entry.get("notation") or "",
+                    **_match_evidence(match_type),
+                },
+                source_links=entry.get("links", {}) or {},
             )
         )
     return suggestions

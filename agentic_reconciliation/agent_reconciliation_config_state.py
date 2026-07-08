@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import os
+import re
+from datetime import date
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -11,9 +13,12 @@ import pandas as pd
 from .agent_model_catalog import _extract_model_ids_from_catalog, _openai_compatible_catalog_requires_api_key
 from .agent_models import AgentRunConfig
 from .agent_provider_config import (
+    OPENAI_COMPATIBLE_BASE_URL_CONFIG_KEY,
     OPENAI_COMPATIBLE_BASE_URL_ENV,
     OPENAI_COMPATIBLE_PROVIDER,
+    _is_codex_provider,
     _is_openai_compatible_provider,
+    _is_populated_api_key,
     _normalize_openai_compatible_base_url,
 )
 from .agent_reconciliation_keys import *
@@ -22,6 +27,136 @@ from .agent_runtime_state import runtime_state
 from .agent_llm_service import get_default_api_key_env, get_default_model_options, get_provider_label, get_supported_llm_providers
 from semi_automatic_reconciliation.reconciliation_core import CONFIG
 from semi_automatic_reconciliation.shared_table_io import LEGACY_REQUIRED_MATCHING_TABLE_COLUMNS
+
+
+# Once-per-process guard for seeding persisted ui_settings into runtime_state.
+_ui_settings_seeded = False
+
+
+def _repo_root() -> str:
+    """Absolute path to the repository root (parent of the agentic_reconciliation package)."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _default_trace_output_dir() -> str:
+    """Repo-local logs/ folder used when no trace output directory is configured."""
+    return os.path.join(_repo_root(), "logs")
+
+
+def _resolve_trace_output_dir(value: Optional[str]) -> str:
+    """Resolve a configured trace dir to an absolute path used at run time.
+
+    Empty/None -> <repo>/logs. A relative path (e.g. "logs") is anchored at the
+    repo root, so runs always land under the repo regardless of the process CWD.
+    Absolute paths are honored as given.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return _default_trace_output_dir()
+    if os.path.isabs(raw):
+        return os.path.normpath(raw)
+    return os.path.normpath(os.path.join(_repo_root(), raw))
+
+
+def _display_trace_output_dir(value: Optional[str]) -> str:
+    """Portable form shown in the options dialog and persisted to config.yaml.
+
+    Keeps the setting machine-independent: an empty value or an absolute path that
+    just points at the repo-local default collapses to the relative "logs", so a
+    saved snapshot never freezes a home-directory path. Genuinely custom paths
+    (a different absolute or relative location) are preserved as-is.
+    """
+    raw = str(value or "").strip()
+    if not raw or os.path.normpath(raw) == _default_trace_output_dir():
+        return "logs"
+    return raw
+
+
+def _get_openai_compatible_base_url_from_config() -> str:
+    agent_cfg = (CONFIG or {}).get("agent_reconciliation", {})
+    return _normalize_openai_compatible_base_url(agent_cfg.get(OPENAI_COMPATIBLE_BASE_URL_CONFIG_KEY))
+
+
+def _get_provider_api_key_from_config(provider: str) -> Optional[str]:
+    agent_cfg = (CONFIG or {}).get("agent_reconciliation", {})
+    provider_api_keys = agent_cfg.get("provider_api_keys", {})
+    if isinstance(provider_api_keys, dict):
+        configured = provider_api_keys.get(provider)
+        if configured is None:
+            configured = provider_api_keys.get(str(provider).lower())
+        if _is_populated_api_key(configured):
+            return str(configured).strip()
+
+    legacy_field_map = {
+        "openai": "openai_api_key",
+        "anthropic": "anthropic_api_key",
+        "google_gemini": "google_api_key",
+    }
+    legacy_field = legacy_field_map.get(provider)
+    if legacy_field and _is_populated_api_key(agent_cfg.get(legacy_field)):
+        return str(agent_cfg.get(legacy_field)).strip()
+    return None
+
+
+def _get_uploaded_definitions_count() -> int:
+    definitions_by_source = runtime_state.get(AGENT_DEFINITIONS_BY_SOURCE_KEY, {})
+    if not isinstance(definitions_by_source, dict):
+        return 0
+    uploaded_definitions = definitions_by_source.get("__uploaded_sheet__")
+    return len(uploaded_definitions) if isinstance(uploaded_definitions, pd.DataFrame) else 0
+
+
+def _normalize_orcid_identifier(value: Optional[str]) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.lower().startswith(("http://", "https://")):
+        match = re.search(r"(\d{4}-\d{4}-\d{4}-[\dXx]{4})", raw)
+    else:
+        match = re.fullmatch(r"(\d{4}-\d{4}-\d{4}-[\dXx]{4})", raw)
+    if not match:
+        return ""
+    return f"https://orcid.org/{match.group(1).upper()}"
+
+
+def _build_provenance_defaults_from_state() -> Dict[str, str]:
+    mapping_date_value = str(runtime_state.get("agent_prov_last_run_mapping_date", "") or "").strip() or date.today().isoformat()
+    return {
+        "author_id": _normalize_orcid_identifier(runtime_state.get("agent_prov_author_orcid", "")),
+        "author_label": str(runtime_state.get("agent_prov_author_name", "") or "").strip(),
+        "reviewer_id": _normalize_orcid_identifier(runtime_state.get("agent_prov_reviewer_orcid", "")),
+        "reviewer_label": str(runtime_state.get("agent_prov_reviewer_name", "") or "").strip(),
+        "creator_id": _normalize_orcid_identifier(runtime_state.get("agent_prov_creator_orcid", "")),
+        "creator_label": str(runtime_state.get("agent_prov_creator_name", "") or "").strip(),
+        "mapping_tool": str(runtime_state.get("agent_prov_mapping_tool", "") or "").strip(),
+        "mapping_tool_version": str(runtime_state.get("agent_prov_mapping_tool_version", "") or "").strip(),
+        "mapping_date": mapping_date_value,
+        "publication_date": str(runtime_state.get("agent_prov_publication_date", "") or "").strip(),
+    }
+
+
+def _resolve_api_key_env_for_provider(
+    session_key: Optional[str],
+    provider: str,
+    config_key: Optional[str] = None,
+) -> str:
+    """Resolve API key env name with provider-aware defaults."""
+    if _is_codex_provider(provider):
+        return get_default_api_key_env(provider)
+
+    configured_default = get_default_api_key_env(provider)
+    if config_key:
+        configured_default = (CONFIG or {}).get("agent_reconciliation", {}).get(
+            config_key,
+            configured_default,
+        )
+
+    if session_key:
+        env_name = str(runtime_state.get(session_key, configured_default) or "").strip()
+    else:
+        env_name = str(configured_default or "").strip()
+
+    return env_name or get_default_api_key_env(provider)
 
 def _build_run_config_from_state() -> AgentRunConfig:
     agent_cfg = (CONFIG or {}).get("agent_reconciliation", {})
@@ -58,6 +193,13 @@ def _build_run_config_from_state() -> AgentRunConfig:
     default_definition_model_name = model_name
     default_timeout_seconds = int(agent_cfg.get("timeout_seconds", 180))
     default_max_iterations = int(agent_cfg.get("max_iterations", 10))
+    default_ontology_scan_limit = agent_cfg.get("ontology_scan_limit", None)
+    default_candidate_score_limit = int(agent_cfg.get("candidate_score_limit", agent_cfg.get("candidate_pool_limit", 6)))
+    default_agent_step_limit = int(agent_cfg.get("agent_step_limit", default_max_iterations))
+    default_per_ontology_candidate_limit = int(agent_cfg.get("per_ontology_candidate_limit", 3))
+    default_global_candidate_pool_limit = int(agent_cfg.get("global_candidate_pool_limit", 20))
+    default_shortlist_context_limit = int(agent_cfg.get("shortlist_context_limit", 3))
+    default_shortlist_llm_limit = int(agent_cfg.get("shortlist_llm_limit", 3))
     default_batch_size = int(agent_cfg.get("default_batch_size", 10))
     default_max_workers = int(agent_cfg.get("max_workers", 4))
     default_enable_skos_matching = bool(agent_cfg.get("enable_skos_matching", True))
@@ -110,13 +252,98 @@ def _build_run_config_from_state() -> AgentRunConfig:
     enable_wikidata_fallback = bool(
         runtime_state.get("agent_enable_wikidata_fallback", default_enable_wikidata_fallback)
     )
+    def _normalize_ontology_search_mode(value, *, use_all=False):
+        # Supported modes: "configured_only" and "broad_retrieval_registry_scored".
+        # Legacy/removed identifiers degrade to the broad registry-scored mode.
+        mode = str(value or "").strip().lower()
+        if mode in {"bioportal_all_direct", "direct_all_debug", "registry_routed_all", "table_aware_hybrid"}:
+            return "broad_retrieval_registry_scored"
+        if mode in {"configured_only", "broad_retrieval_registry_scored"}:
+            return mode
+        return "broad_retrieval_registry_scored" if use_all else "configured_only"
+
     default_bioportal_use_all_ontologies = bool(agent_cfg.get("bioportal_use_all_ontologies", False))
-    bioportal_use_all_ontologies = bool(
-        runtime_state.get("agent_bioportal_use_all_ontologies", default_bioportal_use_all_ontologies)
+    ontology_search_mode = _normalize_ontology_search_mode(
+        runtime_state.get("agent_ontology_search_mode", agent_cfg.get("ontology_search_mode", "")),
+        use_all=bool(runtime_state.get("agent_bioportal_use_all_ontologies", default_bioportal_use_all_ontologies)),
     )
+    # Neither supported mode uses a hard pre-retrieval "all ontologies" filter.
+    bioportal_use_all_ontologies = False
     default_enable_candidate_adjudication = bool(agent_cfg.get("enable_candidate_adjudication", True))
     enable_candidate_adjudication = bool(
         runtime_state.get("agent_enable_candidate_adjudication", default_enable_candidate_adjudication)
+    )
+    default_enable_agentic_refinement = bool(agent_cfg.get("enable_agentic_refinement", False))
+    enable_agentic_refinement = bool(
+        runtime_state.get("agent_enable_agentic_refinement", default_enable_agentic_refinement)
+    )
+
+    # Ontology routing (disabled by default -> existing behavior unchanged).
+    enable_ontology_routing = bool(
+        runtime_state.get("agent_enable_ontology_routing", agent_cfg.get("enable_ontology_routing", False))
+    )
+    ontology_routing_use_llm = bool(
+        runtime_state.get("agent_ontology_routing_use_llm", agent_cfg.get("ontology_routing_use_llm", True))
+    )
+    ontology_routing_llm_model = (
+        runtime_state.get("agent_ontology_routing_llm_model", agent_cfg.get("ontology_routing_llm_model", None)) or None
+    )
+    ontology_routing_top_n = int(
+        runtime_state.get("agent_ontology_routing_top_n", agent_cfg.get("ontology_routing_top_n", 5))
+    )
+    ontology_routing_prefilter_limit = int(
+        runtime_state.get("agent_ontology_routing_prefilter_limit", agent_cfg.get("ontology_routing_prefilter_limit", 20))
+    )
+    ontology_routing_min_score = float(
+        runtime_state.get("agent_ontology_routing_min_score", agent_cfg.get("ontology_routing_min_score", 0.40))
+    )
+    ontology_routing_strong_score = float(
+        runtime_state.get("agent_ontology_routing_strong_score", agent_cfg.get("ontology_routing_strong_score", 0.80))
+    )
+    ontology_routing_confident_margin = float(
+        runtime_state.get("agent_ontology_routing_confident_margin", agent_cfg.get("ontology_routing_confident_margin", 0.10))
+    )
+    ontology_routing_include_default_core = bool(
+        runtime_state.get("agent_ontology_routing_include_default_core", agent_cfg.get("ontology_routing_include_default_core", True))
+    )
+    ontology_routing_trace = bool(
+        runtime_state.get("agent_ontology_routing_trace", agent_cfg.get("ontology_routing_trace", True))
+    )
+    ontology_routing_project_context = (
+        runtime_state.get("agent_ontology_routing_project_context", agent_cfg.get("ontology_routing_project_context", None)) or None
+    )
+    ontology_quality_blocklist = [
+        str(a).strip().upper() for a in (
+            runtime_state.get("agent_ontology_quality_blocklist", agent_cfg.get("ontology_quality_blocklist", [])) or []
+        ) if str(a).strip()
+    ]
+    ontology_quality_allowlist = [
+        str(a).strip().upper() for a in (
+            runtime_state.get("agent_ontology_quality_allowlist", agent_cfg.get("ontology_quality_allowlist", [])) or []
+        ) if str(a).strip()
+    ]
+    allow_excluded_ontologies_for_debug = bool(
+        runtime_state.get("agent_allow_excluded_ontologies_for_debug", agent_cfg.get("allow_excluded_ontologies_for_debug", False))
+    )
+    trace_level = str(
+        runtime_state.get("agent_trace_level", agent_cfg.get("trace_level", "summary")) or "summary"
+    ).strip().lower()
+    if trace_level not in {"summary", "detailed", "forensic"}:
+        trace_level = "summary"
+    trace_llm_prompts = bool(
+        runtime_state.get("agent_trace_llm_prompts", agent_cfg.get("trace_llm_prompts", False))
+    )
+    trace_raw_candidates = bool(
+        runtime_state.get("agent_trace_raw_candidates", agent_cfg.get("trace_raw_candidates", False))
+    )
+    trace_discarded_candidates = bool(
+        runtime_state.get("agent_trace_discarded_candidates", agent_cfg.get("trace_discarded_candidates", True))
+    )
+    trace_api_payloads = bool(
+        runtime_state.get("agent_trace_api_payloads", agent_cfg.get("trace_api_payloads", False))
+    )
+    trace_output_dir = _resolve_trace_output_dir(
+        runtime_state.get("agent_trace_output_dir", agent_cfg.get("trace_output_dir", None))
     )
 
     if agentic_expert_mode:
@@ -142,6 +369,13 @@ def _build_run_config_from_state() -> AgentRunConfig:
         candidate_pool_limit = int(
             runtime_state.get("agent_candidate_pool_limit", default_candidate_pool_limit)
         )
+        ontology_scan_limit = runtime_state.get("agent_ontology_scan_limit", default_ontology_scan_limit)
+        candidate_score_limit = int(runtime_state.get("agent_candidate_score_limit", default_candidate_score_limit))
+        agent_step_limit = int(runtime_state.get("agent_step_limit", default_agent_step_limit))
+        per_ontology_candidate_limit = int(runtime_state.get("agent_per_ontology_candidate_limit", default_per_ontology_candidate_limit))
+        global_candidate_pool_limit = int(runtime_state.get("agent_global_candidate_pool_limit", default_global_candidate_pool_limit))
+        shortlist_context_limit = int(runtime_state.get("agent_shortlist_context_limit", default_shortlist_context_limit))
+        shortlist_llm_limit = int(runtime_state.get("agent_shortlist_llm_limit", default_shortlist_llm_limit))
         planner_model_provider = runtime_state.get("agent_planner_model_provider") or model_provider
         planner_model_name = runtime_state.get("agent_planner_model_name") or model_name
         planner_model_api_key_env = (
@@ -150,8 +384,8 @@ def _build_run_config_from_state() -> AgentRunConfig:
             else _resolve_api_key_env_for_provider(None, planner_model_provider)
         )
     else:
-        # Notebook-style behavior: controlled agentic refinement always active with safe defaults.
-        # In non-expert mode, planner follows the primary provider/model selected above.
+        # In non-expert mode, planner limits follow config defaults and the
+        # planner uses the primary provider/model selected above.
         agentic_trigger_policy = default_agentic_trigger_policy
         agentic_min_confidence = default_agentic_min_confidence
         agentic_max_planner_calls = default_agentic_max_planner_calls
@@ -159,6 +393,13 @@ def _build_run_config_from_state() -> AgentRunConfig:
         agentic_total_llm_call_budget = default_agentic_total_llm_call_budget
         agentic_max_candidate_rescore = default_agentic_max_candidate_rescore
         candidate_pool_limit = default_candidate_pool_limit
+        ontology_scan_limit = default_ontology_scan_limit
+        candidate_score_limit = default_candidate_score_limit
+        agent_step_limit = default_agent_step_limit
+        per_ontology_candidate_limit = default_per_ontology_candidate_limit
+        global_candidate_pool_limit = default_global_candidate_pool_limit
+        shortlist_context_limit = default_shortlist_context_limit
+        shortlist_llm_limit = default_shortlist_llm_limit
         planner_model_provider = model_provider
         planner_model_name = model_name
         planner_model_api_key_env = model_api_key_env
@@ -195,6 +436,17 @@ def _build_run_config_from_state() -> AgentRunConfig:
         definition_model_name=definition_model_name,
         timeout_seconds=timeout_seconds,
         max_iterations=max_iterations,
+        ontology_scan_limit=(
+            None
+            if ontology_scan_limit in (None, "", 0, "0")
+            else int(ontology_scan_limit)
+        ),
+        candidate_score_limit=candidate_score_limit,
+        agent_step_limit=agent_step_limit,
+        per_ontology_candidate_limit=per_ontology_candidate_limit,
+        global_candidate_pool_limit=global_candidate_pool_limit,
+        shortlist_context_limit=shortlist_context_limit,
+        shortlist_llm_limit=shortlist_llm_limit,
         batch_size=batch_size,
         max_workers=max_workers,
         enable_skos_matching=enable_skos_matching,
@@ -209,7 +461,7 @@ def _build_run_config_from_state() -> AgentRunConfig:
         bioportal_agent_ontologies=[item.strip() for item in runtime_state.get("agent_bioportal_ontologies", ["NCIT", "NIFSTD", "BERO", "OCHV", "SNOMEDCT"]) if str(item).strip()],
         model_api_key_env=model_api_key_env,
         definition_model_api_key_env=definition_model_api_key_env,
-        enable_agentic_refinement=True,
+        enable_agentic_refinement=enable_agentic_refinement,
         agentic_trigger_policy=agentic_trigger_policy,
         agentic_min_confidence_to_skip_refinement=agentic_min_confidence,
         agentic_max_planner_calls=agentic_max_planner_calls,
@@ -225,9 +477,40 @@ def _build_run_config_from_state() -> AgentRunConfig:
         else None,
         allow_heuristic_fallback=allow_heuristic_fallback,
         enable_wikidata_fallback=enable_wikidata_fallback,
+        ontology_search_mode=ontology_search_mode,
         bioportal_use_all_ontologies=bioportal_use_all_ontologies,
+        broad_registry_scored_pool_limit=int(agent_cfg.get("broad_registry_scored_pool_limit", 30) or 30),
+        broad_registry_scored_enable_targeted_fallback=bool(agent_cfg.get("broad_registry_scored_enable_targeted_fallback", True)),
+        broad_registry_scored_min_suitability=float(agent_cfg.get("broad_registry_scored_min_suitability", 0.70) or 0.70),
+        broad_registry_scored_ambiguous_min_suitability=float(agent_cfg.get("broad_registry_scored_ambiguous_min_suitability", 0.85) or 0.85),
+        broad_registry_scored_category_informative_min=float(agent_cfg.get("broad_registry_scored_category_informative_min", 0.35) or 0.35),
+        enable_bioportal_annotator_rescue=bool(agent_cfg.get("enable_bioportal_annotator_rescue", True)),
+        annotator_rescue_max_variants=int(agent_cfg.get("annotator_rescue_max_variants", 8) or 8),
+        annotator_rescue_max_candidates=int(agent_cfg.get("annotator_rescue_max_candidates", 20) or 20),
+        annotator_rescue_timeout_seconds=int(agent_cfg.get("annotator_rescue_timeout_seconds", 30) or 30),
+        annotator_rescue_debug_broad_ontologies=bool(agent_cfg.get("annotator_rescue_debug_broad_ontologies", False)),
         enable_candidate_adjudication=enable_candidate_adjudication,
         candidate_review_mode=candidate_review_mode,
+        enable_ontology_routing=enable_ontology_routing,
+        ontology_routing_use_llm=ontology_routing_use_llm,
+        ontology_routing_llm_model=ontology_routing_llm_model,
+        ontology_routing_top_n=ontology_routing_top_n,
+        ontology_routing_prefilter_limit=ontology_routing_prefilter_limit,
+        ontology_routing_min_score=ontology_routing_min_score,
+        ontology_routing_strong_score=ontology_routing_strong_score,
+        ontology_routing_confident_margin=ontology_routing_confident_margin,
+        ontology_routing_include_default_core=ontology_routing_include_default_core,
+        ontology_routing_trace=ontology_routing_trace,
+        ontology_routing_project_context=ontology_routing_project_context,
+        ontology_quality_blocklist=ontology_quality_blocklist,
+        ontology_quality_allowlist=ontology_quality_allowlist,
+        allow_excluded_ontologies_for_debug=allow_excluded_ontologies_for_debug,
+        trace_level=trace_level,
+        trace_llm_prompts=trace_llm_prompts,
+        trace_raw_candidates=trace_raw_candidates,
+        trace_discarded_candidates=trace_discarded_candidates,
+        trace_api_payloads=trace_api_payloads,
+        trace_output_dir=str(trace_output_dir) if trace_output_dir else None,
     )
 
 def _initialize_agent_reconciliation_state():
@@ -249,10 +532,22 @@ def _initialize_agent_reconciliation_state():
         "agent_reference_publication_filename": "",
         "agent_uploaded_definitions_filename": "",
         "agent_workflow_select": "wikidata_deep_agent",
+        "agent_enable_definition_preparation": True,
+        "agent_definition_strategy": "generate_single_shot",
     }
     for key, default_value in defaults.items():
         if key not in runtime_state:
             runtime_state[key] = default_value
+
+    # Restore user settings persisted via the options dialog (save_user_settings event).
+    # Guarded by a module-level flag (not runtime_state): this must run exactly once per
+    # backend process, and project_store restores/replaces runtime_state on project load —
+    # a runtime_state guard would re-seed over freshly loaded project settings.
+    global _ui_settings_seeded
+    saved_settings = (CONFIG or {}).get("agent_reconciliation", {}).get("ui_settings")
+    if isinstance(saved_settings, dict) and saved_settings and not _ui_settings_seeded:
+        _ui_settings_seeded = True
+        _apply_workflow_config_to_runtime_state(saved_settings)
 
 def _initialize_provenance_state(provenance_defaults_cfg: Dict[str, str]):
     provenance_defaults = {
@@ -316,6 +611,22 @@ def _build_workflow_config_from_state(defaults: Optional[Dict[str, object]] = No
         "require_no_fallback": bool(runtime_state.get("agent_auto_accept_require_no_fallback", agent_cfg.get("auto_accept_require_no_fallback", True))),
         "trusted_ontologies_only": bool(runtime_state.get("agent_auto_accept_trusted_ontologies_only", agent_cfg.get("auto_accept_trusted_ontologies_only", False))),
     }
+    ontology_search_mode = str(
+        runtime_state.get(
+            "agent_ontology_search_mode",
+            agent_cfg.get(
+                "ontology_search_mode",
+                "broad_retrieval_registry_scored"
+                if bool(runtime_state.get("agent_bioportal_use_all_ontologies", agent_cfg.get("bioportal_use_all_ontologies", False)))
+                else "configured_only",
+            ),
+        )
+        or ""
+    ).strip().lower()
+    if ontology_search_mode in {"bioportal_all_direct", "direct_all_debug", "registry_routed_all", "table_aware_hybrid"}:
+        ontology_search_mode = "broad_retrieval_registry_scored"
+    if ontology_search_mode not in {"configured_only", "broad_retrieval_registry_scored"}:
+        ontology_search_mode = "configured_only"
     config = {
         "workflow": runtime_state.get("agent_workflow_select", "wikidata_deep_agent"),
         "provider": runtime_state.get("agent_model_provider", defaults.get("default_model_provider", "openai")),
@@ -336,8 +647,18 @@ def _build_workflow_config_from_state(defaults: Optional[Dict[str, object]] = No
         else "conservative",
         "allow_heuristic_fallback": bool(runtime_state.get("agent_allow_heuristic_fallback", agent_cfg.get("allow_heuristic_fallback", True))),
         "enable_wikidata_fallback": bool(runtime_state.get("agent_enable_wikidata_fallback", agent_cfg.get("enable_wikidata_fallback", True))),
-        "bioportal_use_all_ontologies": bool(runtime_state.get("agent_bioportal_use_all_ontologies", agent_cfg.get("bioportal_use_all_ontologies", False))),
+        "ontology_search_mode": ontology_search_mode,
+        "bioportal_use_all_ontologies": False,
+        "enable_ontology_routing": bool(runtime_state.get("agent_enable_ontology_routing", agent_cfg.get("enable_ontology_routing", False))),
         "enable_candidate_adjudication": bool(runtime_state.get("agent_enable_candidate_adjudication", agent_cfg.get("enable_candidate_adjudication", True))),
+        "trace_level": str(runtime_state.get("agent_trace_level", agent_cfg.get("trace_level", "summary")) or "summary").strip().lower()
+        if str(runtime_state.get("agent_trace_level", agent_cfg.get("trace_level", "summary")) or "summary").strip().lower() in {"summary", "detailed", "forensic"}
+        else "summary",
+        "trace_llm_prompts": bool(runtime_state.get("agent_trace_llm_prompts", agent_cfg.get("trace_llm_prompts", False))),
+        "trace_raw_candidates": bool(runtime_state.get("agent_trace_raw_candidates", agent_cfg.get("trace_raw_candidates", False))),
+        "trace_discarded_candidates": bool(runtime_state.get("agent_trace_discarded_candidates", agent_cfg.get("trace_discarded_candidates", True))),
+        "trace_api_payloads": bool(runtime_state.get("agent_trace_api_payloads", agent_cfg.get("trace_api_payloads", False))),
+        "trace_output_dir": _display_trace_output_dir(runtime_state.get("agent_trace_output_dir", agent_cfg.get("trace_output_dir", ""))),
         "use_different_models": bool(runtime_state.get("agent_use_different_models", False)),
         "definition_model": runtime_state.get("agent_definition_model_name", runtime_state.get("agent_model_name", defaults.get("default_model", "gpt-5.1"))),
         "agentic_trigger_policy": runtime_state.get("agentic_trigger_policy", agent_cfg.get("agentic_trigger_policy", "no_exact_or_low_confidence")),
@@ -345,7 +666,7 @@ def _build_workflow_config_from_state(defaults: Optional[Dict[str, object]] = No
         "planner_model": runtime_state.get("agent_planner_model_name", runtime_state.get("agent_model_name", defaults.get("default_model", "gpt-5.1"))),
         "trusted_ontologies": runtime_state.get("agent_trusted_ontologies", agent_cfg.get("trusted_ontologies", ["MESH", "NCIT", "LOINC", "FOODON", "NCBITAXON"])),
         "bioportal_ontologies": runtime_state.get("agent_bioportal_ontologies", agent_cfg.get("bioportal_agent_ontologies", ["NCIT", "NIFSTD", "BERO", "OCHV", "SNOMEDCT"])),
-        "definition_preparation": bool(runtime_state.get("agent_enable_definition_preparation", False)),
+        "definition_preparation": bool(runtime_state.get("agent_enable_definition_preparation", True)),
         "definition_strategy": runtime_state.get("agent_definition_strategy", "generate_single_shot"),
         "definition_context_text": runtime_state.get("agent_definition_context_text", ""),
         "definition_uploaded_filename": runtime_state.get("agent_uploaded_definitions_filename", ""),
@@ -429,8 +750,23 @@ def _apply_workflow_config_to_runtime_state(config: Optional[Dict[str, object]])
         _set("agent_candidate_review_mode", candidate_review_mode)
     _set("agent_allow_heuristic_fallback", bool(config.get("allow_heuristic_fallback", True)))
     _set("agent_enable_wikidata_fallback", bool(config.get("enable_wikidata_fallback", True)))
-    _set("agent_bioportal_use_all_ontologies", bool(config.get("bioportal_use_all_ontologies", False)))
+    ontology_search_mode = str(config.get("ontology_search_mode", "") or "").strip().lower()
+    if ontology_search_mode in {"bioportal_all_direct", "direct_all_debug", "registry_routed_all", "table_aware_hybrid"}:
+        ontology_search_mode = "broad_retrieval_registry_scored"
+    if ontology_search_mode not in {"configured_only", "broad_retrieval_registry_scored"}:
+        ontology_search_mode = "broad_retrieval_registry_scored" if bool(config.get("bioportal_use_all_ontologies", False)) else "configured_only"
+    _set("agent_ontology_search_mode", ontology_search_mode)
+    _set("agent_bioportal_use_all_ontologies", False)
     _set("agent_enable_candidate_adjudication", bool(config.get("enable_candidate_adjudication", True)))
+    trace_level = str(config.get("trace_level", "") or "").strip().lower()
+    if trace_level in {"summary", "detailed", "forensic"}:
+        _set("agent_trace_level", trace_level)
+    _set("agent_trace_llm_prompts", bool(config.get("trace_llm_prompts", False)))
+    _set("agent_trace_raw_candidates", bool(config.get("trace_raw_candidates", False)))
+    _set("agent_trace_discarded_candidates", bool(config.get("trace_discarded_candidates", True)))
+    _set("agent_trace_api_payloads", bool(config.get("trace_api_payloads", False)))
+    if "trace_output_dir" in config:
+        _set("agent_trace_output_dir", str(config.get("trace_output_dir", "") or ""))
     _set("agent_use_different_models", bool(config.get("use_different_models", False)))
     definition_model = str(config.get("definition_model", "") or "").strip()
     if definition_model and bool(config.get("use_different_models", False)):

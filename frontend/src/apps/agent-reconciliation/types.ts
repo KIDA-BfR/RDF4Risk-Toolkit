@@ -55,8 +55,15 @@ export type WorkflowConfig = {
   expert_mode: boolean;
   allow_heuristic_fallback?: boolean;
   enable_wikidata_fallback?: boolean;
+  ontology_search_mode?: 'configured_only' | 'broad_retrieval_registry_scored';
   bioportal_use_all_ontologies?: boolean;
   enable_candidate_adjudication?: boolean;
+  trace_level?: 'summary' | 'detailed' | 'forensic';
+  trace_llm_prompts?: boolean;
+  trace_raw_candidates?: boolean;
+  trace_discarded_candidates?: boolean;
+  trace_api_payloads?: boolean;
+  trace_output_dir?: string;
   use_different_models?: boolean;
   definition_model?: string;
   definition_preparation?: boolean;
@@ -152,6 +159,12 @@ export type ReviewItem = {
   candidate_label?: string;
   candidate_description?: string;
   can_accept?: boolean;
+  // Explicit UI contract emitted by the backend snapshot (authoritative for display).
+  final_ui_status?: string;
+  final_ui_label?: string;
+  final_ui_uri?: string;
+  review_action_available?: boolean;
+  accepted_suggestion_persistable?: boolean;
   no_match_note?: string;
   match_type?: string;
   provider?: string;
@@ -198,4 +211,6 @@ export type ComponentArgs = {
 };
 
 export type AppEvent = { type: string; [key: string]: unknown };
-export type AgentReconciliationAppProps = { args?: ComponentArgs; onEvent?: (event: AppEvent) => void };
+// The standalone host passes an async handler; the returned promise resolves after the
+// backend snapshot has been applied, which lets callers await the round-trip.
+export type AgentReconciliationAppProps = { args?: ComponentArgs; onEvent?: (event: AppEvent) => void | Promise<unknown> };

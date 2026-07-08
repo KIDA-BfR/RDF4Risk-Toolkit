@@ -19,17 +19,21 @@ export function ConfidenceCell({
   rawConfidence,
   acceptanceMode,
   autoAccepted,
+  noCandidate,
 }: {
   value: unknown;
   trace?: Record<string, unknown>;
   rawConfidence?: unknown;
   acceptanceMode?: boolean;
   autoAccepted?: boolean;
+  noCandidate?: boolean;
 }) {
   const n = toConfidenceNumber(value);
   const band = confidenceBand(value);
   const meta = BAND_META[band];
-  if (n == null) {
+  // Rows with no suitable candidate must not show a red "Low — verify" bar: there is
+  // nothing to verify. Show a neutral em dash regardless of any residual score.
+  if (noCandidate || n == null) {
     return (
       <Typography variant="body2" color="text.secondary">
         —

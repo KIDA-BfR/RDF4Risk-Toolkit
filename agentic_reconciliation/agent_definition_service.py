@@ -284,7 +284,7 @@ def fill_missing_definitions_from_term_list(
     if not missing:
         return merged
     inferred = generate_brief_definitions_from_term_list(
-        terms,
+        missing,
         filename=filename,
         model_name=model_name,
         provider=provider,
