@@ -138,13 +138,14 @@ export function normalizeConfig(raw: Partial<WorkflowConfig> | undefined, provid
   const advanced = raw?.advanced ?? ({} as AdvancedConfig);
   const policy = raw?.auto_accept_policy ?? ({} as AutoAcceptPolicy);
   const provenance = raw?.provenance ?? ({} as ProvenanceConfig);
+  const model = raw?.model && models.includes(raw.model) ? raw.model : models[0] || '';
   return {
     workflow: raw?.workflow || 'wikidata_deep_agent',
     provider: raw?.provider || providers[0] || 'openai',
-    model: raw?.model || models[0] || 'gpt-5.1',
+    model,
     reasoning_effort: raw?.reasoning_effort || 'none',
     candidate_review_mode: normalizeCandidateReviewMode(raw?.candidate_review_mode),
-    custom_model_override: raw?.custom_model_override || '',
+    custom_model_override: raw?.custom_model_override && models.includes(raw.custom_model_override) ? raw.custom_model_override : '',
     provider_api_key_env: raw?.provider_api_key_env || '',
     openai_compatible_base_url: raw?.openai_compatible_base_url || '',
     openai_compatible_api_key: raw?.openai_compatible_api_key || '',
@@ -172,7 +173,7 @@ export function normalizeConfig(raw: Partial<WorkflowConfig> | undefined, provid
     trace_api_payloads: raw?.trace_api_payloads ?? false,
     trace_output_dir: raw?.trace_output_dir || '',
     use_different_models: raw?.use_different_models ?? false,
-    definition_model: raw?.definition_model || raw?.model || models[0] || 'gpt-5.1',
+    definition_model: raw?.definition_model && models.includes(raw.definition_model) ? raw.definition_model : model,
     definition_preparation: raw?.definition_preparation ?? true,
     definition_strategy: raw?.definition_strategy || 'generate_single_shot',
     definition_context_text: raw?.definition_context_text || '',
@@ -183,7 +184,7 @@ export function normalizeConfig(raw: Partial<WorkflowConfig> | undefined, provid
     definition_reference_char_count: raw?.definition_reference_char_count ?? 0,
     agentic_trigger_policy: raw?.agentic_trigger_policy || 'no_exact_or_low_confidence',
     planner_provider: raw?.planner_provider || raw?.provider || providers[0] || 'openai',
-    planner_model: raw?.planner_model || raw?.model || models[0] || 'gpt-5.1',
+    planner_model: raw?.planner_provider && raw.planner_provider !== raw.provider ? raw.planner_model || '' : (raw?.planner_model && models.includes(raw.planner_model) ? raw.planner_model : model),
     trusted_ontologies: raw?.trusted_ontologies || ['MESH', 'NCIT', 'LOINC', 'FOODON', 'NCBITAXON'],
     bioportal_ontologies: raw?.bioportal_ontologies || ['NCIT', 'NIFSTD', 'BERO', 'OCHV', 'SNOMEDCT'],
     advanced: {

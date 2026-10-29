@@ -5,11 +5,11 @@ This module mirrors the high-level flow used in Cline:
 - PKCE OAuth against auth.openai.com
 - localhost callback handling
 - refresh-token based session reuse
-- requests routed to chatgpt.com/backend-api/codex/responses
+- model requests routed to the ChatGPT-authenticated Codex Responses backend
 
 Important operational note:
-This integration depends on undocumented/private endpoints and may change
-without notice.
+Codex OAuth tokens use the Codex backend. They must not be routed to the
+separate public API-key or Sign in with ChatGPT plan-sharing integrations.
 """
 
 from __future__ import annotations
@@ -75,13 +75,13 @@ def _build_codex_request_body(
         "model": model_name,
         "input": [{"role": "user", "content": [{"type": "input_text", "text": user_prompt}]}],
         "instructions": system_prompt,
-        # Codex backend currently requires stream=true.
+        # ChatGPT plan usage requires streamed, non-stored responses.
         "stream": True,
         "store": False,
     }
     normalized_reasoning = str(reasoning_effort or "none").strip().lower() or "none"
     if normalized_reasoning != "none":
-        body["reasoning_effort"] = normalized_reasoning
+        body["reasoning"] = {"effort": normalized_reasoning}
     return body
 
 
@@ -688,24 +688,35 @@ def create_codex_response(
     )
 
     response = requests.post(CODEX_RESPONSES_ENDPOINT, json=body, headers=headers, timeout=120)
-    if response.status_code in {401, 403}:
+    if response.status_code == 401:
         refreshed = _codex_manager.force_refresh_access_token()
         if not refreshed:
             raise RuntimeError("ChatGPT Subscription authentication expired. Please sign in again.")
         headers["Authorization"] = f"Bearer {refreshed}"
         response = requests.post(CODEX_RESPONSES_ENDPOINT, json=body, headers=headers, timeout=120)
 
-    if not response.ok and "reasoning_effort" in body:
+    if not response.ok and "reasoning" in body:
         if _is_unsupported_reasoning_parameter_error(response.status_code, response.text):
             softened_body = dict(body)
-            softened_body.pop("reasoning_effort", None)
+            softened_body.pop("reasoning", None)
             response = requests.post(CODEX_RESPONSES_ENDPOINT, json=softened_body, headers=headers, timeout=120)
 
     if not response.ok:
-        raise RuntimeError(f"Codex request failed ({response.status_code}): {response.text}")
+        if response.status_code in {401, 403}:
+            raise RuntimeError(f"Codex access denied (HTTP {response.status_code}). Check your ChatGPT account/workspace and sign in again if needed.")
+        raise RuntimeError(f"ChatGPT request failed (HTTP {response.status_code}). Reload models and check account access.")
 
     payload = _parse_codex_response_payload(response)
-    text = _extract_output_text(payload if isinstance(payload, dict) else {})
+    events = payload.get("_events", [payload])
+    completed = None
+    for event in events:
+        if event.get("type") in {"error", "response.failed", "response.incomplete"}:
+            raise RuntimeError("ChatGPT response failed or was incomplete. Check account limits and retry.")
+        if event.get("type") == "response.completed":
+            completed = event.get("response")
+    if not isinstance(completed, dict) or completed.get("status") != "completed":
+        raise RuntimeError("ChatGPT stream ended without a completed response. Retry the request.")
+    text = _extract_output_text(completed)
     if not text:
         raise RuntimeError("Codex request succeeded but returned no text content.")
     return text

@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from .agent_model_catalog import _extract_model_ids_from_catalog, _openai_compatible_catalog_requires_api_key
+from .agent_live_models import validate_model_selection
 from .agent_models import AgentRunConfig
 from .agent_provider_config import (
     OPENAI_COMPATIBLE_BASE_URL_CONFIG_KEY,
@@ -24,7 +25,7 @@ from .agent_provider_config import (
 from .agent_reconciliation_keys import *
 from .agent_reconciliation_keys import COMPONENT_TO_STAGE as _COMPONENT_TO_STAGE, STAGE_TO_COMPONENT as _STAGE_TO_COMPONENT
 from .agent_runtime_state import runtime_state
-from .agent_llm_service import get_default_api_key_env, get_default_model_options, get_provider_label, get_supported_llm_providers
+from .agent_llm_service import get_default_api_key_env, get_provider_label, get_supported_llm_providers
 from semi_automatic_reconciliation.reconciliation_core import CONFIG
 from semi_automatic_reconciliation.shared_table_io import LEGACY_REQUIRED_MATCHING_TABLE_COLUMNS
 
@@ -861,9 +862,17 @@ def _compute_workflow_runtime_context(defaults: Optional[Dict[str, object]] = No
     primary_api_key_env = _resolve_api_key_env_for_provider("agent_model_api_key_env", primary_provider, "model_api_key_env")
     runtime_state["agent_definition_model_api_key_env"] = primary_api_key_env
     primary_catalog = _ensure_model_catalog_for_provider(primary_provider, api_key_env=primary_api_key_env)
-    primary_models = _extract_model_ids_from_catalog(primary_catalog) or get_default_model_options(primary_provider)
-    if primary_models and not runtime_state.get("agent_model_name"):
-        runtime_state["agent_model_name"] = defaults.get("default_model", primary_models[0]) if defaults.get("default_model", "") in primary_models else primary_models[0]
+    primary_models = _extract_model_ids_from_catalog(primary_catalog)
+    fallback_model = defaults.get("default_model") if defaults.get("default_model") in primary_models else (primary_models[0] if primary_models else "")
+    for key in ("agent_model_name", "agent_definition_model_name"):
+        if runtime_state.get(key) not in primary_models:
+            runtime_state[key] = fallback_model
+    if runtime_state.get("agent_custom_model_override") not in primary_models:
+        runtime_state["agent_custom_model_override"] = ""
+    planner_provider = str(runtime_state.get("agent_planner_model_provider") or primary_provider)
+    planner_models = primary_models if planner_provider == primary_provider else _extract_model_ids_from_catalog(_ensure_model_catalog_for_provider(planner_provider))
+    if runtime_state.get("agent_planner_model_name") not in planner_models:
+        runtime_state["agent_planner_model_name"] = planner_models[0] if planner_models else ""
     use_different_models = bool(runtime_state.get("agent_use_different_models", False))
     effective_primary_env = _resolve_api_key_env_for_provider("agent_model_api_key_env", primary_provider, "model_api_key_env")
     definition_provider = primary_provider
@@ -904,10 +913,12 @@ def _build_run_readiness_state(required_columns, missing_provider_keys: Optional
     legacy_detected = bool(isinstance(schema_df, pd.DataFrame) and all(col in schema_df.columns for col in LEGACY_REQUIRED_MATCHING_TABLE_COLUMNS))
     provider_configured = not bool(missing_provider_keys)
     workflow_valid = workflow_config.get("workflow") in {"wikidata_deep_agent", "bioportal_wikidata_multiagent"}
+    model_errors = validate_model_selection(workflow_config, _ensure_model_catalog_for_provider)
     checks = [
         {"key": "matching_table", "label": "Matching table loaded", "ok": bool(input_tables), "detail": f"{rows:,} rows • {cols:,} columns" if rows else "No working input table"},
         {"key": "required_columns", "label": "Required columns detected", "ok": required_detected or legacy_detected, "detail": "Canonical SSSOM columns" if required_detected else "Legacy columns will be normalized" if legacy_detected else "Missing required table columns"},
         {"key": "provider", "label": "LLM Provider configured", "ok": provider_configured, "detail": get_provider_label(str(workflow_config.get("provider", "")))},
+        {"key": "models", "label": "Models available", "ok": not model_errors, "detail": " ".join(model_errors) if model_errors else "Selected models are in the current provider catalog"},
         {"key": "workflow", "label": "Workflow configuration valid", "ok": workflow_valid, "detail": "Ready to run" if workflow_valid else "Choose a supported workflow"},
     ]
     batch_size = int(workflow_config.get("advanced", {}).get("batch_size", 10)) if isinstance(workflow_config.get("advanced"), dict) else 10

@@ -24,6 +24,8 @@ from .agent_langsmith_monitoring import (
     reset_llm_interactions,
 )
 from .agent_llm_service import get_default_api_key_env, is_openai_compatible_auth_required_error
+from .agent_live_models import validate_model_selection
+from .agent_reconciliation_config_state import _build_workflow_config_from_state
 from .agent_orchestrator import run_agent_batch
 from .agent_provider_config import OPENAI_COMPATIBLE_PROVIDER, _is_openai_compatible_provider
 from .agent_reconciliation_keys import *
@@ -154,6 +156,9 @@ def _execute_agent_reconciliation_run(
         runtime_state["agent_mui_status_message"] = {"severity": "warning", "text": "Resolve prerequisites before starting reconciliation."}
         return
     try:
+        model_errors = validate_model_selection(_build_workflow_config_from_state(), _ensure_model_catalog_for_provider)
+        if model_errors:
+            raise ValueError(" ".join(model_errors))
         runtime_state["agent_prov_last_run_mapping_date"] = date.today().isoformat()
         config = _build_run_config_from_state()
         base_trace_dir = str(getattr(config, "trace_output_dir", "") or "").strip()
@@ -578,6 +583,10 @@ def _start_agent_reconciliation_run_async(
     resume_previous: bool = False,
 ) -> bool:
     """Launch a reconciliation run without blocking the HTTP event response."""
+    model_errors = validate_model_selection(_build_workflow_config_from_state(), _ensure_model_catalog_for_provider)
+    if model_errors:
+        runtime_state["agent_mui_status_message"] = {"severity": "error", "text": " ".join(model_errors)}
+        return False
     existing_thread = runtime_state.get(AGENT_RUN_THREAD_STATE_KEY)
     live_status = runtime_state.get(AGENT_RUN_STATUS_STATE_KEY, {})
     if bool(isinstance(live_status, dict) and live_status.get("running")) or (
@@ -758,6 +767,7 @@ def _handle_agent_mui_event(event: object, readiness_state: Dict[str, object], r
         should_rerun = True
     elif event_type == "codex_auth_signout":
         clear_codex_credentials()
+        runtime_state[AGENT_AVAILABLE_MODELS_BY_PROVIDER_KEY] = {}
         runtime_state["agent_mui_status_message"] = {"severity": "success", "text": "Logged out of ChatGPT Subscription."}
         should_rerun = True
     elif event_type in {"codex_auth_refresh", "codex_auth_refresh_pending"}:
@@ -886,8 +896,11 @@ def _handle_agent_mui_event(event: object, readiness_state: Dict[str, object], r
         provider = str(runtime_state.get("agent_model_provider", runtime_context.get("primary_provider", "openai")) or "openai")
         api_key_env = _resolve_api_key_env_for_provider("agent_model_api_key_env", provider, "model_api_key_env")
         fetch_all_pricing(force_refresh=True)
-        _ensure_model_catalog_for_provider(provider, api_key_env=api_key_env, force_refresh=True)
-        runtime_state["agent_mui_status_message"] = {"severity": "success", "text": "Model catalog and pricing reloaded."}
+        catalog = _ensure_model_catalog_for_provider(provider, api_key_env=api_key_env, force_refresh=True)
+        runtime_state["agent_mui_status_message"] = {
+            "severity": "success" if catalog.get("models") else "error",
+            "text": "Model catalog and pricing reloaded." if catalog.get("models") else catalog.get("message", "No available models. Reload models."),
+        }
         should_rerun = True
     elif event_type == "register_local_model":
         provider = str(runtime_state.get("agent_model_provider", runtime_context.get("primary_provider", "openai")) or "openai")

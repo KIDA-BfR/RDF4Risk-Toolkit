@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from .agent_codex_subscription_service import create_codex_response
+from .agent_live_models import fetch_chatgpt_model_catalog
 from .agent_langsmith_monitoring import record_llm_interaction
 from .agent_pricing_service import get_pricing_for_provider
 
@@ -38,9 +39,9 @@ PROVIDER_CONFIG = {
         "default_models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"],
     },
     "openai_codex": {
-        "label": "ChatGPT Subscription (curated models)",
+        "label": "ChatGPT Subscription",
         "default_api_key_env": "OPENAI_CODEX_SUBSCRIPTION",
-        "default_models": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "codex-mini-latest"],
+        "default_models": [],
     },
 }
 
@@ -529,14 +530,14 @@ def fetch_available_model_catalog(
     api_key_env: Optional[str] = None,
     pricing_overrides: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    if provider == "openai_codex":
+        return fetch_chatgpt_model_catalog()
+
     # Merge provider-level dynamic pricing with overrides
     merged_pricing = get_pricing_for_provider(provider).copy()
     if isinstance(pricing_overrides, dict):
         merged_pricing.update(pricing_overrides)
     pricing_overrides = merged_pricing
-
-    if provider == "openai_codex":
-        return _build_subscription_model_catalog(pricing_overrides=pricing_overrides)
 
     api_key = resolve_api_key(provider, api_key_env)
     if provider != OPENAI_COMPATIBLE_PROVIDER and not api_key:
@@ -725,7 +726,7 @@ def fetch_available_models(provider: str, api_key_env: Optional[str] = None) -> 
         for item in records
         if isinstance(item, dict)
     ]
-    return _unique_models(model_ids) or get_default_model_options(provider)
+    return _unique_models(model_ids)
 
 
 def _extract_text_from_google_response(payload: Dict) -> str:

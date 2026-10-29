@@ -114,6 +114,31 @@ npm run start
 
 The frontend is served by Vite and talks to `mui_backend_server.py` on `http://127.0.0.1:8766` by default.
 
+### Available LLM models
+
+The agent workflow loads the selected provider's model catalog when first opened,
+after sign-in/account changes, and when its five-minute cache expires. Use
+**Options → Provider & Model → Reload models & pricing** to refresh immediately.
+Only returned models are selectable; saved models that disappeared from the
+catalog are replaced with an available choice. If discovery fails, the model
+picker stays empty and reconciliation is blocked until access is restored.
+
+For **ChatGPT Subscription (Codex OAuth)**, discovery uses
+`GET https://chatgpt.com/backend-api/codex/models?client_version=<version>` with
+the account's OAuth access token and its `ChatGPT-Account-ID` when available.
+Inference uses `https://chatgpt.com/backend-api/codex/responses`. These tokens
+are separate from OpenAI Platform API keys and the separate Sign in with
+ChatGPT plan-sharing integration. They are not sent to `api.openai.com`.
+
+The catalog version is detected from an installed Codex CLI, with prerelease
+suffixes removed. Without a CLI, the documented `0.162.1` schema is the
+compatibility target. Set `RDF4RISK_CODEX_CLIENT_VERSION=0.162.1` to override it.
+Picker entries have `visibility: "list"` and are ordered by `priority`.
+`supported_in_api: false` does not exclude a model from ChatGPT OAuth usage.
+The old local `chatgpt_subscription_models.json` registry is no longer used.
+See the [official Codex catalog guide](https://learn.chatgpt.com/docs/model-catalogs)
+and the [OAuth research and correction notes](reports/codex_oauth_model_discovery_research_2026-10-29.md).
+
 ---
 
 # Notes

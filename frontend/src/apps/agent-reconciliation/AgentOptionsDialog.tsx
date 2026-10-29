@@ -220,15 +220,14 @@ export function AgentOptionsDialog({
                 <SectionHeading title="Provider & Model" description="Choose the LLM provider, the model used for reconciliation, and the reasoning effort." />
                 <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.5 }}>
                   <FormControl fullWidth size="small"><InputLabel>LLM Provider</InputLabel><Select label="LLM Provider" value={config.provider} onChange={(e) => update({ provider: String(e.target.value) })}>{providers.map((p) => <MenuItem key={p} value={p}>{providerLabels[p] ?? p}</MenuItem>)}</Select></FormControl>
-                  <FormControl fullWidth size="small"><InputLabel>Model</InputLabel><Select label="Model" value={config.model} onChange={(e) => update({ model: String(e.target.value) })}>{modelOptions.map((m) => <MenuItem key={m} value={m}>{modelLabels[m] ?? m}</MenuItem>)}</Select></FormControl>
+                  <FormControl fullWidth size="small" disabled={!modelOptions.length}><InputLabel>Model</InputLabel><Select label="Model" value={modelOptions.includes(config.model) ? config.model : ''} onChange={(e) => update({ model: String(e.target.value) })}>{modelOptions.map((m) => <MenuItem key={m} value={m}>{modelLabels[m] ?? m}</MenuItem>)}</Select></FormControl>
                   <FormControl fullWidth size="small"><InputLabel>Reasoning</InputLabel><Select label="Reasoning" value={config.reasoning_effort} onChange={(e) => update({ reasoning_effort: String(e.target.value) })}>{reasoningOptions.map((r) => <MenuItem key={r} value={r}>{r}</MenuItem>)}</Select></FormControl>
                 </Box>
-                {modelDetails && <Alert severity="info" variant="outlined">{modelDetails}</Alert>}
+                {modelDetails && <Alert severity={modelOptions.length ? 'info' : 'error'} variant="outlined">{modelDetails}</Alert>}
                 <Divider />
                 <Typography variant="subtitle2" component="h4">Model catalog</Typography>
-                <TextField fullWidth size="small" label="Custom Model Override" value={config.custom_model_override} onChange={(e) => update({ custom_model_override: e.target.value })} helperText="Optional: force a model id that is not listed in the catalog." />
+                <Typography variant="body2" color="text.secondary">Only models returned by the selected provider are available. The catalog refreshes automatically and after sign-in.</Typography>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-                  {providerKind === 'openai_compatible' && <Button variant="outlined" startIcon={<SaveIcon />} onClick={() => emit({ type: 'register_local_model' })}>Register model</Button>}
                   <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => emit({ type: 'reload_models' })}>Reload models & pricing</Button>
                 </Stack>
               </Stack>

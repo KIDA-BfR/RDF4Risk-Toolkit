@@ -15,6 +15,8 @@ from typing import Dict, List, Optional
 import pandas as pd
 import yaml
 
+from .agent_live_models import MODEL_CATALOG_TTL_SECONDS, MODEL_CATALOG_ERROR_TTL_SECONDS, model_catalog_identity
+
 try:
     from .agent_runtime_state import runtime_state
     from . import agent_reconciliation_config_state as _config_state_impl
@@ -742,7 +744,8 @@ def _ensure_model_catalog_for_provider(provider: str, api_key_env: Optional[str]
     env_name = (api_key_env or "").strip() or get_default_api_key_env(provider)
     if _is_openai_compatible_provider(provider):
         _ensure_openai_compatible_base_url_available()
-    _ensure_provider_api_key_available(provider, env_name)
+    if provider != OPENAI_CODEX_PROVIDER:
+        _ensure_provider_api_key_available(provider, env_name)
     pricing_overrides = _get_provider_pricing_overrides(provider)
 
     cache_key = f"{provider}::{env_name}"
@@ -755,7 +758,11 @@ def _ensure_model_catalog_for_provider(provider: str, api_key_env: Optional[str]
                 "1" if _is_populated_api_key(os.getenv(env_name)) else "0",
             ]
         )
-    if force_refresh or cache_key not in cache or not isinstance(cache.get(cache_key), dict):
+    identity = model_catalog_identity(provider, os.getenv(env_name, ""))
+    cached = cache.get(cache_key)
+    ttl = MODEL_CATALOG_TTL_SECONDS if isinstance(cached, dict) and cached.get("models") else MODEL_CATALOG_ERROR_TTL_SECONDS
+    expired = not isinstance(cached, dict) or time.monotonic() - cached.get("_fetched_at", 0) >= ttl
+    if force_refresh or expired or cached.get("_identity") != identity:
         catalog = fetch_available_model_catalog(
             provider,
             api_key_env=env_name or None,
@@ -764,33 +771,31 @@ def _ensure_model_catalog_for_provider(provider: str, api_key_env: Optional[str]
         if not isinstance(catalog, dict):
             catalog = {
                 "provider": provider,
-                "source": "fallback",
-                "message": "Model catalog fetch returned an invalid payload; using curated defaults.",
-                "models": [{"model_id": model_id, "display_name": model_id} for model_id in get_default_model_options(provider)],
+                "source": "fetch_failed",
+                "message": "Model catalog fetch returned an invalid payload. Reload models.",
+                "models": [],
             }
-        cache[cache_key] = catalog
+        cache[cache_key] = {**catalog, "_fetched_at": time.monotonic(), "_identity": model_catalog_identity(provider, os.getenv(env_name, ""))}
+        # Keep only the current catalog per provider, including local endpoint changes.
+        cache = {key: value for key, value in cache.items() if not key.startswith(f"{provider}::") or key == cache_key}
         runtime_state[AGENT_AVAILABLE_MODELS_BY_PROVIDER_KEY] = cache
 
     cached_catalog = cache.get(cache_key)
     if isinstance(cached_catalog, dict):
-        if _is_openai_compatible_provider(provider):
-            return _merge_registered_openai_compatible_models_into_catalog(cached_catalog)
         return cached_catalog
 
     fallback_catalog = {
         "provider": provider,
-        "source": "fallback",
-        "message": "No model catalog in cache; using curated defaults.",
-        "models": [{"model_id": model_id, "display_name": model_id} for model_id in get_default_model_options(provider)],
+        "source": "fetch_failed",
+        "message": "No model catalog in cache. Reload models.",
+        "models": [],
     }
-    if _is_openai_compatible_provider(provider):
-        return _merge_registered_openai_compatible_models_into_catalog(fallback_catalog)
     return fallback_catalog
 
 def _ensure_models_for_provider(provider: str, api_key_env: Optional[str] = None, force_refresh: bool = False) -> List[str]:
     catalog = _ensure_model_catalog_for_provider(provider, api_key_env=api_key_env, force_refresh=force_refresh)
     model_ids = _extract_model_ids_from_catalog(catalog)
-    return model_ids or get_default_model_options(provider)
+    return model_ids
 
 def _sync_config_state_dependencies() -> None:
     _config_state_impl.CONFIG = CONFIG

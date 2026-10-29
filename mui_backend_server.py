@@ -33,7 +33,7 @@ from agentic_reconciliation.agent_registry_jobs import (
     start_bioportal_catalog_refresh,
 )
 from agentic_reconciliation.agent_runtime_state import runtime_state as agent_runtime_state
-from agentic_reconciliation.agent_llm_service import get_default_model_options, get_provider_label, get_supported_llm_providers
+from agentic_reconciliation.agent_llm_service import get_provider_label, get_supported_llm_providers
 from semi_automatic_reconciliation import reconciliation_service as semi_service
 import project_store
 
@@ -128,17 +128,7 @@ def _agent_args() -> Dict[str, Any]:
     primary_provider = str(runtime_context.get("primary_provider", config.get("provider", "openai")) or "openai")
     primary_catalog = runtime_context.get("primary_catalog")
     primary_models = list(runtime_context.get("primary_models", []) or [])
-    if not primary_models:
-        primary_models = list(get_default_model_options(primary_provider))
-    selected_model = str(agent_runtime_state.get("agent_model_name", config.get("model", primary_models[0] if primary_models else "gpt-5.1")) or "gpt-5.1")
-    for model_candidate in (
-        selected_model,
-        str(agent_runtime_state.get("agent_custom_model_override", "") or "").strip(),
-        str(agent_runtime_state.get("agent_definition_model_name", "") or "").strip(),
-        str(agent_runtime_state.get("agent_planner_model_name", "") or "").strip(),
-    ):
-        if model_candidate and model_candidate not in primary_models:
-            primary_models.append(model_candidate)
+    selected_model = str(agent_runtime_state.get("agent_model_name", "") or "")
 
     config["provider"] = primary_provider
     config["model"] = selected_model
@@ -147,15 +137,8 @@ def _agent_args() -> Dict[str, Any]:
     provider_labels = {provider: get_provider_label(provider) for provider in provider_options}
     model_labels = {model: agent_service._format_model_option_label(primary_catalog, model) for model in primary_models}
     model_details = agent_service._format_model_details_caption(primary_catalog, selected_model) if primary_catalog else None
-    if not model_details and isinstance(primary_catalog, dict) and str(primary_catalog.get("source", "")) in {"fetch_failed", "error"}:
-        # Surface catalog failures instead of silently falling back to the built-in
-        # model list — otherwise a broken API key just looks like "pricing disappeared".
-        catalog_reason = str(primary_catalog.get("message", "") or "").split(";")[0].strip()
-        model_details = (
-            "Live model catalog unavailable — showing the built-in model list without pricing."
-            + (f" Reason: {catalog_reason}." if catalog_reason else "")
-            + " Check the provider API key, then use 'Reload models & pricing' in Options."
-        )
+    if not primary_models and isinstance(primary_catalog, dict):
+        model_details = str(primary_catalog.get("message") or "No available models. Use Reload models & pricing in Options.")
     fallback_ontology_options = sorted(
         set(
             list((agent_service.CONFIG or {}).get("agent_reconciliation", {}).get("trusted_ontologies", ["MESH", "NCIT", "LOINC", "FOODON", "NCBITAXON"]))

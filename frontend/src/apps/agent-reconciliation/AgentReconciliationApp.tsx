@@ -523,12 +523,24 @@ export function AgentReconciliationMuiApp({ args, onEvent }: AgentReconciliation
   const telemetry = args?.telemetry ?? { enabled: false, llm_calls: [], logs: [] };
   const review = args?.review ?? { items: [], counts: { pending: 0, accepted: 0, rejected: 0, no_match: 0 } };
   const providerKind = args?.providerKind ?? 'standard';
+  useEffect(() => {
+    if (providerKind !== 'codex' || !args?.codexAuthStatus?.pending) return undefined;
+    let refreshing = false;
+    const timer = window.setInterval(() => {
+      if (refreshing) return;
+      refreshing = true;
+      void Promise.resolve(onEvent?.({ type: 'codex_auth_refresh_pending', nonce: Date.now() }))
+        .catch(() => undefined)
+        .finally(() => { refreshing = false; });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [onEvent, providerKind, args?.codexAuthStatus?.pending]);
   const ontologyOptions = args?.ontologyOptions ?? [];
   const downloadedExportNonceRef = useRef<number | string | null>(null);
   const [config, setConfig] = useState<WorkflowConfig>(() => normalizeConfig(args?.config, providers, baseModels));
   useEffect(() => setConfig(normalizeConfig(args?.config, providers, baseModels)), [args?.config, providers, baseModels]);
   const providerOptions = useMemo(() => unique([...providers, config.provider, config.planner_provider || '']), [providers, config.provider, config.planner_provider]);
-  const modelOptions = useMemo(() => unique([...baseModels, config.custom_model_override || '', config.model, config.definition_model || '', config.planner_model || '']), [baseModels, config.custom_model_override, config.model, config.definition_model, config.planner_model]);
+  const modelOptions = useMemo(() => unique(baseModels), [baseModels]);
   const activeStage = normalizeStage(args?.active_stage ?? args?.activeStage);
   useEffect(() => {
     window.scrollTo(0, 0);
