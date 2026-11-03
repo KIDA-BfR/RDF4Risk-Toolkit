@@ -20,7 +20,6 @@ import {
   ListItemIcon,
   ListItemText,
   MenuItem,
-  Paper,
   Select,
   Stack,
   Switch,
@@ -28,7 +27,6 @@ import {
   Tabs,
   TextField,
   Typography,
-  alpha,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import FingerprintIcon from '@mui/icons-material/Fingerprint';
@@ -37,7 +35,6 @@ import LoginIcon from '@mui/icons-material/Login';
 import LogoutIcon from '@mui/icons-material/Logout';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import SaveIcon from '@mui/icons-material/Save';
 import ScienceIcon from '@mui/icons-material/Science';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
@@ -45,31 +42,41 @@ import StorageIcon from '@mui/icons-material/Storage';
 import TuneIcon from '@mui/icons-material/Tune';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
 import RegistryAdminPanel from './RegistryAdminPanel';
+import { CommitTextField } from './CommitTextField';
+import { InfoButton } from '../../components/help/InfoButton';
+import { RefreshActionButton, SaveButton } from '../../components/actions/WorkflowActionButtons';
 import type { AdvancedConfig, AppEvent, AutoAcceptPolicy, ComponentArgs, ProvenanceConfig, WorkflowConfig } from './types';
 import { asNumber, normalizeCandidateReviewMode, normalizeTraceLevel } from './utils';
 
 type SectionId = 'model' | 'connection' | 'matching' | 'observability' | 'advanced' | 'registry' | 'provenance';
 
 const SECTIONS: { id: SectionId; label: string; icon: React.ReactElement }[] = [
-  { id: 'model', label: 'Provider & Model', icon: <SmartToyIcon fontSize="small" /> },
-  { id: 'connection', label: 'Connection & Keys', icon: <VpnKeyIcon fontSize="small" /> },
-  { id: 'matching', label: 'Matching & Review', icon: <TuneIcon fontSize="small" /> },
-  { id: 'observability', label: 'Monitoring & Tracing', icon: <InsightsIcon fontSize="small" /> },
+  { id: 'model', label: 'Provider and model', icon: <SmartToyIcon fontSize="small" /> },
+  { id: 'connection', label: 'Connection and keys', icon: <VpnKeyIcon fontSize="small" /> },
+  { id: 'matching', label: 'Matching and review', icon: <TuneIcon fontSize="small" /> },
+  { id: 'observability', label: 'Monitoring and tracing', icon: <InsightsIcon fontSize="small" /> },
   { id: 'advanced', label: 'Advanced', icon: <ScienceIcon fontSize="small" /> },
-  { id: 'registry', label: 'BioPortal Registry', icon: <StorageIcon fontSize="small" /> },
-  { id: 'provenance', label: 'Provenance Metadata', icon: <FingerprintIcon fontSize="small" /> },
+  { id: 'registry', label: 'BioPortal registry', icon: <StorageIcon fontSize="small" /> },
+  { id: 'provenance', label: 'Provenance metadata', icon: <FingerprintIcon fontSize="small" /> },
+];
+
+// Human labels for enum selects; the values stay the backend's.
+const REASONING_LABELS: Record<string, string> = { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high' };
+const TRACE_LEVELS: { value: 'summary' | 'detailed' | 'forensic'; label: string }[] = [
+  { value: 'summary', label: 'Summary' },
+  { value: 'detailed', label: 'Detailed' },
+  { value: 'forensic', label: 'Forensic' },
 ];
 
 function ToggleCard({ checked, title, description, onChange }: { checked: boolean; title: string; description: string; onChange: (value: boolean) => void }) {
   return (
-    <Paper
-      variant="outlined"
+    <Box
       sx={{
         p: 1.5,
-        minHeight: 94,
-        borderRadius: 3,
+        border: 1,
+        borderRadius: 2,
         borderColor: checked ? 'primary.main' : 'divider',
-        bgcolor: checked ? (t) => alpha(t.palette.primary.main, 0.04) : 'background.paper',
+        bgcolor: checked ? 'action.selected' : 'background.paper',
       }}
     >
       <FormControlLabel
@@ -77,22 +84,27 @@ function ToggleCard({ checked, title, description, onChange }: { checked: boolea
         control={<Checkbox checked={checked} onChange={(e) => onChange(e.target.checked)} sx={{ p: 0, mr: 1 }} />}
         label={
           <Stack>
-            <Typography variant="body2" sx={{ fontWeight: 800 }}>{title}</Typography>
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>{title}</Typography>
             <Typography variant="caption" color="text.secondary">{description}</Typography>
           </Stack>
         }
       />
-    </Paper>
+    </Box>
   );
 }
 
-function SectionHeading({ title, description }: { title: string; description: string }) {
+// Section title with its explanation behind an ⓘ (DESIGN.md §4), so fields come first.
+function SectionHeading({ title, info }: { title: string; info?: React.ReactNode }) {
   return (
-    <Stack spacing={0.5}>
+    <Stack direction="row" spacing={0.5} alignItems="center">
       <Typography variant="subtitle1" component="h3">{title}</Typography>
-      <Typography variant="body2" color="text.secondary">{description}</Typography>
+      {info && <InfoButton title={title}>{info}</InfoButton>}
     </Stack>
   );
+}
+
+function SubHeading({ children }: { children: React.ReactNode }) {
+  return <Typography variant="subtitle2" component="h4">{children}</Typography>;
 }
 
 export type AgentOptionsDialogProps = {
@@ -183,13 +195,11 @@ export function AgentOptionsDialog({
       aria-labelledby="agent-options-title"
       PaperProps={{ sx: { height: { sm: 'min(720px, calc(100% - 64px))' } } }}
     >
-      <DialogTitle id="agent-options-title" sx={{ py: 1.5 }}>
+      <DialogTitle sx={{ py: 1.5 }}>
         <Stack direction="row" spacing={1} alignItems="center">
           <SettingsOutlinedIcon color="primary" />
-          <Stack sx={{ flex: 1, minWidth: 0 }}>
-            <Typography variant="subtitle1" component="span">Agent Service Options</Typography>
-            <Typography variant="caption" color="text.secondary">Provider, connection, features, tracing and metadata for agent-based reconciliation.</Typography>
-          </Stack>
+          {/* The dialog's name is the title text only, not the close button's label. */}
+          <Typography id="agent-options-title" variant="subtitle1" component="span" sx={{ flex: 1, minWidth: 0 }}>Agent options</Typography>
           <IconButton aria-label="Close options" onClick={handleClose}><CloseIcon /></IconButton>
         </Stack>
       </DialogTitle>
@@ -207,9 +217,9 @@ export function AgentOptionsDialog({
           <Box component="nav" aria-label="Option categories" sx={{ width: 224, flexShrink: 0, borderRight: '1px solid', borderColor: 'divider', display: { xs: 'none', sm: 'block' }, overflowY: 'auto', py: 1 }}>
             <List dense>
               {SECTIONS.map((item) => (
-                <ListItemButton key={item.id} selected={section === item.id} onClick={() => setSection(item.id)} sx={{ mx: 1, borderRadius: 1 }}>
+                <ListItemButton key={item.id} selected={section === item.id} onClick={() => setSection(item.id)} sx={{ mx: 1 }}>
                   <ListItemIcon sx={{ minWidth: 34, color: section === item.id ? 'primary.main' : 'text.secondary' }}>{item.icon}</ListItemIcon>
-                  <ListItemText primary={item.label} primaryTypographyProps={{ variant: 'body2', fontWeight: section === item.id ? 700 : 500 }} />
+                  <ListItemText primary={item.label} primaryTypographyProps={{ variant: 'body2', fontWeight: section === item.id ? 600 : 400 }} />
                 </ListItemButton>
               ))}
             </List>
@@ -217,32 +227,30 @@ export function AgentOptionsDialog({
           <Box sx={{ flex: 1, minWidth: 0, overflowY: 'auto', p: { xs: 2, sm: 2.5 } }}>
             {section === 'model' && (
               <Stack spacing={2}>
-                <SectionHeading title="Provider & Model" description="Choose the LLM provider, the model used for reconciliation, and the reasoning effort." />
+                <SectionHeading title="Provider and model" info="Choose the LLM provider, the model used for reconciliation, and how much reasoning effort it spends per term." />
                 <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.5 }}>
-                  <FormControl fullWidth size="small"><InputLabel>LLM Provider</InputLabel><Select label="LLM Provider" value={config.provider} onChange={(e) => update({ provider: String(e.target.value) })}>{providers.map((p) => <MenuItem key={p} value={p}>{providerLabels[p] ?? p}</MenuItem>)}</Select></FormControl>
+                  <FormControl fullWidth size="small"><InputLabel>LLM provider</InputLabel><Select label="LLM provider" value={config.provider} onChange={(e) => update({ provider: String(e.target.value) })}>{providers.map((p) => <MenuItem key={p} value={p}>{providerLabels[p] ?? p}</MenuItem>)}</Select></FormControl>
                   <FormControl fullWidth size="small" disabled={!modelOptions.length}><InputLabel>Model</InputLabel><Select label="Model" value={modelOptions.includes(config.model) ? config.model : ''} onChange={(e) => update({ model: String(e.target.value) })}>{modelOptions.map((m) => <MenuItem key={m} value={m}>{modelLabels[m] ?? m}</MenuItem>)}</Select></FormControl>
-                  <FormControl fullWidth size="small"><InputLabel>Reasoning</InputLabel><Select label="Reasoning" value={config.reasoning_effort} onChange={(e) => update({ reasoning_effort: String(e.target.value) })}>{reasoningOptions.map((r) => <MenuItem key={r} value={r}>{r}</MenuItem>)}</Select></FormControl>
+                  <FormControl fullWidth size="small"><InputLabel>Reasoning</InputLabel><Select label="Reasoning" value={config.reasoning_effort} onChange={(e) => update({ reasoning_effort: String(e.target.value) })}>{reasoningOptions.map((r) => <MenuItem key={r} value={r}>{REASONING_LABELS[r] ?? r}</MenuItem>)}</Select></FormControl>
                 </Box>
-                {modelDetails && <Alert severity={modelOptions.length ? 'info' : 'error'} variant="outlined">{modelDetails}</Alert>}
-                <Divider />
-                <Typography variant="subtitle2" component="h4">Model catalog</Typography>
-                <Typography variant="body2" color="text.secondary">Only models returned by the selected provider are available. The catalog refreshes automatically and after sign-in.</Typography>
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-                  <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => emit({ type: 'reload_models' })}>Reload models & pricing</Button>
+                {modelDetails && <Alert severity={modelOptions.length ? 'info' : 'error'}>{modelDetails}</Alert>}
+                <Stack direction="row" spacing={0.5} alignItems="center">
+                  <RefreshActionButton onClick={() => emit({ type: 'reload_models' })}>Reload models and pricing</RefreshActionButton>
+                  <InfoButton title="Model catalog">Only models returned by the selected provider are listed. The catalog also refreshes automatically and after sign-in.</InfoButton>
                 </Stack>
               </Stack>
             )}
             {section === 'connection' && (
               <Stack spacing={2}>
-                <SectionHeading title="Connection & Keys" description="How the app authenticates against the selected provider. Secrets stay in environment variables or the OS keyring — they are never written to config.yaml." />
+                <SectionHeading title="Connection and keys" info={<><p>These settings control how the app authenticates against the selected provider.</p><p>Secrets stay in environment variables or the OS keyring; they are never written to config.yaml.</p></>} />
                 {providerKind === 'openai_compatible' ? (
                   <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.5 }}>
-                    <TextField size="small" label="OpenAI-compatible base URL" value={config.openai_compatible_base_url} onChange={(e) => update({ openai_compatible_base_url: e.target.value })} />
-                    <TextField size="small" label="OpenAI-compatible API key" type="password" value={config.openai_compatible_api_key} onChange={(e) => update({ openai_compatible_api_key: e.target.value })} />
+                    <CommitTextField size="small" label="OpenAI-compatible base URL" value={config.openai_compatible_base_url ?? ''} onCommit={(next) => update({ openai_compatible_base_url: next })} />
+                    <CommitTextField size="small" label="OpenAI-compatible API key" type="password" value={config.openai_compatible_api_key ?? ''} onCommit={(next) => update({ openai_compatible_api_key: next })} />
                   </Box>
                 ) : providerKind === 'codex' ? (
-                  <Paper variant="outlined" sx={{ p: 2, borderRadius: 3 }}>
-                    <Typography variant="subtitle2" component="h4" sx={{ mb: 1 }}>ChatGPT Subscription Auth</Typography>
+                  <Box sx={{ p: 2, border: 1, borderColor: 'divider', borderRadius: 2 }}>
+                    <Typography variant="subtitle2" component="h4" sx={{ mb: 1 }}>ChatGPT subscription sign-in</Typography>
                     {codexAuthStatus?.authenticated ? (
                       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
                         <Alert severity="success" sx={{ flexGrow: 1, py: 0 }} role="status">Connected</Alert>
@@ -252,32 +260,32 @@ export function AgentOptionsDialog({
                     ) : (
                       <Stack spacing={1}>
                         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-                          <Button variant="contained" startIcon={<LoginIcon />} onClick={() => emit({ type: 'codex_auth_signin' })}>Sign in with ChatGPT</Button>
-                          <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => emit({ type: 'codex_auth_refresh_pending' })}>I completed login</Button>
+                          <Button variant="outlined" startIcon={<LoginIcon />} onClick={() => emit({ type: 'codex_auth_signin' })}>Sign in with ChatGPT</Button>
+                          <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => emit({ type: 'codex_auth_refresh_pending' })}>I completed sign-in</Button>
                         </Stack>
                         {codexAuthStatus?.pending_auth_url && (
                           <Alert severity="info">
-                            Please complete sign in: <OpenInNewIcon fontSize="inherit" sx={{ verticalAlign: 'text-bottom' }} /> <a href={codexAuthStatus.pending_auth_url} target="_blank" rel="noreferrer">Login Link</a>
+                            Complete the sign-in in your browser: <a href={codexAuthStatus.pending_auth_url} target="_blank" rel="noreferrer">open the sign-in page <OpenInNewIcon fontSize="inherit" sx={{ verticalAlign: 'text-bottom' }} /></a>
                           </Alert>
                         )}
                       </Stack>
                     )}
-                  </Paper>
+                  </Box>
                 ) : (
-                  <TextField size="small" label="Provider API key env var" value={config.provider_api_key_env} onChange={(e) => update({ provider_api_key_env: e.target.value })} InputProps={{ startAdornment: <InputAdornment position="start">ENV</InputAdornment> }} helperText="Name of the environment variable that holds the API key for the selected provider." />
+                  <CommitTextField size="small" label="Provider API key env var" value={config.provider_api_key_env ?? ''} onCommit={(next) => update({ provider_api_key_env: next })} InputProps={{ startAdornment: <InputAdornment position="start">ENV</InputAdornment> }} helperText="Environment variable that holds the API key" />
                 )}
               </Stack>
             )}
             {section === 'matching' && (
               <Stack spacing={2}>
-                <SectionHeading title="Matching & Review" description="Mapping predicates and automatic acceptance of high-confidence suggestions." />
+                <SectionHeading title="Matching and review" info="SKOS matching chooses a mapping predicate for every suggestion. Auto-accept accepts high-confidence suggestions that meet the policy below; you can still review them." />
                 <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.5 }}>
                   <ToggleCard checked={config.skos_matching} title="SKOS matching" description="Generate SKOS predicates for mappings." onChange={(v) => update({ skos_matching: v })} />
                   <ToggleCard checked={config.auto_accept} title="Auto-accept" description="Accept high-confidence mappings by policy." onChange={(v) => update({ auto_accept: v })} />
                 </Box>
                 <Collapse in={config.auto_accept}>
                   <Stack spacing={1.5}>
-                    <Divider><Typography variant="caption" color="text.secondary">Auto-accept policy</Typography></Divider>
+                    <SubHeading>Auto-accept policy</SubHeading>
                     <TextField size="small" type="number" label="Minimum confidence" inputProps={{ min: 0, max: 1, step: 0.01 }} value={config.auto_accept_policy.min_confidence} onChange={(e) => updatePolicy({ min_confidence: asNumber(e.target.value, 0.8) })} />
                     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1 }}>
                       <FormControlLabel control={<Checkbox checked={config.auto_accept_policy.require_exact_match} onChange={(e) => updatePolicy({ require_exact_match: e.target.checked })} />} label="Require exact match" />
@@ -291,47 +299,62 @@ export function AgentOptionsDialog({
             )}
             {section === 'observability' && (
               <Stack spacing={2}>
-                <SectionHeading title="Monitoring & Tracing" description="Live run monitoring via LangSmith and per-term execution trace artifacts on disk." />
-                <ToggleCard checked={config.langsmith} title="Agent Monitoring" description="Show run progress, traces, and model activity in one panel." onChange={(v) => update({ langsmith: v })} />
+                <SectionHeading title="Monitoring and tracing" info="LangSmith shows live run monitoring. Execution tracing writes per-term trace files to disk." />
+                <ToggleCard checked={config.langsmith} title="LangSmith monitoring" description="Show run progress, traces and model activity in LangSmith." onChange={(v) => update({ langsmith: v })} />
                 <Collapse in={config.langsmith}>
-                  <TextField fullWidth size="small" label="LangSmith project" value={config.langsmith_project} onChange={(e) => update({ langsmith_project: e.target.value })} helperText="Requires the LANGSMITH_API_KEY environment variable on the backend." />
+                  <CommitTextField fullWidth size="small" label="LangSmith project" value={config.langsmith_project ?? ''} onCommit={(next) => update({ langsmith_project: next })} helperText="Requires the LANGSMITH_API_KEY environment variable on the backend." />
                 </Collapse>
-                <Divider><Typography variant="caption" color="text.secondary">Execution tracing</Typography></Divider>
+                <Divider />
+                <SubHeading>Execution tracing</SubHeading>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }} flexWrap="wrap" useFlexGap>
-                  <FormControl size="small" sx={{ minWidth: 180 }}><InputLabel>Trace level</InputLabel><Select label="Trace level" value={config.trace_level || 'summary'} onChange={(e) => update({ trace_level: normalizeTraceLevel(e.target.value) })}><MenuItem value="summary">summary</MenuItem><MenuItem value="detailed">detailed</MenuItem><MenuItem value="forensic">forensic</MenuItem></Select></FormControl>
+                  <FormControl size="small" sx={{ minWidth: 180 }}><InputLabel>Trace level</InputLabel><Select label="Trace level" value={config.trace_level || 'summary'} onChange={(e) => update({ trace_level: normalizeTraceLevel(e.target.value) })}>{TRACE_LEVELS.map((level) => <MenuItem key={level.value} value={level.value}>{level.label}</MenuItem>)}</Select></FormControl>
                   <FormControlLabel control={<Switch checked={Boolean(config.trace_llm_prompts)} onChange={(e) => update({ trace_llm_prompts: e.target.checked })} />} label="LLM prompts" />
                   <FormControlLabel control={<Switch checked={Boolean(config.trace_raw_candidates)} onChange={(e) => update({ trace_raw_candidates: e.target.checked })} />} label="Raw candidates" />
                   <FormControlLabel control={<Switch checked={config.trace_discarded_candidates !== false} onChange={(e) => update({ trace_discarded_candidates: e.target.checked })} />} label="Discarded candidates" />
                   <FormControlLabel control={<Switch checked={Boolean(config.trace_api_payloads)} onChange={(e) => update({ trace_api_payloads: e.target.checked })} />} label="API payloads" />
                 </Stack>
-                <TextField
-                  fullWidth
-                  size="small"
-                  label="Trace output directory"
-                  value={config.trace_output_dir || ''}
-                  onChange={(e) => update({ trace_output_dir: e.target.value })}
-                  helperText="Relative paths resolve from the repo root, so 'logs' writes to <repo>/logs. Each run writes its artifacts into a new timestamped subfolder here, e.g. log_20260703_144703. Press Save settings to keep a changed path."
-                />
+                <Stack direction="row" spacing={0.5} alignItems="flex-start">
+                  <CommitTextField
+                    fullWidth
+                    size="small"
+                    label="Trace output directory"
+                    value={config.trace_output_dir || ''}
+                    onCommit={(next) => update({ trace_output_dir: next })}
+                    helperText="Relative to the repo root; each run writes a timestamped subfolder"
+                  />
+                  <Box sx={{ pt: 0.5 }}>
+                    <InfoButton title="Trace output directory">
+                      <p>A relative path such as <code>logs</code> writes to <code>&lt;repo&gt;/logs</code>.</p>
+                      <p>Each run creates a new subfolder there, for example <code>log_20260703_144703</code>. Use Save settings to keep a changed path.</p>
+                    </InfoButton>
+                  </Box>
+                </Stack>
               </Stack>
             )}
             {section === 'advanced' && (
               <Stack spacing={2}>
-                <SectionHeading title="Advanced" description="Expert settings: execution limits, review policy and agentic refinement controls." />
+                <SectionHeading title="Advanced" info="Expert settings control execution limits, the candidate review policy and agentic refinement." />
                 <FormControlLabel
                   control={<Switch checked={config.expert_mode} onChange={(e) => update({ expert_mode: e.target.checked })} />}
                   label={
                     <Stack>
-                      <Typography variant="body2" sx={{ fontWeight: 700 }}>Expert mode</Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>Expert mode</Typography>
                       <Typography variant="caption" color="text.secondary">Expose planner, budgets and limits.</Typography>
                     </Stack>
                   }
                 />
                 <Collapse in={config.expert_mode}>
                   <Stack spacing={2}>
-                    <Divider><Typography variant="caption" color="text.secondary">Candidate review policy</Typography></Divider>
-                    <FormControl fullWidth size="small"><InputLabel>Candidate review policy</InputLabel><Select label="Candidate review policy" value={config.candidate_review_mode} onChange={(e) => update({ candidate_review_mode: normalizeCandidateReviewMode(e.target.value) })}><MenuItem value="conservative">Conservative</MenuItem><MenuItem value="exploratory">Exploratory</MenuItem></Select></FormControl>
-                    <Typography variant="caption" color="text.secondary"><strong>Conservative</strong>: automatically accepts only strong candidates but still shows plausible exact/close matches for review. <strong>Exploratory</strong>: also shows weaker close or related candidates for manual review. Useful for sparse ontologies or uncommon terms.</Typography>
-                    <Divider><Typography variant="caption" color="text.secondary">Execution limits</Typography></Divider>
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <FormControl fullWidth size="small"><InputLabel>Candidate review policy</InputLabel><Select label="Candidate review policy" value={config.candidate_review_mode} onChange={(e) => update({ candidate_review_mode: normalizeCandidateReviewMode(e.target.value) })}><MenuItem value="conservative">Conservative</MenuItem><MenuItem value="exploratory">Exploratory</MenuItem></Select></FormControl>
+                      <InfoButton title="Candidate review policy">
+                        <ul>
+                          <li><strong>Conservative</strong> automatically accepts only strong candidates but still shows plausible exact or close matches for review.</li>
+                          <li><strong>Exploratory</strong> also shows weaker close or related candidates for manual review. Useful for sparse ontologies or uncommon terms.</li>
+                        </ul>
+                      </InfoButton>
+                    </Stack>
+                    <SubHeading>Execution limits</SubHeading>
                     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.5 }}>
                       <TextField size="small" type="number" label="Timeout (seconds)" value={config.advanced.timeout_s} onChange={(e) => updateAdvanced({ timeout_s: asNumber(e.target.value, 180) })} />
                       <TextField size="small" type="number" label="Iterations" value={config.advanced.max_iterations} onChange={(e) => updateAdvanced({ max_iterations: asNumber(e.target.value, 10) })} />
@@ -339,7 +362,7 @@ export function AgentOptionsDialog({
                       <TextField size="small" type="number" label="Workers" value={config.advanced.max_workers} onChange={(e) => updateAdvanced({ max_workers: asNumber(e.target.value, 4) })} />
                       <TextField size="small" type="number" label="LLM call budget" value={config.advanced.agentic_total_llm_call_budget} onChange={(e) => updateAdvanced({ agentic_total_llm_call_budget: asNumber(e.target.value, 14) })} />
                     </Box>
-                    <Divider><Typography variant="caption" color="text.secondary">Refinement</Typography></Divider>
+                    <SubHeading>Refinement</SubHeading>
                     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1 }}>
                       <FormControlLabel control={<Switch checked={Boolean(config.allow_heuristic_fallback)} onChange={(e) => update({ allow_heuristic_fallback: e.target.checked })} />} label="Allow heuristic fallbacks" />
                       <FormControlLabel control={<Switch checked={Boolean(config.enable_candidate_adjudication)} onChange={(e) => update({ enable_candidate_adjudication: e.target.checked })} />} label="Final candidate adjudication" />
@@ -353,27 +376,27 @@ export function AgentOptionsDialog({
                 so a running registry job keeps polling and its progress is not lost. */}
             <Box sx={{ display: section === 'registry' ? 'block' : 'none' }}>
               <Stack spacing={2}>
-                <SectionHeading title="BioPortal Registry" description="Maintain the local BioPortal ontology registry used for ontology routing and scoring." />
+                <SectionHeading title="BioPortal registry" info="The agents use this local registry of BioPortal ontologies for ontology routing and candidate scoring." />
                 <RegistryAdminPanel embedded />
               </Stack>
             </Box>
             {section === 'provenance' && (
               <Stack spacing={2}>
-                <SectionHeading title="Provenance Metadata" description="Curation metadata stamped onto SSSOM exports. Saved defaults are written to config.yaml." />
+                <SectionHeading title="Provenance metadata" info="Curation metadata is stamped onto SSSOM exports. Saved defaults are written to config.yaml." />
                 <FormControlLabel control={<Switch checked={Boolean(prov.enabled)} onChange={(e) => updateProv({ enabled: e.target.checked })} />} label="Include provenance metadata" />
                 <Collapse in={Boolean(prov.enabled)}>
                   <Stack spacing={1.5}>
-                    <Alert severity="info" variant="outlined">Mapping Date is generated automatically when the workflow runs.</Alert>
+                    <Typography variant="body2" color="text.secondary">The mapping date is set automatically when the workflow runs.</Typography>
                     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.5 }}>
-                      <TextField size="small" label="Author ORCID" value={prov.author_id} onChange={(e) => updateProv({ author_id: e.target.value })} />
-                      <TextField size="small" label="Author Name" value={prov.author_label} onChange={(e) => updateProv({ author_label: e.target.value })} />
-                      <TextField size="small" label="Reviewer ORCID" value={prov.reviewer_id} onChange={(e) => updateProv({ reviewer_id: e.target.value })} />
-                      <TextField size="small" label="Reviewer Name" value={prov.reviewer_label} onChange={(e) => updateProv({ reviewer_label: e.target.value })} />
-                      <TextField size="small" label="Creator ORCID" value={prov.creator_id} onChange={(e) => updateProv({ creator_id: e.target.value })} />
-                      <TextField size="small" label="Creator Name" value={prov.creator_label} onChange={(e) => updateProv({ creator_label: e.target.value })} />
-                      <TextField size="small" label="Mapping Tool" value={prov.mapping_tool} onChange={(e) => updateProv({ mapping_tool: e.target.value })} />
-                      <TextField size="small" label="Tool Version" value={prov.mapping_tool_version} onChange={(e) => updateProv({ mapping_tool_version: e.target.value })} />
-                      <TextField size="small" label="Publication Date" value={prov.publication_date} onChange={(e) => updateProv({ publication_date: e.target.value })} />
+                      <CommitTextField size="small" label="Author ORCID" value={prov.author_id ?? ''} onCommit={(next) => updateProv({ author_id: next })} />
+                      <CommitTextField size="small" label="Author name" value={prov.author_label ?? ''} onCommit={(next) => updateProv({ author_label: next })} />
+                      <CommitTextField size="small" label="Reviewer ORCID" value={prov.reviewer_id ?? ''} onCommit={(next) => updateProv({ reviewer_id: next })} />
+                      <CommitTextField size="small" label="Reviewer name" value={prov.reviewer_label ?? ''} onCommit={(next) => updateProv({ reviewer_label: next })} />
+                      <CommitTextField size="small" label="Creator ORCID" value={prov.creator_id ?? ''} onCommit={(next) => updateProv({ creator_id: next })} />
+                      <CommitTextField size="small" label="Creator name" value={prov.creator_label ?? ''} onCommit={(next) => updateProv({ creator_label: next })} />
+                      <CommitTextField size="small" label="Mapping tool" value={prov.mapping_tool ?? ''} onCommit={(next) => updateProv({ mapping_tool: next })} />
+                      <CommitTextField size="small" label="Tool version" value={prov.mapping_tool_version ?? ''} onCommit={(next) => updateProv({ mapping_tool_version: next })} />
+                      <CommitTextField size="small" label="Publication date" value={prov.publication_date ?? ''} onCommit={(next) => updateProv({ publication_date: next })} />
                     </Box>
                   </Stack>
                 </Collapse>
@@ -393,11 +416,12 @@ export function AgentOptionsDialog({
         </Alert>
       )}
       <DialogActions sx={{ px: 2.5, py: 1.5, gap: 1, flexWrap: 'wrap' }}>
-        <Typography variant="caption" color="text.secondary" sx={{ flex: 1, minWidth: 220 }}>
-          Changes apply to the current session immediately. Save settings keeps them as defaults for the next app start.
-        </Typography>
+        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flex: 1, minWidth: 0 }}>
+          <Typography variant="caption" color="text.secondary">Changes save automatically.</Typography>
+          <InfoButton title="Saving settings">Choices save to the current session at once, text fields when you leave them. Save settings keeps them as defaults for the next app start.</InfoButton>
+        </Stack>
         <Button onClick={handleClose}>Close</Button>
-        <Button variant="contained" startIcon={<SaveIcon />} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save settings'}</Button>
+        <SaveButton variant="contained" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save settings'}</SaveButton>
       </DialogActions>
     </Dialog>
   );

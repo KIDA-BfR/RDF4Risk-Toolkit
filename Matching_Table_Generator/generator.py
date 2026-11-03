@@ -17,7 +17,9 @@ import os
 import re
 from collections import Counter
 from dataclasses import dataclass
+from functools import wraps
 from io import BytesIO
+from threading import RLock
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
@@ -66,7 +68,14 @@ DEFAULT_STATE: Dict[str, Any] = {
     "user_choices_for_similar_terms": {},
     "show_consolidation_review_ui": False,
     "consolidations_staged_for_generation": False,
+    "consolidation_search_performed": False,
     "levenshtein_threshold": 0.85,
+    "configuration_revision": 0,
+    "matching_revision": None,
+    "generation_error": None,
+    "term_preview": [],
+    "term_csv": "",
+    "handoff": None,
 }
 
 
@@ -78,9 +87,141 @@ class GeneratedTableResult:
     actions: List[str]
     consolidations_applied_count: int = 0
     error: Optional[str] = None
+    term_preview: Optional[List[Dict[str, str]]] = None
+    term_csv: str = ""
 
 
 _STATE: Dict[str, Any] = {}
+STATE_LOCK = RLock()
+
+
+def _with_state_lock(function):
+    @wraps(function)
+    def locked(*args, **kwargs):
+        with STATE_LOCK:
+            return function(*args, **kwargs)
+    return locked
+
+
+def _result_is_current() -> bool:
+    return (isinstance(_STATE.get("matching_df"), pd.DataFrame)
+            and _STATE.get("matching_revision") is not None
+            and _STATE.get("matching_revision") == _STATE.get("configuration_revision", 0))
+
+
+def _clear_consolidation_choices() -> None:
+    _STATE["consolidation_search_performed"] = False
+    _STATE["similar_term_groups"] = []
+    _STATE["user_choices_for_similar_terms"] = {}
+    _STATE["consolidations_staged_for_generation"] = False
+    _STATE["show_consolidation_review_ui"] = False
+
+
+def _invalidate_results(clear_consolidations: bool = False) -> None:
+    """Never publish a result produced from an earlier file or configuration."""
+    _STATE["configuration_revision"] = int(_STATE.get("configuration_revision", 0)) + 1
+    for key in ("matching_df", "matching_revision", "shared_matching_table",
+                "shared_preprocessed_data", "df_after_transformations", "handoff", "generation_error"):
+        _STATE[key] = None
+    _STATE["term_preview"] = []
+    _STATE["term_csv"] = ""
+    _STATE["preprocessing_applied_in_last_run"] = False
+    if clear_consolidations:
+        _clear_consolidation_choices()
+
+
+def _identifier_column(name: str, values: List[str]) -> bool:
+    # Token boundaries avoid treating domain terms such as Lipid or Acid as IDs.
+    words = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", str(name))
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", words)
+    named_id = bool(re.search(r"(?:^|[\s_-])(?:id|identifier|uuid|accession)(?:$|[\s_-])", words, re.I))
+    # Repeated IDs are still IDs (for example repeated measurements of one sample).
+    return named_id and bool(values)
+
+
+def _technical_value_kind(value: str) -> Optional[str]:
+    """Conservative value hints for exclusion suggestions, not extraction rules."""
+    if value.lower() in {"true", "false"}:
+        return "boolean"
+    if is_potentially_numeric(value):
+        return "numeric"
+    if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value, re.I):
+        return "identifier"
+    if re.fullmatch(r"(?:https?://|ftp://|urn:)[^\s]+", value, re.I):
+        return "uri"
+    if re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+        return "email"
+    if re.match(r"^(?:[A-Za-z]:[\\/]|/|\.{1,2}/|file://)", value):
+        return "file_path"
+    # Only explicit date/time shapes: gene names, months and domain codes are not dates.
+    date_shape = re.fullmatch(
+        r"(?:\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?|\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
+        r"(?:[T\s]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?", value)
+    month = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    named_date = re.fullmatch(rf"(?:\d{{1,2}}[.\s]+)?{month}\s+(?:\d{{1,2}},?\s+)?\d{{4}}", value, re.I)
+    if date_shape or named_date:
+        try:
+            parse(value, fuzzy=False, dayfirst=bool(re.match(r"^\d{1,2}[./-]", value)))
+            return "date"
+        except (ValueError, OverflowError, TypeError):
+            pass
+    if re.fullmatch(r"(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?", value):
+        return "time"
+    number = r"[+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+)(?:[eE][+-]?\d+)?"
+    quantity = rf"[<>≤≥~≈]?\s*{number}(?:\s*(?:[-–±])\s*{number})?"
+    unit = (r"(?:%|°\s*[CF]|[µμumnk]?g|[µμumnk]?l|[µμumnk]?m|[µμumnk]?mol|"
+            r"CFU|U|IU|ppm|ppb|mmHg|[kM]?Pa|[kM]?Hz|[µμm]?s|h|min|K)"
+            r"(?:\s*/\s*(?:[µμumnk]?g|[µμumnk]?l|[µμumnk]?m|s|min|h)(?:[²³23])?)?")
+    if re.fullmatch(rf"{quantity}\s*{unit}", value, re.I) or re.fullmatch(rf"[<>≤≥]\s*{number}", value):
+        return "measurement"
+    return None
+
+
+def _column_exclusion_hint(name: str, values: List[str]) -> Tuple[Optional[str], str]:
+    if not values:
+        return "empty", "No non-empty cell values. Only the column heading contributes a term."
+    if _identifier_column(name, values):
+        return "identifier", "Likely record identifiers rather than concept labels."
+    kinds = [_technical_value_kind(value) for value in dict.fromkeys(values)]
+    if any(kind is None for kind in kinds):
+        # A mixed column may contain relevant labels; do not suggest dropping them all.
+        return None, ""
+    if set(kinds) == {"numeric"} and re.search(r"(?:^|[\s_-])(?:year|jahr)(?:$|[\s_-])", name, re.I):
+        return "date", "Calendar years rather than concept labels. Numeric values are already filtered automatically."
+    if len(set(kinds)) > 1:
+        return "technical", "Contains only numeric, date/time or other technical values rather than concept labels."
+    kind = kinds[0]
+    reasons = {
+        "numeric": "Numbers rather than concept labels. These values are already filtered automatically.",
+        "date": "Dates or timestamps rather than concept labels." + (
+            " These values are already filtered automatically." if all(is_probably_date(v) for v in values) else " Review and exclude these values if you do not want to reconcile them."),
+        "time": "Clock times rather than concept labels.",
+        "boolean": "Boolean flags rather than concept labels. True/False values are already filtered automatically.",
+        "measurement": "Measurements with units or numeric limits rather than concept labels.",
+        "identifier": "UUIDs rather than concept labels.",
+        "uri": "Already formatted as links or URIs; usually do not need label reconciliation.",
+        "email": "Email addresses rather than concept labels.",
+        "file_path": "File paths rather than concept labels.",
+    }
+    return kind, reasons[kind]
+
+
+def _column_profiles(df: Optional[pd.DataFrame]) -> List[Dict[str, Any]]:
+    if not isinstance(df, pd.DataFrame):
+        return []
+    profiles = []
+    for column in df.columns:
+        values = [str(value).strip() for value in df[column].dropna() if str(value).strip()]
+        suggestion_kind, suggestion_reason = _column_exclusion_hint(str(column), values)
+        terms = {value for value in values if len(value) < 250 and not is_potentially_numeric(value)
+                 and not is_probably_date(value) and value.lower() not in {"true", "false"}}
+        profiles.append({"name": str(column), "text_values": len(terms),
+                         "numeric_only": bool(values) and all(is_potentially_numeric(v) for v in values),
+                         "suggest_omit": suggestion_kind is not None,
+                         "suggestion_kind": suggestion_kind,
+                         "suggestion_reason": suggestion_reason,
+                         "examples": list(dict.fromkeys(values))[:3]})
+    return profiles
 
 
 def _clone_default(value: Any) -> Any:
@@ -105,6 +246,7 @@ def _set_status(severity: str, text: str) -> None:
 
 
 def _reset_data_dependent_state(clear_file: bool = False) -> None:
+    _invalidate_results(clear_consolidations=True)
     _STATE["original_df"] = None
     _STATE["df_after_transformations"] = None
     _STATE["matching_df"] = None
@@ -454,6 +596,8 @@ def _normalize_split_config(raw: Any, columns: Iterable[str]) -> Dict[str, Dict[
             continue
         delimiter = str(config.get("delimiter", ",") or ",")
         names = [str(name).strip() for name in config.get("new_names", []) if str(name).strip()]
+        if len(names) != len(set(names)):
+            raise ValueError(f"Split config for '{col}' needs a different name for each new column.")
         if not delimiter or not names:
             continue
         collisions = set(names) & (allowed | proposed_names)
@@ -609,10 +753,6 @@ def _apply_consolidations(data_entries: pd.DataFrame) -> Tuple[pd.DataFrame, int
     if modified:
         current.drop_duplicates(inplace=True)
         current.sort_values(by=["subject_label", "Source Column"], inplace=True)
-    _STATE["similar_term_groups"] = []
-    _STATE["user_choices_for_similar_terms"] = {}
-    _STATE["consolidations_staged_for_generation"] = False
-    _STATE["show_consolidation_review_ui"] = False
     return current, modified
 
 
@@ -676,6 +816,12 @@ def generate_matching_table() -> GeneratedTableResult:
         )
         data_entries, consolidation_count = _apply_consolidations(data_entries)
         matching_df = pd.concat([header_entries, data_entries], ignore_index=True)
+        term_preview = [{"Term": str(row["subject_label"]), "Source column": str(row["Source Column"]),
+                         "Kind": "Column heading" if index < len(header_entries) else "Cell value"}
+                        for index, row in matching_df.head(100).iterrows()]
+        term_table = matching_df[["subject_label", "Source Column"]].rename(
+            columns={"subject_label": "Term", "Source Column": "Source column"}).copy()
+        term_table["Kind"] = ["Column heading"] * len(header_entries) + ["Cell value"] * len(data_entries)
         matching_df = sync_matching_table_schemas(matching_df)
         matching_df = matching_df[REQUIRED_MATCHING_COLUMNS].copy()
         return GeneratedTableResult(
@@ -684,17 +830,21 @@ def generate_matching_table() -> GeneratedTableResult:
             preprocessing_applied=preprocessing_applied,
             actions=actions or ["No prepared preprocessing rules were applied."],
             consolidations_applied_count=consolidation_count,
+            term_preview=term_preview,
+            term_csv=_dataframe_csv(term_table),
         )
     except Exception as exc:
         LOGGER.error("Error generating matching table: %s", exc, exc_info=True)
         return GeneratedTableResult(None, None, False, [], error=f"Error generating matching table: {exc}")
 
 
+@_with_state_lock
 def _build_snapshot() -> Dict[str, Any]:
     """Build the JSON-safe state snapshot consumed by the MUI frontend."""
     original_df = _STATE.get("original_df")
     transformed_df = _STATE.get("df_after_transformations")
-    matching_df = _STATE.get("matching_df")
+    current = _result_is_current()
+    matching_df = _STATE.get("matching_df") if current else None
     columns = list(original_df.columns) if isinstance(original_df, pd.DataFrame) else []
     filename = _STATE.get(MTG_UPLOADED_FILE_NAME_KEY) or ""
     preprocessed_df = transformed_df if isinstance(transformed_df, pd.DataFrame) else original_df
@@ -702,6 +852,18 @@ def _build_snapshot() -> Dict[str, Any]:
     detected_codes = _STATE.get(MTG_EXPAND_DETECTED_CODES_KEY, [])
     if not isinstance(detected_codes, list):
         detected_codes = []
+    selection_df = original_df
+    replaced_columns = set()
+    if isinstance(original_df, pd.DataFrame):
+        try:
+            selection_df, _, _, split_applied, expand_applied = _apply_prepared_transformations(original_df)
+            replaced_columns = set(split_applied) | set(expand_applied)
+        except Exception:
+            # A generation error is surfaced on the review page; keep the source inspectable.
+            pass
+    profiles = _column_profiles(selection_df)
+    for profile in profiles:
+        profile["replaced_by_rule"] = profile["name"] in replaced_columns
 
     return {
         "file": {
@@ -720,6 +882,9 @@ def _build_snapshot() -> Dict[str, Any]:
             "preview": _dataframe_preview_records(original_df, 8),
             "used_preview": _dataframe_preview_records(preprocessed_df, 8),
             "preprocessing_applied": bool(_STATE.get("preprocessing_applied_in_last_run", False)),
+            "selection_columns": list(selection_df.columns) if isinstance(selection_df, pd.DataFrame) else [],
+            "selection_preview": _dataframe_preview_records(selection_df, 8),
+            "column_profiles": profiles,
         },
         "omission": {
             "selected": _STATE.get("omitted_columns_selection", []),
@@ -735,6 +900,7 @@ def _build_snapshot() -> Dict[str, Any]:
             "detected_expansion_delimiter": _STATE.get(MTG_EXPAND_DETECTED_DELIMITER_KEY, ", "),
         },
         "consolidation": {
+            "searched": bool(_STATE.get("consolidation_search_performed")),
             "threshold": float(_STATE.get("levenshtein_threshold", 0.85) or 0.85),
             "groups": _STATE.get("similar_term_groups", []),
             "choices": _STATE.get("user_choices_for_similar_terms", {}),
@@ -742,6 +908,13 @@ def _build_snapshot() -> Dict[str, Any]:
             "staged": bool(_STATE.get("consolidations_staged_for_generation", False)),
         },
         "matching": {
+            "is_current": current,
+            "configuration_revision": _STATE.get("configuration_revision", 0),
+            "result_revision": _STATE.get("matching_revision"),
+            "error": _STATE.get("generation_error"),
+            "term_preview": _STATE.get("term_preview", []) if current else [],
+            "term_csv": _STATE.get("term_csv", "") if current else "",
+            "term_csv_filename": "term_list.csv",
             "has_table": isinstance(matching_df, pd.DataFrame),
             "rows": int(matching_df.shape[0]) if isinstance(matching_df, pd.DataFrame) else 0,
             "columns": REQUIRED_MATCHING_COLUMNS,
@@ -757,13 +930,15 @@ def _build_snapshot() -> Dict[str, Any]:
             "preprocessed_xlsx_filename": f"{output_base}.xlsx",
         },
         "statusMessage": _STATE.get(MTG_STATUS_MESSAGE_KEY),
+        "handoff": _STATE.get("handoff"),
     }
 
 
+@_with_state_lock
 def get_shared_outputs() -> Dict[str, Optional[pd.DataFrame]]:
     """Return generated outputs for downstream backend services."""
-    matching_df = _STATE.get("shared_matching_table")
-    preprocessed_df = _STATE.get("shared_preprocessed_data")
+    matching_df = _STATE.get("shared_matching_table") if _result_is_current() else None
+    preprocessed_df = _STATE.get("shared_preprocessed_data") if _result_is_current() else None
     return {
         "shared_matching_table": matching_df.copy() if isinstance(matching_df, pd.DataFrame) else None,
         "shared_preprocessed_data": preprocessed_df.copy() if isinstance(preprocessed_df, pd.DataFrame) else None,
@@ -801,6 +976,7 @@ def _handle_upload_event(event: Dict[str, Any]) -> None:
         _set_status("success", f"Loaded {filename}{sheet_note}.")
 
 
+@_with_state_lock
 def _handle_mui_event(event: Any) -> bool:
     if not isinstance(event, dict):
         return False
@@ -813,6 +989,22 @@ def _handle_mui_event(event: Any) -> bool:
     event_type = str(event.get("type", "") or "")
     should_rerun = True
     original_df = _STATE.get("original_df")
+
+    if event_type == "generate_matching_table" and event.get("expected_revision") is not None:
+        if event["expected_revision"] != _STATE.get("configuration_revision", 0):
+            _set_status("warning", "The configuration changed. Refresh the current result.")
+            return True
+    if event_type in {"set_sheet", "set_start_row", "set_omitted_columns", "add_omission_by_type",
+                      "prepare_transformations", "clear_transformations", "find_similar_terms",
+                      "stage_consolidations", "clear_consolidations", "generate_matching_table"}:
+        # Generating again replaces the output, but does not change its input revision.
+        if event_type == "generate_matching_table":
+            for key in ("matching_revision", "shared_matching_table", "shared_preprocessed_data", "handoff"):
+                _STATE[key] = None
+        else:
+            _invalidate_results(clear_consolidations=event_type in {
+                "set_sheet", "set_start_row", "set_omitted_columns", "add_omission_by_type",
+                "clear_transformations", "clear_consolidations"})
 
     if event_type == "upload_file":
         _handle_upload_event(event)
@@ -829,6 +1021,12 @@ def _handle_mui_event(event: Any) -> bool:
     elif event_type == "set_omitted_columns":
         selected = event.get("columns", [])
         allowed = set(original_df.columns) if isinstance(original_df, pd.DataFrame) else set()
+        if isinstance(original_df, pd.DataFrame):
+            try:
+                effective, _, _, _, _ = _apply_prepared_transformations(original_df)
+                allowed.update(effective.columns)
+            except Exception:
+                pass
         _STATE["omitted_columns_selection"] = sorted([str(col) for col in selected if str(col) in allowed])
         _set_status("success", "Column omission selection updated.")
     elif event_type == "add_omission_by_type":
@@ -848,8 +1046,7 @@ def _handle_mui_event(event: Any) -> bool:
                     if non_empty and all(is_probably_date(v) for v in non_empty):
                         additions.append(col)
                 elif mode == "id":
-                    upper = str(col).upper()
-                    if "ID" in upper or upper.startswith("ID") or upper.endswith("ID"):
+                    if _identifier_column(str(col), [str(v).strip() for v in series if str(v).strip()]):
                         additions.append(col)
             current = set(_STATE.get("omitted_columns_selection", []))
             current.update(additions)
@@ -859,6 +1056,9 @@ def _handle_mui_event(event: Any) -> bool:
         if not isinstance(original_df, pd.DataFrame):
             _set_status("warning", "Load data before preparing transformations.")
         else:
+            rule_keys = ("prepared_split_config", "prepared_expand_config", "keep_original_setting_split",
+                         "keep_original_setting_expand", "transformations_prepared")
+            previous_rules = {key: _STATE.get(key) for key in rule_keys}
             try:
                 split_config = _normalize_split_config(event.get("split_config"), original_df.columns)
                 expand_config = _normalize_expand_config(event.get("expand_config"), original_df.columns)
@@ -867,8 +1067,12 @@ def _handle_mui_event(event: Any) -> bool:
                 _STATE["keep_original_setting_split"] = bool(event.get("keep_original_split", True))
                 _STATE["keep_original_setting_expand"] = bool(event.get("keep_original_expand", True))
                 _STATE["transformations_prepared"] = bool(split_config or expand_config)
+                effective, _, _, _, _ = _apply_prepared_transformations(original_df)
+                _STATE["omitted_columns_selection"] = [col for col in _STATE.get("omitted_columns_selection", []) if col in effective.columns]
+                _clear_consolidation_choices()
                 _set_status("success" if _STATE["transformations_prepared"] else "info", "Transformation rules prepared successfully." if _STATE["transformations_prepared"] else "No valid transformations were enabled/configured.")
             except Exception as exc:
+                _STATE.update(previous_rules)
                 _set_status("error", f"Could not prepare transformations: {exc}")
     elif event_type == "clear_transformations":
         _STATE["prepared_split_config"] = {}
@@ -876,6 +1080,7 @@ def _handle_mui_event(event: Any) -> bool:
         _STATE["transformations_prepared"] = False
         _STATE["df_after_transformations"] = None
         _STATE["preprocessing_applied_in_last_run"] = False
+        _STATE["omitted_columns_selection"] = [col for col in _STATE.get("omitted_columns_selection", []) if isinstance(original_df, pd.DataFrame) and col in original_df.columns]
         _set_status("info", "Prepared transformation rules cleared.")
     elif event_type == "detect_expansion_codes":
         column = str(event.get("column", "") or "")
@@ -886,6 +1091,7 @@ def _handle_mui_event(event: Any) -> bool:
         _STATE[MTG_EXPAND_DETECTED_DELIMITER_KEY] = delimiter
         _set_status("success" if codes else "warning", f"Detected {len(codes)} code(s) in '{column}'." if codes else "No codes detected for the selected column/delimiter.")
     elif event_type == "find_similar_terms":
+        _STATE["consolidation_search_performed"] = True
         threshold = max(0.0, min(1.0, float(event.get("threshold", _STATE.get("levenshtein_threshold", 0.85)) or 0.85)))
         _STATE["levenshtein_threshold"] = threshold
         groups = find_similar_term_groups(threshold)
@@ -894,7 +1100,7 @@ def _handle_mui_event(event: Any) -> bool:
         _STATE["consolidations_staged_for_generation"] = False
         choices = {}
         for idx, group in enumerate(groups):
-            choices[f"choice_group_{idx}"] = group[0] if group else "Keep All (No Change)"
+            choices[f"choice_group_{idx}"] = "Keep All (No Change)"
             choices[f"new_term_group_{idx}"] = ""
         _STATE["user_choices_for_similar_terms"] = choices
         _set_status("success" if groups else "info", f"Found {len(groups)} similar-term group(s)." if groups else f"No terms found with similarity >= {threshold:.2f}.")
@@ -904,10 +1110,13 @@ def _handle_mui_event(event: Any) -> bool:
         _STATE["consolidations_staged_for_generation"] = bool(_STATE.get("similar_term_groups"))
         _STATE["show_consolidation_review_ui"] = False
         _set_status("success", "Consolidation choices staged. They will be applied when generating the matching table.")
+    elif event_type == "clear_consolidations":
+        _set_status("info", "Similar-term choices removed. Original terms will be kept.")
     elif event_type == "generate_matching_table":
         result = generate_matching_table()
         if result.error:
             _STATE["matching_df"] = None
+            _STATE["generation_error"] = result.error
             _set_status("error", result.error)
         else:
             _STATE["matching_df"] = result.matching_df.copy() if isinstance(result.matching_df, pd.DataFrame) else None
@@ -915,6 +1124,10 @@ def _handle_mui_event(event: Any) -> bool:
             _STATE["preprocessing_applied_in_last_run"] = bool(result.preprocessing_applied)
             _STATE["shared_matching_table"] = result.matching_df.copy() if isinstance(result.matching_df, pd.DataFrame) else None
             _STATE["shared_preprocessed_data"] = result.preprocessed_df.copy() if isinstance(result.preprocessed_df, pd.DataFrame) else None
+            _STATE["matching_revision"] = _STATE.get("configuration_revision", 0)
+            _STATE["generation_error"] = None
+            _STATE["term_preview"] = result.term_preview or []
+            _STATE["term_csv"] = result.term_csv
             consolidation_note = f" including {result.consolidations_applied_count} consolidation replacement(s)" if result.consolidations_applied_count else ""
             _set_status("success", f"Matching table generated successfully{consolidation_note}.")
     elif event_type == "reset_all":

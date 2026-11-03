@@ -10,9 +10,9 @@ pre-event snapshots, giving undo / revert-to-step across the whole pipeline.
 
 Snapshots are taken per-key with a volatile deny-list (live run threads/events, in-memory rdflib graphs,
 the TriG converter) so a snapshot never carries a non-picklable object; the dropped keys are all
-reconstructable (graphs from the preserved turtle strings, threads/events are transient run handles
-that must never be resurrected). Each kept value is pickled individually, so a single bad value is
-skipped rather than failing the whole snapshot.
+reconstructable (graphs from the preserved turtle strings, the TriG converter from the preserved TriG
+bytes, threads/events are transient run handles that must never be resurrected). Each kept value is
+pickled individually, so a single bad value is skipped rather than failing the whole snapshot.
 """
 
 from __future__ import annotations
@@ -31,7 +31,8 @@ PROJECT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".rdf4ris
 INDEX_PATH = os.path.join(PROJECT_DIR, "index.json")
 MAX_HISTORY = 25
 
-# Keys inside the shared runtime_state that must never be snapshotted/restored.
+# Keys inside the shared runtime_state that must never be snapshotted/restored. The RDF inspector rebuilds
+# "trig_converter" from "trig_source_bytes" (RDF_to_Table.tablegenerator._current_converter).
 _RUNTIME_DENY = {
     "agent_reconciliation_run_thread",
     "agent_reconciliation_run_cancel_event",
@@ -298,6 +299,7 @@ class _History:
             LOGGER.exception("Failed to capture history snapshot; skipping")
             return
         self.entries.append({
+            "id": uuid.uuid4().hex[:12],
             "label": _label(service, event),
             "service": service,
             "ts": time.time(),
@@ -308,12 +310,19 @@ class _History:
 
     def listing(self) -> List[Dict[str, Any]]:
         return [
-            {"index": i, "label": e["label"], "service": e["service"], "ts": e["ts"]}
+            {"index": i, "id": e["id"], "label": e["label"], "service": e["service"], "ts": e["ts"]}
             for i, e in enumerate(self.entries)
         ]
 
-    def revert_to(self, index: int) -> bool:
-        if 0 <= index < len(self.entries):
+    def revert_to(self, index: int | None = None, entry_id: str | None = None) -> bool:
+        """Revert to the entry with `entry_id`, or at positional `index` for older clients.
+
+        Prefer the id: once MAX_HISTORY is reached each new action drops the oldest entry, shifting every
+        index by one between the listing a client saw and the revert it sends.
+        """
+        if entry_id is not None:
+            index = next((i for i, e in enumerate(self.entries) if e["id"] == entry_id), None)
+        if index is not None and 0 <= index < len(self.entries):
             restore(self.entries[index]["snapshot"])
             self.entries = self.entries[:index]  # the reverted action and everything after it are undone
             return True

@@ -1,13 +1,12 @@
 import React from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
-import Stack from '@mui/material/Stack';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
-import LinearProgress from '@mui/material/LinearProgress';
 import { BAND_META, confidenceBand, toConfidenceNumber } from './confidence';
 
-// Confidence as a first-class visual: a banded color chip + mini bar.
+// Confidence as a first-class visual: a banded chip that names the band and prints the score
+// (colour is never the only signal). The tooltip explains what the band means.
 //
 // In `acceptanceMode` (auto-accept policy is on) `value` is the acceptance score — already
 // banded server-side so auto-accepted rows sit on top and held rows sit below them — and the
@@ -43,7 +42,6 @@ export function ConfidenceCell({
   const before = toConfidenceNumber(trace?.confidence_before_boost);
   const after = toConfidenceNumber(trace?.confidence_after_boost);
   const reason = trace?.provider_signal_boost_reason ? String(trace.provider_signal_boost_reason) : '';
-  const barColor = meta.color === 'default' ? 'inherit' : meta.color;
   const raw = toConfidenceNumber(rawConfidence);
 
   return (
@@ -52,7 +50,7 @@ export function ConfidenceCell({
         <Box sx={{ maxWidth: 260 }}>
           {acceptanceMode ? (
             <>
-              <Typography variant="caption" sx={{ fontWeight: 700, display: 'block' }}>
+              <Typography variant="caption" sx={{ fontWeight: 600, display: 'block' }}>
                 {autoAccepted ? 'Auto-accepted' : 'Needs review'}
               </Typography>
               <Typography variant="caption" color="inherit" sx={{ display: 'block', mt: 0.5 }}>
@@ -66,7 +64,7 @@ export function ConfidenceCell({
             </>
           ) : (
             <>
-              <Typography variant="caption" sx={{ fontWeight: 700, display: 'block' }}>
+              <Typography variant="caption" sx={{ fontWeight: 600, display: 'block' }}>
                 Confidence {n.toFixed(2)} — {meta.label}
               </Typography>
               <Typography variant="caption" color="inherit" sx={{ display: 'block', mt: 0.5 }}>
@@ -91,15 +89,12 @@ export function ConfidenceCell({
         </Box>
       }
     >
-      <Stack spacing={0.4} sx={{ minWidth: 92, py: 0.5 }}>
-        <Chip size="small" color={meta.color} label={`${meta.label} · ${n.toFixed(2)}`} sx={{ alignSelf: 'flex-start', height: 20, fontWeight: 700 }} />
-        <LinearProgress
-          variant="determinate"
-          value={Math.max(0, Math.min(100, Math.round(n * 100)))}
-          color={barColor as any}
-          sx={{ height: 5, borderRadius: 999 }}
-        />
-      </Stack>
+      <Chip
+        size="small"
+        variant="outlined"
+        color={meta.color}
+        label={<>{meta.label} <Box component="span" sx={{ fontVariantNumeric: 'tabular-nums' }}>{n.toFixed(2)}</Box></>}
+      />
     </Tooltip>
   );
 }

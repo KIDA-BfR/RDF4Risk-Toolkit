@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -180,6 +181,8 @@ def _agent_args() -> Dict[str, Any]:
         "ontologyOptions": ontology_options,
         "providerKind": provider_kind,
         "statusMessage": agent_runtime_state.get("agent_mui_status_message"),
+        "rdf_handoff": agent_runtime_state.get("agent_rdf_handoff"),
+        "rdf_handoff_revision": _agent_rdf_source_revision(),
         "codexAuthStatus": agent_service.get_codex_auth_status(),
     }
 
@@ -216,9 +219,11 @@ def _sync_matching_outputs_to_legacy_state() -> None:
 
 def _sync_semi_outputs_to_legacy_state() -> None:
     """Expose semi-automatic reconciliation outputs to downstream services."""
-    for key, value in semi_service.get_shared_outputs().items():
-        if isinstance(value, pd.DataFrame):
-            agent_runtime_state[key] = value.copy()
+    value = semi_service.get_shared_outputs().get("shared_reconciled_matching_table")
+    if isinstance(value, pd.DataFrame):
+        agent_runtime_state["shared_reconciled_matching_table"] = value.copy()
+    else:
+        agent_runtime_state.pop("shared_reconciled_matching_table", None)
 
 
 def _service_snapshot(service_id: str) -> Dict[str, Any]:
@@ -259,6 +264,9 @@ def _workspace_event(event: Dict[str, Any]) -> Dict[str, Any]:
         project_store.HISTORY.reset()
         return {"reset": True}
     if etype == "revert_to":
+        # A stable entry id survives the history cap dropping the oldest entry; "index" is the legacy form.
+        if event.get("id"):
+            return {"reverted": project_store.HISTORY.revert_to(entry_id=str(event.get("id")))}
         try:
             index = int(event.get("index"))
         except (TypeError, ValueError):
@@ -275,18 +283,164 @@ def _workspace_event(event: Dict[str, Any]) -> Dict[str, Any]:
     return {"error": f"Unknown workspace action: {etype}"}
 
 
+def _handoff_matching_table(event: Dict[str, Any]) -> None:
+    """Load an up-to-date output, requiring a fresh confirmation for occupied targets."""
+    with matching_service.STATE_LOCK:
+        state = matching_service._STATE
+        state["handoff"] = None
+        target = event.get("target")
+        if target not in {"semi_automatic_reconciliation", "agent_reconciliation"}:
+            matching_service._set_status("error", "Choose a reconciliation workflow.")
+            return
+        if (not matching_service._result_is_current()
+                or event.get("expected_revision") != state.get("configuration_revision", 0)):
+            matching_service._set_status("error", "The result changed or needs updating. Review it before continuing.")
+            return
+        output = state.get("matching_df")
+        if not isinstance(output, pd.DataFrame) or output.empty:
+            matching_service._set_status("error", "There are no terms to transfer. Choose a table with usable terms.")
+            return
+        if target == "semi_automatic_reconciliation":
+            target_state = semi_service.STATE
+            existing = target_state.get("df")
+            running = bool(target_state.get("processing_active"))
+        else:
+            target_state = agent_runtime_state
+            existing = target_state.get(agent_service.AGENT_DATAFRAME_STATE_KEY)
+            run_status = target_state.get(agent_service.AGENT_RUN_STATUS_STATE_KEY, {})
+            thread = target_state.get(agent_service.AGENT_RUN_THREAD_STATE_KEY)
+            running = bool((isinstance(run_status, dict) and run_status.get("running"))
+                           or (hasattr(thread, "is_alive") and thread.is_alive()))
+        if running:
+            matching_service._set_status("error", "The selected workflow is running. Stop or finish it before replacing its table.")
+            return
+        if isinstance(existing, pd.DataFrame):
+            fingerprint = existing.to_json(orient="split", date_format="iso", default_handler=str)
+            token = hashlib.sha256(f"{target}:{state.get('configuration_revision')}:{fingerprint}".encode()).hexdigest()
+            if event.get("confirmation_token") != token:
+                state["handoff"] = {"status": "confirmation_required", "target": target,
+                                    "confirmation_token": token, "rows": len(existing),
+                                    "message": f"The selected workflow already contains a table with {len(existing)} rows."}
+                matching_service._set_status("info", "Confirm the replacement or save the existing work as a project first.")
+                return
+        _sync_matching_outputs_to_legacy_state()
+        if target == "semi_automatic_reconciliation":
+            semi_service.initialize_reconciliation_state()
+            semi_service.handle_reconciliation_event({"type": "load_shared_table"})
+        else:
+            # Loading inputs needs neither credentials nor a model catalog. Those are
+            # prerequisites for starting a run, not for handing a table to configuration.
+            agent_service._initialize_agent_reconciliation_state()
+            agent_service._handle_agent_mui_event({"type": "load_shared_table"}, {}, {}, {})
+        state["handoff"] = {"status": "complete", "target": target}
+        matching_service._set_status("success", "Current terms transferred. Continue configuring reconciliation.")
+
+
+def _handoff_reconciliation_to_rdf(event: Dict[str, Any]) -> None:
+    state = semi_service.STATE
+    state["rdf_handoff"] = None
+    if state.get("processing_active"):
+        state[semi_service.RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": "Stop or finish the search before continuing to RDF generation."}
+        return
+    df = state.get("df")
+    if (not isinstance(df, pd.DataFrame) or df.empty
+            or event.get("expected_revision") != state.get("review_revision", 0)):
+        state[semi_service.RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": "The table changed or is empty. Review the current result before continuing."}
+        return
+    rdf_generator_service._init_rdf_mui_state()
+    current_mapping = agent_runtime_state.get("rdf_gen_mapping_df")
+    current_data = agent_runtime_state.get("rdf_gen_data_df")
+    fingerprints = [value.to_json(orient="split", default_handler=str) if isinstance(value, pd.DataFrame) else ""
+                    for value in (current_mapping, current_data)]
+    token = hashlib.sha256(json.dumps([state.get("review_revision", 0), *fingerprints]).encode()).hexdigest()
+    if any(isinstance(value, pd.DataFrame) for value in (current_mapping, current_data)) and event.get("confirmation_token") != token:
+        state["rdf_handoff"] = {"status": "confirmation_required", "confirmation_token": token,
+                                "message": "The RDF workspace already contains data or mappings. Its mapping table will be replaced; existing source data will be kept. Cancel to save that workspace as a project first."}
+        return
+    semi_service.handle_reconciliation_event({"type": "publish_rdf_handoff"})
+    _sync_semi_outputs_to_legacy_state()
+    agent_runtime_state["all_terms_for_reconciliation"] = df["subject_label"].fillna("").astype(str).tolist()
+    rdf_generator_service._load_shared_mapping()
+    if not isinstance(current_data, pd.DataFrame) and isinstance(agent_runtime_state.get("shared_preprocessed_data"), pd.DataFrame):
+        rdf_generator_service._load_shared_data()
+    agent_runtime_state["rdf_generator_active_stage"] = "model" if isinstance(agent_runtime_state.get("rdf_gen_data_df"), pd.DataFrame) else "load"
+    state["rdf_handoff"] = {"status": "complete", "target": "rdf_generator"}
+    state[semi_service.RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Current mappings transferred to RDF generation."}
+
+
+def _agent_rdf_source_revision() -> str:
+    table = agent_runtime_state.get(agent_service.AGENT_DATAFRAME_STATE_KEY)
+    content = table.to_json(orient="split", default_handler=str) if isinstance(table, pd.DataFrame) else ""
+    return hashlib.sha256(content.encode()).hexdigest()
+
+
+def _handoff_agent_to_rdf(event: Dict[str, Any]) -> None:
+    """Load a reviewed agent table only after source/target-bound confirmation."""
+    state = agent_runtime_state
+    state["agent_rdf_handoff"] = None
+    status = state.get(agent_service.AGENT_RUN_STATUS_STATE_KEY) or {}
+    table = state.get(agent_service.AGENT_DATAFRAME_STATE_KEY)
+    revision = _agent_rdf_source_revision()
+    if status.get("running") or not isinstance(table, pd.DataFrame) or table.empty or event.get("expected_revision") != revision:
+        state["agent_mui_status_message"] = {"severity": "error", "text": "Stop any running agents and review the current table before continuing to RDF generation."}
+        return
+    rdf_generator_service._init_rdf_mui_state()
+    current_data = state.get("rdf_gen_data_df")
+    current_mapping = state.get("rdf_gen_mapping_df")
+    target = [value.to_json(orient="split", default_handler=str) if isinstance(value, pd.DataFrame) else ""
+              for value in (current_mapping, current_data)]
+    target.extend([state.get(key) or "" for key in ("rdf_data", "skos_data", "dcat_catalog_data", "dcat_metadata_data")])
+    target.append(rdf_generator_service._current_config_state())
+    token = hashlib.sha256(json.dumps([revision, target], sort_keys=True, default=str).encode()).hexdigest()
+    occupied = any(isinstance(value, pd.DataFrame) for value in (current_data, current_mapping)) or bool(state.get("rdf_data"))
+    if occupied and event.get("confirmation_token") != token:
+        state["agent_rdf_handoff"] = {"status": "confirmation_required", "confirmation_token": token,
+            "message": "The RDF workspace already contains work. Its mapping table and generated RDF outputs will be replaced. Existing source data, templates and settings will be kept. Cancel to save that workspace as a project first."}
+        return
+    export_df = agent_service.finalize_accepted_results(table.copy(), provenance_defaults=agent_service._build_provenance_defaults_from_state())
+    if export_df.empty:
+        state["agent_mui_status_message"] = {"severity": "error", "text": "The current table has no rows to transfer."}
+        return
+    state["shared_reconciled_matching_table"] = export_df
+    state["all_terms_for_reconciliation"] = export_df["subject_label"].fillna("").astype(str).tolist()
+    rdf_generator_service._load_shared_mapping()
+    if not isinstance(current_data, pd.DataFrame) and isinstance(state.get("shared_preprocessed_data"), pd.DataFrame):
+        rdf_generator_service._load_shared_data()
+    for key in ("rdf_data", "skos_data", "dcat_catalog_data", "dcat_metadata_data", "rdf_graph", "skos_graph", "rdf_preview", "last_named_graph_uri"):
+        state[key] = None
+    state["rdf_generator_active_stage"] = "model" if isinstance(state.get("rdf_gen_data_df"), pd.DataFrame) else "load"
+    state["agent_rdf_handoff"] = {"status": "complete", "target": "rdf_generator"}
+    state["agent_mui_status_message"] = {"severity": "success", "text": "Current agent mappings transferred to RDF generation."}
+
+
 def _service_event(service_id: str, event: Dict[str, Any]) -> None:
     if service_id == "matching_table_generator":
         matching_service._init_state()
-        matching_service._handle_mui_event(event)
+        if event.get("type") == "handoff_reconciliation":
+            _handoff_matching_table(event)
+        elif event.get("type") == "dismiss_handoff":
+            matching_service._STATE["handoff"] = None
+            matching_service._set_status("info", "Choose how to continue when you are ready.")
+        else:
+            matching_service._handle_mui_event(event)
     elif service_id == "semi_automatic_reconciliation":
         _sync_matching_outputs_to_legacy_state()
         semi_service.initialize_reconciliation_state()
-        semi_service.handle_reconciliation_event(event)
+        if event.get("type") == "handoff_rdf_generator":
+            _handoff_reconciliation_to_rdf(event)
+        elif event.get("type") == "dismiss_rdf_handoff":
+            semi_service.STATE["rdf_handoff"] = None
+        else:
+            semi_service.handle_reconciliation_event(event)
         _sync_semi_outputs_to_legacy_state()
     elif service_id == "agent_reconciliation":
         _sync_matching_outputs_to_legacy_state()
-        _agent_event(event)
+        if event.get("type") == "handoff_rdf_generator":
+            _handoff_agent_to_rdf(event)
+        elif event.get("type") == "dismiss_rdf_handoff":
+            agent_runtime_state["agent_rdf_handoff"] = None
+        else:
+            _agent_event(event)
     elif service_id == "rdf_generator":
         _sync_matching_outputs_to_legacy_state()
         rdf_generator_service._init_rdf_mui_state()

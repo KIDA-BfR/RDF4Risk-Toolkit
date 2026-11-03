@@ -345,11 +345,11 @@ def _load_bytes_as_dataframe(kind: str) -> None:
         missing = [col for col in ["subject_label", "object_id", "predicate_id"] if col not in df.columns]
         if missing:
             runtime_state[df_key] = None
-            _set_rdf_status("error", f"Uploaded matching table is missing required columns: {', '.join(missing)}.")
+            _set_rdf_status("error", f"Uploaded mapping table is missing required columns: {', '.join(missing)}.")
             return
     runtime_state[df_key] = df
     sheet_note = f" (sheet: {runtime_state.get(sheet_key)})" if runtime_state.get(sheet_key) else ""
-    runtime_state[msg_key] = f"Loaded {'Data Table' if kind == 'data' else 'Matching Table'} from uploaded file: {filename}{sheet_note}."
+    runtime_state[msg_key] = f"Loaded {'data table' if kind == 'data' else 'mapping table'} from uploaded file: {filename}{sheet_note}."
     _set_rdf_status("success", runtime_state[msg_key])
 
 
@@ -382,17 +382,17 @@ def _load_shared_data() -> None:
     candidate = runtime_state.get("shared_preprocessed_data")
     if isinstance(candidate, pd.DataFrame):
         runtime_state["rdf_gen_data_df"] = candidate.copy()
-        runtime_state["rdf_gen_data_source_msg"] = "Loaded Preprocessed Data from Matching Table Generator."
+        runtime_state["rdf_gen_data_source_msg"] = "Loaded the prepared data from the Matching table tool."
         runtime_state[RDF_DATA_FILE_NAME_KEY] = "shared_preprocessed_data"
         _set_rdf_status("success", runtime_state["rdf_gen_data_source_msg"])
     else:
-        _set_rdf_status("warning", "No preprocessed data from the Matching Table Generator is available.")
+        _set_rdf_status("warning", "No prepared data from the Matching table tool is available.")
 
 
 def _load_shared_mapping() -> None:
     map_df_candidate = runtime_state.get("shared_reconciled_matching_table")
     if not isinstance(map_df_candidate, pd.DataFrame):
-        _set_rdf_status("warning", "No reconciled matching table from Reconciliation is available.")
+        _set_rdf_status("warning", "No reconciled mappings from Manual curation or AI-assisted matching are available.")
         return
     current_mapping_df = sync_matching_table_schemas(map_df_candidate.copy())
     all_original_terms = runtime_state.get("all_terms_for_reconciliation")
@@ -411,7 +411,7 @@ def _load_shared_mapping() -> None:
             current_mapping_df[col] = pd.NA
     current_mapping_df = sync_matching_table_schemas(current_mapping_df[final_cols + [c for c in current_mapping_df.columns if c not in final_cols]])
     runtime_state["rdf_gen_mapping_df"] = current_mapping_df.copy()
-    runtime_state["rdf_gen_mapping_source_msg"] = "Loaded Reconciled Matching Table from Reconciliation App (prefilled 'No Match' entries)."
+    runtime_state["rdf_gen_mapping_source_msg"] = "Loaded the reconciled mapping table (unmapped terms added as 'No Match')."
     runtime_state[RDF_MAPPING_FILE_NAME_KEY] = "shared_reconciled_matching_table"
     _set_rdf_status("success", runtime_state["rdf_gen_mapping_source_msg"])
 
@@ -473,11 +473,11 @@ def _validate_ready() -> List[str]:
     if not isinstance(df, pd.DataFrame):
         issues.append("Load a data table.")
     if not isinstance(mapping_df, pd.DataFrame):
-        issues.append("Load a matching table.")
+        issues.append("Load a mapping table.")
     else:
         missing = [col for col in ["subject_label", "object_id", "predicate_id"] if col not in mapping_df.columns]
         if missing:
-            issues.append(f"Matching table is missing: {', '.join(missing)}.")
+            issues.append(f"Mapping table is missing: {', '.join(missing)}.")
     if isinstance(df, pd.DataFrame):
         if cfg["id_option"] == "Existing ID Column" and not cfg["default_id_col"]:
             issues.append("Select an existing ID column or choose generated IDs.")
@@ -487,7 +487,7 @@ def _validate_ready() -> List[str]:
             if not cfg["subject_base_uri"] or not is_valid_uri_simple(str(cfg["subject_base_uri"])):
                 issues.append("Enter a valid Subject Base URI for cross-file linking.")
     if isinstance(mapping_df, pd.DataFrame) and (not cfg["term_col"] or not cfg["uri_col"]):
-        issues.append("Select term and URI columns from the matching table.")
+        issues.append("Select term and URI columns from the mapping table.")
     if cfg["graph_option"] == "Use Named Graph" and not is_valid_uri_simple(str(cfg["named_graph_uri"])):
         issues.append("Enter a valid Named Graph URI or select No Named Graph.")
     if cfg["use_class"] and cfg["class_uri"] and not is_valid_uri_simple(str(cfg["class_uri"])):
@@ -648,7 +648,7 @@ def _apply_settings(settings: Dict[str, Any]) -> None:
 def _run_uri_enrichment() -> None:
     mapping_df = runtime_state.get("rdf_gen_mapping_df")
     if not isinstance(mapping_df, pd.DataFrame):
-        _set_rdf_status("warning", "Load a matching table before URI enrichment.")
+        _set_rdf_status("warning", "Load a mapping table before URI enrichment.")
         return
     try:
         api_specs = load_api_specs(os.path.join(os.path.dirname(__file__), "config.yaml"))
@@ -937,9 +937,13 @@ def _handle_rdf_mui_event(event: Any) -> bool:
         _apply_settings(event.get("settings", {}) if isinstance(event.get("settings"), dict) else {})
         _generate_dcat()
     elif event_type == "reset_workflow":
-        for key in ["rdf_data", "skos_data", "dcat_catalog_data", "dcat_metadata_data", "rdf_graph", "skos_graph", "rdf_gen_data_df", "rdf_gen_mapping_df", "reference_data", "reference_rdf", RDF_DATA_FILE_BYTES_KEY, RDF_MAPPING_FILE_BYTES_KEY, RDF_DATA_FILE_NAME_KEY, RDF_MAPPING_FILE_NAME_KEY]:
+        for key in ["rdf_data", "skos_data", "dcat_catalog_data", "dcat_metadata_data", "rdf_graph", "skos_graph", "rdf_preview", "last_named_graph_uri", "rdf_gen_data_df", "rdf_gen_mapping_df", "rdf_gen_data_source_msg", "rdf_gen_mapping_source_msg", "rdf_gen_data_sheet", "rdf_gen_mapping_sheet", "reference_data", "reference_rdf", RDF_DATA_FILE_BYTES_KEY, RDF_MAPPING_FILE_BYTES_KEY, RDF_DATA_FILE_NAME_KEY, RDF_MAPPING_FILE_NAME_KEY]:
             runtime_state[key] = None
-        _set_rdf_status("info", "RDF Generator workflow reset.")
+        runtime_state["rdf_gen_data_sheets"] = []
+        runtime_state["rdf_gen_mapping_sheets"] = []
+        # Reset is reachable from every stage; without this the user stays on e.g. Export.
+        runtime_state["rdf_generator_active_stage"] = "load"
+        _set_rdf_status("info", "RDF generator reset.")
     elif event_type == "download_ack":
         should_rerun = False
     else:

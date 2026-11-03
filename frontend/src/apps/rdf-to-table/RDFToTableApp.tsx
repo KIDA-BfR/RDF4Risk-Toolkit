@@ -1,25 +1,20 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import {
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
-  Alert,
-  Box,
-  Button,
-  Card,
-  CardContent,
-  Chip,
-  Paper,
-  Stack,
-  Tab,
-  Tabs,
-  Typography,
-} from '@mui/material';
-import { alpha } from '@mui/material/styles';
+import React, { useEffect, useRef, useState } from 'react';
+import { Alert, Box, Chip, Link, Stack, Tab, Tabs, Tooltip, Typography } from '@mui/material';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import { emitAppEvent, notifyLayoutChanged, type AppEvent } from '../../shared/appBridge';
-import { ConfirmActionButton } from '../../components/dialogs/ConfirmActionButton';
-import { DataTable as SharedDataTable, type DataTableProps } from '../../components/table/DataTable';
-import { heroSurface } from '../../shared/surfaces';
+import { DataTable, type DataTableProps } from '../../components/table/DataTable';
+import { DownloadButton, PrepareButton, UploadButton, UseResultButton } from '../../components/actions/WorkflowActionButtons';
+import { ToolMenu } from '../../components/actions/ToolMenu';
+import type { WorkflowNavProps } from '../../components/actions/WorkflowNav';
+import { InfoButton, type InfoContent } from '../../components/help/InfoButton';
+import { WizardPage, type WizardStep } from '../../components/layout/WizardPage';
+import { Section } from '../../components/layout/Section';
+import { Disclosure } from '../../components/layout/Disclosure';
+import { MetaList } from '../../components/layout/MetaList';
+import { KpiStrip } from '../../components/layout/KpiStrip';
+import { EmptyState } from '../../components/states/EmptyState';
 
 type Severity = 'success' | 'info' | 'warning' | 'error';
 type TableRow = Record<string, unknown>;
@@ -56,17 +51,31 @@ type Snapshot = {
   };
 };
 
-type AppProps = { args?: { app?: string; snapshot?: Snapshot } };
+type AppProps = { args?: { app?: string; snapshot?: Snapshot }; busy?: boolean };
 
-const stages: { id: Stage; label: string; caption: string }[] = [
-  { id: 'load', label: 'Load', caption: 'TriG input' },
-  { id: 'preview', label: 'Preview', caption: 'Tabular data' },
-  { id: 'metadata', label: 'Metadata', caption: 'Named graphs' },
-  { id: 'statistics', label: 'Statistics', caption: 'Catalogs' },
-  { id: 'export', label: 'Export', caption: 'Downloads' },
+const stages: { id: Stage; label: string; title: string; lead: string; info: InfoContent }[] = [
+  {
+    id: 'load', label: 'Load RDF', title: 'Choose the RDF catalog to inspect', lead: 'Use the catalog from the RDF generator, or upload a TriG file.',
+    info: { title: 'Loading a catalog', content: <><p>The inspector reads TriG files (<code>.trig</code>): the data graphs plus named graphs for metadata and publication references.</p><p><strong>Use generated catalog</strong> loads the DCAT catalog made with the RDF generator’s optional metadata tools. Loading another catalog replaces the current one and clears prepared exports.</p></> },
+  },
+  {
+    id: 'preview', label: 'Inspect RDF', title: 'Explore your RDF results', lead: 'Browse the subjects, then switch to metadata or statistics as needed.',
+    info: { title: 'Inspecting the graph', content: <ul><li><strong>Subjects</strong>: one row per subject in the data graphs.</li><li><strong>Metadata</strong>: DCAT, publication references and other named graphs.</li><li><strong>Statistics</strong>: counts, property catalog, namespaces and SKOS matches.</li></ul> },
+  },
+  {
+    id: 'export', label: 'Export', title: 'Download tables and documentation', lead: 'Prepare the exports, then download Excel, CSV or Markdown for your next task.',
+    info: { title: 'Exporting tables', content: <><p>Exports are built on the server from the loaded catalog.</p><p>Loading another catalog or resetting the RDF inspector clears them, so prepare them again afterwards.</p></> },
+  },
 ];
+const inspectStages: Stage[] = ['preview', 'metadata', 'statistics'];
+const inspectTabs: { id: Stage; label: string }[] = [{ id: 'preview', label: 'Subjects' }, { id: 'metadata', label: 'Metadata' }, { id: 'statistics', label: 'Statistics' }];
+const SUBJECT_COLUMNS = 12;
 
 function emit(event: AppEvent) { emitAppEvent(event); }
+
+const numberFormat = new Intl.NumberFormat();
+// Missing counts stay empty so KpiStrip/MetaList print a grey dash; a real 0 prints as 0.
+function formatCount(value?: number | null) { return typeof value === 'number' ? numberFormat.format(value) : ''; }
 
 async function fileToBase64(file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -98,152 +107,232 @@ function triggerBase64Download(base64: string, filename: string, mime: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-const TableIcon = () => (
-  <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" style={{ marginRight: 12 }}>
-    <defs><linearGradient id="rdfTableGradient" x1="8" y1="10" x2="56" y2="54" gradientUnits="userSpaceOnUse"><stop stopColor="#2563EB"/><stop offset=".52" stopColor="#0891B2"/><stop offset="1" stopColor="#14B8A6"/></linearGradient><filter id="rdfTableShadow" x="-40%" y="-40%" width="180%" height="180%"><feDropShadow dx="0" dy="5" stdDeviation="5" floodColor="#0F172A" floodOpacity="0.18"/></filter></defs>
-    <circle cx="18" cy="18" r="7" fill="#fff" stroke="#2563EB" strokeWidth="2.4" filter="url(#rdfTableShadow)" />
-    <circle cx="46" cy="19" r="8" fill="url(#rdfTableGradient)" filter="url(#rdfTableShadow)" />
-    <circle cx="20" cy="46" r="8" fill="#fff" stroke="#14B8A6" strokeWidth="2.4" />
-    <path d="M25 19h13M41 25L26 40M19 25l1 13" stroke="url(#rdfTableGradient)" strokeWidth="2.8" strokeLinecap="round" />
-    <rect x="32" y="35" width="22" height="17" rx="4" fill="#FFFFFF" stroke="url(#rdfTableGradient)" strokeWidth="2.2" />
-    <path d="M32 41h22M39 35v17M47 35v17" stroke="#CBD5E1" strokeWidth="1.5" />
-  </svg>
-);
-
+// The backend sends linked values as "[label](https://…)"; internal concepts arrive as plain labels.
 function renderMarkdownLink(value: unknown) {
   const text = String(value ?? '');
   const match = text.match(/^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/);
   if (!match) return text;
-  return <a href={match[2]} target="_blank" rel="noreferrer">{match[1]}</a>;
+  return <Link href={match[2]} target="_blank" rel="noreferrer" underline="hover" aria-label={`${match[1]} (opens in a new tab)`}>{match[1]}<OpenInNewIcon sx={{ fontSize: '0.875em', ml: 0.25, verticalAlign: '-0.125em' }} /></Link>;
 }
 
-function DataTable({ rows, empty, maxColumns = 10 }: Pick<DataTableProps, 'rows' | 'empty' | 'maxColumns'>) {
-  return <SharedDataTable rows={rows} empty={empty} maxColumns={maxColumns} minWidth={820} renderCell={(value) => renderMarkdownLink(value)} />;
+// The shared DataTable with linked values rendered as links (a stable renderer keeps its columns memoised).
+function RdfTable({ rows, empty, maxColumns = 10 }: Pick<DataTableProps, 'rows' | 'empty' | 'maxColumns'>) {
+  return <DataTable rows={rows} empty={empty} maxColumns={maxColumns} minWidth={820} renderCell={renderMarkdownLink} />;
 }
 
-function SummaryRow({ label, value }: { label: string; value: React.ReactNode }) { return <Stack direction="row" justifyContent="space-between" spacing={2}><Typography variant="body2" color="text.secondary">{label}</Typography><Typography variant="body2" sx={{ fontWeight: 800, textAlign: 'right' }}>{value}</Typography></Stack>; }
-
-function MetricCard({ label, value, helper }: { label: string; value: React.ReactNode; helper?: string }) { return <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}><Typography variant="caption" color="text.secondary">{label}</Typography><Typography variant="h6" sx={{ fontWeight: 900 }}>{value}</Typography>{helper && <Typography variant="caption" color="text.secondary">{helper}</Typography>}</Paper>; }
-
-const softChipSx = (color: 'success' | 'info' | 'warning' | 'primary' | 'default') => (theme: any) => {
-  if (color === 'default') {
-    return {
-      bgcolor: alpha(theme.palette.text.secondary, theme.palette.mode === 'dark' ? 0.12 : 0.08),
-      borderColor: theme.palette.divider,
-      color: theme.palette.text.primary,
-    };
-  }
-  const main = theme.palette[color].main;
-  return {
-    bgcolor: alpha(main, theme.palette.mode === 'dark' ? 0.16 : 0.08),
-    borderColor: alpha(main, theme.palette.mode === 'dark' ? 0.48 : 0.34),
-    color: theme.palette.text.primary,
-  };
-};
-
-function SectionNavigation({ activeStage }: { activeStage: Stage }) {
-  return (
-    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(5, minmax(0, 1fr))' }, gap: 1, mt: 2 }}>
-      {stages.map((stage) => {
-        const active = stage.id === activeStage;
-        return (
-          <Button
-            key={stage.id}
-            variant="outlined"
-            color="primary"
-            aria-current={active ? 'page' : undefined}
-            onClick={() => emit({ type: 'navigate', stage: stage.id })}
-            sx={(theme) => ({
-              minHeight: 60,
-              justifyContent: 'flex-start',
-              textAlign: 'left',
-              borderRadius: 1,
-              px: 1.4,
-              py: 1,
-              bgcolor: active ? alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.22 : 0.1) : 'background.paper',
-              borderColor: active ? theme.palette.primary.main : 'divider',
-              color: 'text.primary',
-              boxShadow: active ? `inset 0 0 0 1px ${alpha(theme.palette.primary.main, 0.18)}` : 'none',
-              '&:hover': {
-                bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.08),
-                borderColor: theme.palette.primary.main,
-              },
-            })}
-          >
-            <Stack spacing={0.2} alignItems="flex-start">
-              <Typography variant="body2" sx={{ fontWeight: 900, lineHeight: 1.1 }}>{stage.label}</Typography>
-              <Typography variant="caption" sx={{ color: active ? 'primary.main' : 'text.secondary', lineHeight: 1.2 }}>{stage.caption}</Typography>
-            </Stack>
-          </Button>
-        );
-      })}
-    </Box>
-  );
+// Processing errors carry a Python traceback (tablegenerator.py); keep the message inline and the trace collapsed.
+function StatusMessage({ severity, text }: { severity?: Severity; text: string }) {
+  const cut = text.indexOf('\nTraceback (most recent call last):');
+  const summary = cut >= 0 ? text.slice(0, cut) : text;
+  const details = cut >= 0 ? text.slice(cut + 1) : '';
+  return <>
+    <Alert severity={severity ?? 'info'} sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{summary}</Alert>
+    {details && <Disclosure title="Technical details" summary="Server traceback, useful for bug reports"><Box component="pre" sx={{ m: 0, fontSize: '0.75rem', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 320, overflow: 'auto' }}>{details}</Box></Disclosure>}
+  </>;
 }
 
-function AppShell({ snapshot, activeStage, children }: { snapshot: Snapshot; activeStage: Stage; children: React.ReactNode }) {
-  const source = snapshot.source ?? {}; const data = snapshot.data ?? {}; const stats = snapshot.statistics ?? {};
-  return <Box sx={{ bgcolor: 'background.default', minHeight: '100vh', p: { xs: 1, md: 2 }, borderRadius: 4 }}><Stack spacing={2}>
-    <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 }, borderRadius: 4, background: heroSurface, boxShadow: '0 18px 48px rgba(15,23,42,.08)' }}>
-      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems={{ xs: 'stretch', lg: 'center' }} justifyContent="space-between">
-        <Stack direction="row" spacing={1.5} alignItems="center"><TableIcon /><Stack><Typography variant="h5" component="h2">RDF to Table</Typography><Typography variant="body2" color="text.secondary">Guided workflow for TriG/RDF exploration, metadata inspection, statistics, and Excel/CSV/Markdown export</Typography></Stack></Stack>
-      </Stack>
-      <SectionNavigation activeStage={activeStage} />
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4,1fr)' }, gap: 1.2, mt: 2 }}>
-        <Chip variant="outlined" label={source.has_data ? source.filename || 'TriG loaded' : 'No TriG loaded'} sx={softChipSx(source.has_data ? 'success' : 'warning')} />
-        <Chip variant="outlined" label={`${data.rows ?? 0} table rows`} sx={softChipSx(data.rows ? 'info' : 'default')} />
-        <Chip variant="outlined" label={`${stats.total_triples ?? 0} triples`} sx={softChipSx(stats.total_triples ? 'info' : 'default')} />
-        <Chip variant="outlined" label={`${stats.external_matches ?? 0} external matches`} sx={softChipSx(stats.external_matches ? 'success' : 'default')} />
-      </Box>
-    </Paper>
-    {snapshot.statusMessage?.text && <Alert severity={snapshot.statusMessage.severity ?? 'info'} sx={{ whiteSpace: 'pre-wrap' }}>{snapshot.statusMessage.text}</Alert>}
-    {children}
-  </Stack></Box>;
+function LoadedContext({ snapshot }: { snapshot: Snapshot }) {
+  const filename = snapshot.source?.filename;
+  return <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
+    <Typography variant="body2" color="text.secondary">Loaded</Typography>
+    <Chip size="small" variant="outlined" title={filename || undefined} label={filename ? <Box component="code" sx={{ fontSize: '0.75rem' }}>{filename}</Box> : 'TriG catalog'} sx={{ maxWidth: '100%' }} />
+    <Chip size="small" variant="outlined" label={`${formatCount(snapshot.data?.rows ?? 0)} subject rows`} sx={{ fontVariantNumeric: 'tabular-nums' }} />
+    <Chip size="small" variant="outlined" label={`${formatCount(snapshot.statistics?.total_triples ?? 0)} triples`} sx={{ fontVariantNumeric: 'tabular-nums' }} />
+  </Stack>;
 }
 
-function LoadPage({ snapshot }: { snapshot: Snapshot }) {
+function LoadPage({ snapshot, busy }: { snapshot: Snapshot; busy: boolean }) {
   const [uploadError, setUploadError] = useState('');
+  const [reading, setReading] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const loaded = Boolean(snapshot.source?.has_data);
+  const catalogAvailable = Boolean(snapshot.source?.catalog_available);
   async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]; event.target.value = ''; setUploadError(''); if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.trig')) { setUploadError('Please choose a .trig file.'); return; }
-    try { emit({ type: 'upload_trig', filename: file.name, content_base64: await fileToBase64(file) }); } catch (error) { setUploadError(error instanceof Error ? error.message : 'Unable to read the selected file.'); }
+    if (!file.name.toLowerCase().endsWith('.trig')) { setUploadError('This file is not a TriG file. Choose a .trig file.'); return; }
+    setReading(true);
+    try { emit({ type: 'upload_trig', filename: file.name, content_base64: await fileToBase64(file) }); } catch { setUploadError('This file could not be read. Choose it again or use another file.'); } finally { setReading(false); }
   }
-  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: 'minmax(0,1fr) 360px' }, gap: 2 }}><Stack spacing={2}><Card variant="outlined"><CardContent><Stack spacing={1.5}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="subtitle1">1. Load TriG/RDF Catalog</Typography><Typography variant="body2" color="text.secondary">Upload a TriG file, or load the generated catalog produced by the RDF Generator.</Typography></Stack><Chip label={snapshot.source?.has_data ? 'loaded' : 'waiting'} color={snapshot.source?.has_data ? 'success' : 'warning'} /></Stack><Paper variant="outlined" sx={{ p: 3, textAlign: 'center', borderStyle: 'dashed', borderRadius: 3, bgcolor: 'background.default' }}><Typography variant="h6" component="h3">TriG input</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: .5 }}>Supported: .trig. The backend extracts subject rows, DCAT metadata, publication references, property mappings, namespaces, and SKOS exact/close-match links.</Typography><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="center" sx={{ mt: 1.5 }}><Button component="label" variant="contained">Upload TriG file<input hidden type="file" accept=".trig,application/trig,text/plain" onChange={handleUpload} /></Button><Button variant="outlined" disabled={!snapshot.source?.catalog_available} onClick={() => emit({ type: 'load_catalog' })}>Load Catalog from RDF Generator</Button></Stack>{uploadError && <Alert severity="warning" sx={{ mt: 1.5 }}>{uploadError}</Alert>}</Paper><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4,1fr)' }, gap: 1 }}><SummaryRow label="File" value={snapshot.source?.filename || '—'} /><SummaryRow label="Rows" value={snapshot.data?.rows ?? 0} /><SummaryRow label="Columns" value={snapshot.data?.columns ?? 0} /><SummaryRow label="Generator catalog" value={snapshot.source?.catalog_available ? 'Available' : 'Not available'} /></Box></Stack></CardContent></Card></Stack><Stack spacing={2}><Card variant="outlined"><CardContent><Stack spacing={1.1}><Typography variant="subtitle1">Available views</Typography>{['Preview subject data as a linked table.', 'Inspect DCAT metadata, publication reference, and other named graphs.', 'Review dataset statistics, property catalog, namespaces, and SKOS match counts.', 'Prepare and download Excel, CSV, and Markdown exports.'].map((item) => <Typography key={item} variant="body2" color="text.secondary">✓ {item}</Typography>)}</Stack></CardContent></Card></Stack></Box>;
+  // One contained action while Continue is still disabled: the generated catalog when there is one, otherwise the upload.
+  return <Section title="RDF catalog" description={<>TriG (<Box component="code">.trig</Box>).</>}>
+    <Stack spacing={2}>
+      {loaded
+        ? <MetaList items={[
+          { label: 'File', value: snapshot.source?.filename, mono: true },
+          { label: 'Subject rows', value: formatCount(snapshot.data?.rows), numeric: true },
+          { label: 'Triples', value: formatCount(snapshot.statistics?.total_triples), numeric: true },
+        ]} />
+        : <Typography variant="body2" color="text.secondary">No catalog loaded yet.</Typography>}
+      <Stack direction="row" useFlexGap flexWrap="wrap" gap={1}>
+        <Tooltip title={catalogAvailable ? '' : 'Available once the RDF generator has created a DCAT catalog.'}>
+          <span><UseResultButton variant={catalogAvailable && !loaded ? 'contained' : 'outlined'} disabled={busy || reading || !catalogAvailable} onClick={() => emit({ type: 'load_catalog' })}>Use generated catalog</UseResultButton></span>
+        </Tooltip>
+        <input ref={fileInput} hidden type="file" accept=".trig,application/trig,text/plain" onChange={handleUpload} />
+        <UploadButton variant={!loaded && !catalogAvailable ? 'contained' : 'outlined'} disabled={busy || reading} onClick={() => fileInput.current?.click()}>
+          {reading ? 'Reading file…' : loaded ? 'Replace TriG file' : 'Upload TriG file'}
+        </UploadButton>
+      </Stack>
+      {uploadError && <Alert severity="error">{uploadError}</Alert>}
+    </Stack>
+  </Section>;
 }
 
-function PreviewPage({ snapshot }: { snapshot: Snapshot }) { return <Stack spacing={2}><Card variant="outlined"><CardContent><Stack spacing={1.5}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="subtitle1">Data Preview</Typography><Typography variant="body2" color="text.secondary">Subject rows extracted from data graphs. URI values are displayed as clickable labels when labels or external SKOS matches are available.</Typography></Stack><Chip label={`${snapshot.data?.rows ?? 0} rows × ${snapshot.data?.columns ?? 0} columns`} color={snapshot.data?.rows ? 'info' : 'default'} /></Stack><Alert severity="info" variant="outlined">Click a blue linked label to open the target resource in a new tab. Internal concept URIs are rendered as labels without external links.</Alert><DataTable rows={snapshot.data?.preview} empty="No subject data found in the TriG file." maxColumns={12} /></Stack></CardContent></Card></Stack>; }
+function SubjectsPage({ snapshot }: { snapshot: Snapshot }) {
+  const rows = snapshot.data?.rows ?? 0;
+  const columns = snapshot.data?.columns ?? 0;
+  const preview = snapshot.data?.preview ?? [];
+  // Rows only: the table's own caption reports hidden columns and follows the Columns menu.
+  return <Stack spacing={1.5}>
+    {rows > 0 && <Stack direction="row" alignItems="center" spacing={0.5}>
+      <Typography variant="body2" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>{preview.length < rows ? `Showing ${formatCount(preview.length)} of ${formatCount(rows)} rows; the CSV export has them all.` : `${formatCount(rows)} rows, ${formatCount(columns)} columns.`}</Typography>
+      <InfoButton title="Subject rows"><p>The table has one row per subject in the data graphs and one column per property.</p><p>URI values show as labels. Linked labels open the resource, or its external SKOS match, in a new tab; internal concept URIs stay plain labels.</p></InfoButton>
+    </Stack>}
+    <RdfTable rows={preview} empty="No subject data found in the TriG file." maxColumns={SUBJECT_COLUMNS} />
+  </Stack>;
+}
 
-function GraphSection({ title, section, empty }: { title: string; section: NamedGraphSection; empty: string }) {
-  if (!section) return <Alert severity="info" variant="outlined">{empty}</Alert>;
-  return <Card variant="outlined"><CardContent><Stack spacing={1.2}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="subtitle1">{title}</Typography><Typography variant="caption" color="text.secondary">{section.graph_uri}</Typography></Stack><Chip label={`${section.triple_count ?? 0} triples`} /></Stack>{(section.subjects ?? []).map((subject, idx) => <Accordion key={`${subject.subject_uri}-${idx}`} defaultExpanded={idx < 2}><AccordionSummary><Stack><Typography sx={{ fontWeight: 850 }}>{subject.subject_type || 'Resource'}</Typography><Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{subject.subject_uri}</Typography></Stack></AccordionSummary><AccordionDetails><DataTable rows={subject.properties} empty="No properties found for this subject." maxColumns={2} /></AccordionDetails></Accordion>)}</Stack></CardContent></Card>;
+function GraphSection({ title, section, empty }: { title: string; section: NonNullable<NamedGraphSection>; empty: string }) {
+  const subjects = section.subjects ?? [];
+  return <Section title={title} description={section.graph_uri ? <Box component="code" sx={{ fontSize: '0.8125rem', overflowWrap: 'anywhere' }}>{section.graph_uri}</Box> : undefined} actions={<Chip size="small" variant="outlined" label={`${formatCount(section.triple_count ?? 0)} triples`} sx={{ fontVariantNumeric: 'tabular-nums' }} />}>
+    {subjects.length ? <Box>{subjects.map((subject, idx) => <Disclosure plain key={`${subject.subject_uri}-${idx}`} defaultExpanded={idx < 2} title={subject.subject_type || 'Resource'} summary={subject.subject_uri ? <Box component="code" sx={{ wordBreak: 'break-all' }}>{subject.subject_uri}</Box> : undefined}>
+      {subject.properties?.length ? <MetaList items={subject.properties.map((row) => { const [property, value] = Object.values(row); return { label: String(property ?? ''), value: renderMarkdownLink(value) }; })} /> : <Typography variant="body2" color="text.secondary">No properties found for this subject.</Typography>}
+    </Disclosure>)}</Box> : <Typography variant="body2" color="text.secondary">{empty}</Typography>}
+  </Section>;
 }
 
 function MetadataPage({ snapshot }: { snapshot: Snapshot }) {
-  const otherGraphs = snapshot.metadata?.other_graphs ?? [];
-  return <Stack spacing={2}><GraphSection title="DCAT Metadata" section={snapshot.metadata?.dcat ?? null} empty="No DCAT metadata graph found in this file." /><GraphSection title="Publication References" section={snapshot.metadata?.publication ?? null} empty="No publication reference graph found in this file." />{otherGraphs.length > 0 && <Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Other Named Graphs</Typography>{otherGraphs.map((graph, idx) => <GraphSection key={`${graph?.graph_uri}-${idx}`} title={`Graph ${idx + 1}`} section={graph} empty="No data found in this named graph." />)}</Stack></CardContent></Card>}</Stack>;
+  const metadata = snapshot.metadata ?? {};
+  const otherGraphs = (metadata.other_graphs ?? []).filter((graph): graph is NonNullable<NamedGraphSection> => Boolean(graph));
+  if (!metadata.dcat && !metadata.publication && !otherGraphs.length) return <EmptyState dense title="No metadata graphs in this catalog" description="Subjects and statistics are still available." />;
+  return <Stack spacing={3}>
+    {metadata.dcat && <GraphSection title="DCAT metadata" section={metadata.dcat} empty="No DCAT properties found." />}
+    {metadata.publication && <GraphSection title="Publication references" section={metadata.publication} empty="No publication properties found." />}
+    {otherGraphs.map((graph, idx) => <GraphSection key={`${graph.graph_uri}-${idx}`} title={`Additional named graph ${idx + 1}`} section={graph} empty="No properties found in this named graph." />)}
+  </Stack>;
 }
+
+const statisticsViews = ['Property catalog', 'Namespaces', 'URI mappings'];
 
 function StatisticsPage({ snapshot }: { snapshot: Snapshot }) {
   const stats = snapshot.statistics ?? {}; const [tab, setTab] = useState(0);
-  return <Stack spacing={2}><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4,1fr)' }, gap: 1.2 }}><MetricCard label="Total Triples" value={(stats.total_triples ?? 0).toLocaleString()} /><MetricCard label="Subjects" value={(stats.subjects ?? 0).toLocaleString()} /><MetricCard label="Properties" value={(stats.properties ?? 0).toLocaleString()} /><MetricCard label="External Matches" value={(stats.external_matches ?? 0).toLocaleString()} helper={`${stats.exact_matches ?? 0} exact • ${stats.close_matches ?? 0} close`} /></Box><Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Dataset Statistics</Typography><Tabs value={tab} onChange={(_, value) => setTab(value)} variant="scrollable"><Tab label="Property Catalog" /><Tab label="Namespaces" /><Tab label="URI Mappings" /></Tabs>{tab === 0 && <DataTable rows={stats.property_catalog} empty="No property catalog found." maxColumns={4} />}{tab === 1 && <DataTable rows={stats.namespaces} empty="No namespaces extracted." maxColumns={2} />}{tab === 2 && <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.2 }}><MetricCard label="Exact Matches (skos:exactMatch)" value={stats.exact_matches ?? 0} /><MetricCard label="Close Matches (skos:closeMatch)" value={stats.close_matches ?? 0} /></Box>}</Stack></CardContent></Card></Stack>;
+  return <Stack spacing={3}>
+    <KpiStrip ariaLabel="Dataset statistics" items={[
+      { label: 'Total triples', value: formatCount(stats.total_triples) },
+      { label: 'Subjects', value: formatCount(stats.subjects) },
+      { label: 'Properties', value: formatCount(stats.properties) },
+      { label: 'External matches', value: formatCount(stats.external_matches), hint: `${formatCount(stats.exact_matches ?? 0)} exact, ${formatCount(stats.close_matches ?? 0)} close` },
+    ]} />
+    <Section title="Properties, namespaces and mappings">
+      <Tabs value={tab} onChange={(_, value: number) => setTab(value)} variant="scrollable" allowScrollButtonsMobile aria-label="Statistics details" sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}>
+        {statisticsViews.map((label, position) => <Tab key={label} label={label} id={`statistics-tab-${position}`} aria-controls="statistics-panel" />)}
+      </Tabs>
+      <Box role="tabpanel" id="statistics-panel" aria-labelledby={`statistics-tab-${tab}`}>
+        {tab === 0 && <RdfTable rows={stats.property_catalog} empty="No property catalog found." maxColumns={4} />}
+        {tab === 1 && <RdfTable rows={stats.namespaces} empty="No namespaces extracted." maxColumns={2} />}
+        {tab === 2 && <MetaList items={[
+          { label: <>Exact matches (<code>skos:exactMatch</code>)</>, value: formatCount(stats.exact_matches ?? 0), numeric: true },
+          { label: <>Close matches (<code>skos:closeMatch</code>)</>, value: formatCount(stats.close_matches ?? 0), numeric: true },
+        ]} />}
+      </Box>
+    </Section>
+  </Stack>;
 }
 
-function ExportPage({ snapshot }: { snapshot: Snapshot }) {
+function ExportFormat({ title, description, filename, error, children }: { title: string; description: string; filename?: string; error?: string; children: React.ReactNode }) {
+  return <Section title={title} description={description}>
+    <Stack spacing={1.5}>
+      {error && <Alert severity="warning">{error}</Alert>}
+      <MetaList items={[{ label: 'File', value: filename, mono: true }]} />
+      <Box>{children}</Box>
+    </Stack>
+  </Section>;
+}
+
+function ExportPage({ snapshot, busy }: { snapshot: Snapshot; busy: boolean }) {
   const downloads = snapshot.downloads ?? {};
-  return <Stack spacing={2}><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'repeat(3,1fr)' }, gap: 2 }}><Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Excel Workbook</Typography><Typography variant="body2" color="text.secondary">RDF Data and Property Mappings sheets with safe HYPERLINK formulas.</Typography>{downloads.excel_error && <Alert severity="warning">{downloads.excel_error}</Alert>}<Button variant="contained" disabled={!downloads.excel_base64} onClick={() => triggerBase64Download(downloads.excel_base64 ?? '', downloads.excel_filename ?? 'rdf_table_output.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}>Download Excel</Button></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">CSV</Typography><Typography variant="body2" color="text.secondary">Simple comma-separated subject table for downstream processing.</Typography><Button variant="contained" disabled={!downloads.csv} onClick={() => triggerDownload(downloads.csv ?? '', downloads.csv_filename ?? 'rdf_table_output.csv', 'text/csv;charset=utf-8')}>Download CSV</Button></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Markdown Metadata</Typography><Typography variant="body2" color="text.secondary">Human-readable metadata, references, namespace, and property documentation.</Typography>{downloads.markdown_error && <Alert severity="warning">{downloads.markdown_error}</Alert>}<Button variant="contained" disabled={!downloads.markdown} onClick={() => triggerDownload(downloads.markdown ?? '', downloads.markdown_filename ?? 'rdf_table_metadata.md', 'text/markdown;charset=utf-8')}>Download Markdown</Button></Stack></CardContent></Card></Box><Card variant="outlined"><CardContent><Stack spacing={1.2}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="subtitle1">Prepare Exports</Typography><Typography variant="body2" color="text.secondary">Export generation happens in Python so Excel and Markdown exactly match the converter backend.</Typography></Stack><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><Button variant="contained" disabled={!snapshot.source?.has_data} onClick={() => emit({ type: 'prepare_downloads' })}>Prepare / Refresh Downloads</Button><ConfirmActionButton variant="outlined" color="warning" dialogTitle="Reset RDF to Table?" dialogMessage="This permanently clears the loaded TriG catalog, extracted tables, statistics, and prepared downloads. This cannot be undone." confirmLabel="Reset" onConfirm={() => emit({ type: 'reset_workflow' })}>Reset RDF to Table</ConfirmActionButton></Stack></Stack><Alert severity="info" variant="outlined">Excel uses HYPERLINK formulas to bypass Excel’s native 65,536 hyperlink limit.</Alert></Stack></CardContent></Card></Stack>;
+  const loaded = Boolean(snapshot.source?.has_data);
+  const ready = Boolean(downloads.csv || downloads.excel_base64 || downloads.markdown);
+  // The page is inert while the request runs, which drops focus to <body>. One button (not two
+  // that swap) keeps its DOM node, and focus goes back to it once the request finishes.
+  const prepareSlot = useRef<HTMLSpanElement>(null);
+  const restoreFocus = useRef(false);
+  useEffect(() => {
+    if (busy || !restoreFocus.current) return;
+    restoreFocus.current = false;
+    const active = document.activeElement;
+    if (!active || active === document.body) prepareSlot.current?.querySelector('button')?.focus();
+  }, [busy]);
+  const prepare = () => { restoreFocus.current = true; emit({ type: 'prepare_downloads' }); };
+  return <Stack spacing={3}>
+    <Section
+      title={ready ? 'Your exports are ready' : 'Prepare your exports'}
+      description={ready ? undefined : loaded ? 'The download buttons become available once the exports are prepared.' : 'Load a TriG file before preparing exports.'}
+      actions={<span ref={prepareSlot}><PrepareButton variant={ready ? 'outlined' : 'contained'} startIcon={ready ? <RefreshIcon /> : undefined} disabled={busy || !loaded} onClick={prepare}>{ready ? 'Refresh downloads' : 'Prepare downloads'}</PrepareButton></span>}
+    />
+    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))' }, gap: 2 }}>
+      <ExportFormat title="Excel workbook" description="Subject data and property mappings, with resource links." filename={downloads.excel_base64 ? downloads.excel_filename : undefined} error={downloads.excel_error}>
+        <DownloadButton disabled={busy || !downloads.excel_base64} onClick={() => triggerBase64Download(downloads.excel_base64 ?? '', downloads.excel_filename ?? 'rdf_table_output.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}>Download tables (Excel)</DownloadButton>
+      </ExportFormat>
+      <ExportFormat title="CSV table" description="The full subject table for further processing." filename={downloads.csv ? downloads.csv_filename : undefined}>
+        <DownloadButton disabled={busy || !downloads.csv} onClick={() => triggerDownload(downloads.csv ?? '', downloads.csv_filename ?? 'rdf_table_output.csv', 'text/csv;charset=utf-8')}>Download subject table (CSV)</DownloadButton>
+      </ExportFormat>
+      <ExportFormat title="Markdown documentation" description="Metadata, references, namespaces and properties." filename={downloads.markdown ? downloads.markdown_filename : undefined} error={downloads.markdown_error}>
+        <DownloadButton disabled={busy || !downloads.markdown} onClick={() => triggerDownload(downloads.markdown ?? '', downloads.markdown_filename ?? 'rdf_table_metadata.md', 'text/markdown;charset=utf-8')}>Download documentation (Markdown)</DownloadButton>
+      </ExportFormat>
+    </Box>
+  </Stack>;
 }
 
-export function RDFToTableApp({ args }: AppProps) {
+export function RDFToTableApp({ args, busy = false }: AppProps) {
   const snapshot = args?.snapshot ?? {};
-  const activeStage = (snapshot.active_stage && stages.some((stage) => stage.id === snapshot.active_stage) ? snapshot.active_stage : 'load') as Stage;
-  useEffect(() => { window.scrollTo(0, 0); try { const mainContent = window.parent.document.querySelector('section.main'); if (mainContent) mainContent.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* ignore */ } }, [activeStage]);
+  const activeStage = (snapshot.active_stage && [...stages.map(stage => stage.id), ...inspectStages].includes(snapshot.active_stage) ? snapshot.active_stage : 'load') as Stage;
+  const loaded = Boolean(snapshot.source?.has_data);
+  const downloads = snapshot.downloads ?? {};
+  const ready = Boolean(downloads.csv || downloads.excel_base64 || downloads.markdown);
+  const index = activeStage === 'load' ? 0 : activeStage === 'export' ? 2 : 1;
+  const meta = stages[index];
+  // The backend does not remember the Inspect sub-view, so the client does: the stepper, Continue
+  // from Load and Back from Export return to the view the curator last had open.
+  const lastInspect = useRef<Stage>(inspectStages.includes(activeStage) ? activeStage : 'preview');
+  useEffect(() => { if (inspectStages.includes(activeStage)) lastInspect.current = activeStage; }, [activeStage]);
   useEffect(() => { notifyLayoutChanged(); }, [snapshot, activeStage]);
-  const page = useMemo(() => {
-    if (activeStage === 'load') return <LoadPage snapshot={snapshot} />;
-    if (activeStage === 'preview') return <PreviewPage snapshot={snapshot} />;
-    if (activeStage === 'metadata') return <MetadataPage snapshot={snapshot} />;
-    if (activeStage === 'statistics') return <StatisticsPage snapshot={snapshot} />;
-    return <ExportPage snapshot={snapshot} />;
-  }, [activeStage, snapshot]);
-  return <AppShell snapshot={snapshot} activeStage={activeStage}>{page}</AppShell>;
+  const navigate = (stage: Stage) => emit({ type: 'navigate', stage });
+  // Everything past Load needs loaded data, exactly like Continue; nothing moves while a request runs.
+  // Inspect counts as done once the curator has moved on to Export or prepared the exports.
+  const completed = [loaded, loaded && (index > 1 || ready), loaded && ready];
+  const steps: WizardStep[] = stages.map((stage, position) => ({ id: stage.id, label: stage.label, completed: completed[position], disabled: busy || (position > 0 && !loaded) }));
+  const busyHint = 'Saving changes…';
+  const nav: WorkflowNavProps = index === 0
+    ? { back: { disabled: busy }, next: { onClick: () => navigate(lastInspect.current), disabled: busy || !loaded, tooltip: 'Continue to Inspect RDF' }, hint: busy ? busyHint : loaded ? 'Next: inspect subjects, metadata and statistics.' : 'Load a TriG file to continue.' }
+    : index === 1
+      ? { back: { onClick: () => navigate('load'), disabled: busy, tooltip: 'Back to Load RDF' }, next: { onClick: () => navigate('export'), disabled: busy || !loaded, tooltip: 'Continue to Export' }, hint: busy ? busyHint : loaded ? 'Next: export tables and documentation.' : 'Load a TriG file to continue.' }
+      : { back: { onClick: () => navigate(lastInspect.current), disabled: busy, tooltip: 'Back to Inspect RDF' }, hint: busy ? busyHint : !loaded ? 'Load a TriG file to prepare exports.' : ready ? 'Workflow complete — download your tables above.' : 'Next: prepare the downloads, then save the formats you need.' };
+  const page = activeStage === 'load' ? <LoadPage snapshot={snapshot} busy={busy} />
+    : activeStage === 'preview' ? <SubjectsPage snapshot={snapshot} />
+      : activeStage === 'metadata' ? <MetadataPage snapshot={snapshot} />
+        : activeStage === 'statistics' ? <StatisticsPage snapshot={snapshot} />
+          : <ExportPage snapshot={snapshot} busy={busy} />;
+  return <WizardPage
+    steps={steps}
+    activeIndex={index}
+    onStepClick={(position) => { if (position !== index) navigate(position === 1 ? lastInspect.current : stages[position].id); }}
+    title={meta.title}
+    lead={meta.lead}
+    info={meta.info}
+    actions={<ToolMenu items={[{ label: 'Reset RDF inspector', icon: <RestartAltIcon fontSize="small" />, disabled: busy, onSelect: () => emit({ type: 'reset_workflow' }), confirm: { title: 'Reset RDF inspector?', message: 'This clears the loaded TriG catalog, the extracted tables and statistics, and any prepared downloads. You can undo this from History.', confirmLabel: 'Reset RDF inspector' } }]} />}
+    status={snapshot.statusMessage?.text ? <StatusMessage severity={snapshot.statusMessage.severity} text={snapshot.statusMessage.text} /> : undefined}
+    nav={nav}
+  >
+    <Stack spacing={2}>
+      {/* Load lists the same facts in its MetaList; later stages keep them as a context line. */}
+      {loaded && index > 0 && <LoadedContext snapshot={snapshot} />}
+      {/* Tabs stay outside the inert fieldset so keyboard focus survives the server round trip of a tab switch. */}
+      {index === 1 && <Tabs value={activeStage} onChange={(_, stage: Stage) => { if (!busy) navigate(stage); }} variant="scrollable" allowScrollButtonsMobile aria-label="Inspect views" sx={{ borderBottom: 1, borderColor: 'divider' }}>
+        {inspectTabs.map((tab) => <Tab key={tab.id} value={tab.id} label={tab.label} id={`inspect-${tab.id}`} aria-controls="inspect-panel" />)}
+      </Tabs>}
+      <Box {...(index === 1 ? { role: 'tabpanel', id: 'inspect-panel', 'aria-labelledby': `inspect-${activeStage}` } : {})}>
+        <Box component="fieldset" disabled={busy} {...{ inert: busy ? '' : undefined }} aria-busy={busy} sx={{ border: 0, p: 0, m: 0, minWidth: 0 }}>{page}</Box>
+      </Box>
+    </Stack>
+  </WizardPage>;
 }

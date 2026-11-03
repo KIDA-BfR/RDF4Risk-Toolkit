@@ -653,6 +653,44 @@ def _start_agent_reconciliation_run_async(
     thread.start()
     return True
 
+def _reset_agent_workflow() -> bool:
+    """Clear the loaded tables, run record, results and uploaded definition sources; keep the settings.
+
+    Model, agent, prompt, definition-strategy and provenance settings survive, as in the other tools'
+    resets. History records the event like any other, so Undo restores the cleared work. Mappings already
+    sent to the RDF generator stay there. Refused while a run (or its stopping worker) is still alive.
+    """
+    live_status = runtime_state.get(AGENT_RUN_STATUS_STATE_KEY, {})
+    existing_thread = runtime_state.get(AGENT_RUN_THREAD_STATE_KEY)
+    if (isinstance(live_status, dict) and live_status.get("running")) or (
+        isinstance(existing_thread, threading.Thread) and existing_thread.is_alive()
+    ):
+        runtime_state["agent_mui_status_message"] = {"severity": "warning", "text": "Stop the agent run before resetting AI-assisted matching."}
+        return False
+    for key in (AGENT_RUN_STATUS_STATE_KEY, AGENT_RUN_CANCEL_EVENT_STATE_KEY, AGENT_RUN_THREAD_STATE_KEY, AGENT_SSSOM_EXPORT_PAYLOAD_KEY):
+        runtime_state.pop(key, None)
+    runtime_state.update({
+        AGENT_INPUT_TABLES_KEY: [],
+        AGENT_RESULTS_BY_SOURCE_KEY: {},
+        AGENT_DEFINITIONS_BY_SOURCE_KEY: {},
+        AGENT_RUN_MESSAGES_KEY: [],
+        AGENT_MONITORING_STATE_KEY: {},
+        AGENT_STOP_EVENT_KEY: {},
+        AGENT_SELECTED_SOURCE_KEY: None,
+        AGENT_DATAFRAME_STATE_KEY: None,
+        AGENT_LAST_SOURCE_NAME_KEY: None,
+        AGENT_DATA_SOURCE_MESSAGE_KEY: None,
+        AGENT_UPLOADED_SOURCE_SIGNATURE_KEY: None,
+        "agent_total_indices_to_process": [],
+        "agent_reference_publication_text": "",
+        "agent_reference_publication_filename": "",
+        "agent_uploaded_definitions_filename": "",
+        "agent_rdf_handoff": None,
+        AGENT_ACTIVE_STEP_KEY: "Setup",
+    })
+    runtime_state["agent_mui_status_message"] = {"severity": "info", "text": "AI-assisted matching reset."}
+    return True
+
 def _handle_agent_mui_event(event: object, readiness_state: Dict[str, object], runtime_context: Dict[str, object], provenance_defaults_cfg: Dict[str, str]) -> bool:
     if not isinstance(event, dict):
         return False
@@ -823,6 +861,9 @@ def _handle_agent_mui_event(event: object, readiness_state: Dict[str, object], r
                 "severity": "info",
                 "text": "No agent-based reconciliation run is currently running.",
             }
+        should_rerun = True
+    elif event_type == "reset_workflow":
+        _reset_agent_workflow()
         should_rerun = True
     elif event_type in {"accept_mapping", "reject_mapping", "reset_mapping"}:
         source_name, row_index = _parse_mapping_id(event.get("mapping_id"))

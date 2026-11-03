@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Chip, Paper, Stack, Tooltip, Typography } from '@mui/material';
+import { Box, Paper, Stack, Tooltip, Typography } from '@mui/material';
 import EastIcon from '@mui/icons-material/East';
 import TableRowsIcon from '@mui/icons-material/TableRows';
 import HubIcon from '@mui/icons-material/Hub';
@@ -9,13 +9,13 @@ import { confidenceBand, BAND_META, toConfidenceNumber } from '../../components/
 
 function Node({ icon, step, title, subtitle, color }: { icon: React.ReactNode; step: string; title: string; subtitle?: string; color?: string }) {
   return (
-    <Paper variant="outlined" sx={{ p: 1, borderRadius: 2, minWidth: 0, flex: 1, borderColor: color || 'divider' }}>
-      <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mb: 0.25 }}>
-        <Box sx={{ color: 'text.secondary', display: 'flex', '& svg': { fontSize: 16 } }}>{icon}</Box>
-        <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: '.04em' }}>{step}</Typography>
+    <Paper variant="outlined" sx={{ p: 1, minWidth: 0, flex: 1, borderColor: color || 'divider' }}>
+      <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mb: 0.25, color: 'text.secondary' }}>
+        <Box sx={{ display: 'flex', fontSize: '1rem' }}>{icon}</Box>
+        <Typography variant="caption">{step}</Typography>
       </Stack>
       <Tooltip title={title}>
-        <Typography variant="body2" sx={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</Typography>
+        <Typography variant="body2" sx={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</Typography>
       </Tooltip>
       {subtitle && (
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{subtitle}</Typography>
@@ -24,8 +24,11 @@ function Node({ icon, step, title, subtitle, color }: { icon: React.ReactNode; s
   );
 }
 
+// Points right between nodes on wide drawers and down when the strip stacks on phones.
 const Arrow = () => (
-  <Box sx={{ display: 'flex', alignItems: 'center', color: 'text.disabled', px: 0.25 }}><EastIcon sx={{ fontSize: 18 }} /></Box>
+  <Box aria-hidden sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.disabled', px: 0.25, transform: { xs: 'rotate(90deg)', sm: 'none' } }}>
+    <EastIcon fontSize="small" />
+  </Box>
 );
 
 // Honest, data-driven cross-step lineage for one mapping: the path from the source term (matching
@@ -43,34 +46,34 @@ export function LineageStrip({ item }: { item: ReviewItem }) {
 
   return (
     <Box>
-      <Typography variant="overline" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+      <Typography variant="subtitle2" component="h3" sx={{ mb: 0.75 }}>
         Lineage
       </Typography>
-      <Stack direction="row" alignItems="stretch" spacing={0.25}>
+      <Stack direction={{ xs: 'column', sm: 'row' }} alignItems="stretch" spacing={0.25}>
         <Node
-          icon={<TableRowsIcon />}
+          icon={<TableRowsIcon fontSize="inherit" />}
           step="Source term"
           title={item.term || '—'}
-          subtitle={item.subject_label ? `subject: ${item.subject_label}` : 'from matching table'}
+          subtitle={item.subject_label ? `Subject: ${item.subject_label}` : 'From the matching table'}
         />
         <Arrow />
         <Node
-          icon={<HubIcon />}
+          icon={<HubIcon fontSize="inherit" />}
           step="Reconciliation"
           title={noMatch ? 'No verified match' : (item.suggested_label || item.suggested_uri || '—')}
           subtitle={
             noMatch
-              ? `${decidedByHuman ? 'curator' : 'agent'} · no_match`
-              : `${item.provider || 'agent'}${conf != null ? ` · ${BAND_META[band].label} ${conf.toFixed(2)}` : ''}`
+              ? `No match, decided by ${decidedByHuman ? 'curator' : 'agent'}`
+              : `Via ${item.provider || 'agent'}${conf != null ? `, ${BAND_META[band].label} ${conf.toFixed(2)}` : ''}`
           }
           color={noMatch ? undefined : (band === 'high' ? 'success.main' : band === 'low' ? 'error.main' : 'warning.main')}
         />
         <Arrow />
         <Node
-          icon={<AccountTreeIcon />}
+          icon={<AccountTreeIcon fontSize="inherit" />}
           step="RDF statement"
           title={noMatch ? '(not emitted)' : `${matchType}`}
-          subtitle={noMatch ? 'no triple generated' : `${subject} → ${item.suggested_uri ? item.suggested_uri.split(/[\/#]/).pop() : 'object'}`}
+          subtitle={noMatch ? 'No triple generated' : `${subject} → ${item.suggested_uri ? item.suggested_uri.split(/[\/#]/).pop() : 'object'}`}
         />
       </Stack>
     </Box>

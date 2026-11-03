@@ -2,16 +2,18 @@ import React, { useEffect, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
-import { useTheme } from '@mui/material/styles';
+import { alpha, useTheme } from '@mui/material/styles';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckIcon from '@mui/icons-material/Check';
 import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView, lineNumbers, highlightActiveLine, keymap } from '@codemirror/view';
-import { foldGutter, syntaxHighlighting, defaultHighlightStyle, bracketMatching } from '@codemirror/language';
+import { foldGutter, syntaxHighlighting, bracketMatching, HighlightStyle } from '@codemirror/language';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { json } from '@codemirror/lang-json';
+import { tags } from '@lezer/highlight';
 import { turtle } from 'codemirror-lang-turtle';
+import { fonts, radius } from '../../theme/tokens';
 
 export type RdfCodeMode = 'turtle' | 'json' | 'auto';
 
@@ -23,9 +25,10 @@ function resolveMode(value: string, mode: RdfCodeMode): 'turtle' | 'json' {
   return head === '{' || head === '[' ? 'json' : 'turtle';
 }
 
-// Syntax-highlighted, read-only viewer for RDF/Turtle/TriG/JSON-LD/SPARQL previews. Replaces
-// the plain monospace <pre>. Line numbers, code folding, search (Cmd/Ctrl-F), bracket matching,
-// and a copy button. Theme-aware (light/dark) via MUI tokens.
+// Syntax-highlighted, read-only viewer for RDF/Turtle/TriG/JSON-LD/SPARQL previews. Line numbers,
+// code folding, search (Cmd/Ctrl-F), bracket matching and a copy button. Every colour comes from
+// the active colour scheme's palette tokens (DESIGN.md §5), so light and dark stay legible; the
+// editor is rebuilt when the scheme changes.
 export function RdfCodeView({ value, mode = 'auto', maxHeight = 360 }: { value?: string; mode?: RdfCodeMode; maxHeight?: number }) {
   const theme = useTheme();
   const host = useRef<HTMLDivElement | null>(null);
@@ -36,24 +39,44 @@ export function RdfCodeView({ value, mode = 'auto', maxHeight = 360 }: { value?:
 
   useEffect(() => {
     if (!host.current) return;
+    const { palette } = theme;
     const lang = resolveMode(text, mode) === 'json' ? json() : turtle();
+    // Token roles: keywords and prefixed names in ink blue, IRIs and datatypes in info, literals
+    // in success, numbers/booleans in warning, punctuation and comments in secondary text.
+    const highlighting = HighlightStyle.define([
+      { tag: tags.keyword, color: palette.primary.main, fontWeight: 600 },
+      { tag: [tags.namespace, tags.propertyName], color: palette.primary.main },
+      { tag: [tags.url, tags.typeName, tags.link], color: palette.info.main },
+      { tag: [tags.string, tags.special(tags.string)], color: palette.success.main },
+      { tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom], color: palette.warning.main },
+      { tag: [tags.comment, tags.annotation, tags.separator, tags.squareBracket, tags.brace, tags.punctuation], color: palette.text.secondary },
+      { tag: tags.invalid, color: palette.error.main },
+    ]);
     const editorTheme = EditorView.theme(
       {
         '&': {
-          backgroundColor: dark ? '#0b1220' : '#0f172a',
-          color: '#e2e8f0',
-          borderRadius: '8px',
-          fontSize: '12.5px',
+          backgroundColor: palette.rdf.subtle,
+          color: palette.text.primary,
+          border: `1px solid ${palette.divider}`,
+          borderRadius: radius.surface,
+          fontSize: '0.8125rem',
           maxHeight: `${maxHeight}px`,
         },
-        '.cm-scroller': { overflow: 'auto', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', lineHeight: 1.6 },
-        '.cm-gutters': { backgroundColor: 'transparent', color: '#64748b', border: 'none' },
-        '.cm-activeLine': { backgroundColor: 'rgba(148,163,184,0.08)' },
+        '.cm-scroller': { overflow: 'auto', fontFamily: fonts.mono, lineHeight: 1.6 },
+        '.cm-gutters': { backgroundColor: 'transparent', color: palette.text.secondary, border: 'none' },
+        '.cm-activeLine': { backgroundColor: palette.action.hover },
         '.cm-activeLineGutter': { backgroundColor: 'transparent' },
-        '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'rgba(96,165,250,0.25)' },
-        '.cm-content': { padding: '10px 4px' },
+        '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: alpha(palette.primary.main, 0.2) },
+        '&.cm-focused .cm-matchingBracket': { backgroundColor: alpha(palette.primary.main, 0.2) },
+        '&.cm-focused .cm-nonmatchingBracket': { backgroundColor: alpha(palette.error.main, 0.2) },
+        '.cm-content': { padding: '8px 4px' },
+        // Keyboard focus (the scrollable code area is a Tab stop in most browsers) gets the app's
+        // focus ring on the whole viewer, gutters included; pointer focus stays unmarked.
+        '&.cm-focused': { outline: 'none' },
+        '&:has(:focus-visible)': { outline: `2px solid ${palette.primary.main}`, outlineOffset: '2px' },
+        '.cm-scroller:focus-visible, .cm-content:focus-visible': { outline: 'none' },
       },
-      { dark: true },
+      { dark },
     );
     const extensions: Extension[] = [
       lineNumbers(),
@@ -62,7 +85,7 @@ export function RdfCodeView({ value, mode = 'auto', maxHeight = 360 }: { value?:
       highlightSelectionMatches(),
       bracketMatching(),
       history(),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      syntaxHighlighting(highlighting),
       lang,
       keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
       EditorState.readOnly.of(true),
@@ -75,6 +98,7 @@ export function RdfCodeView({ value, mode = 'auto', maxHeight = 360 }: { value?:
       view.current?.destroy();
       view.current = null;
     };
+    // The palette only changes with the colour scheme, which `dark` tracks.
   }, [text, mode, dark, maxHeight]);
 
   const copy = () => {
@@ -85,14 +109,14 @@ export function RdfCodeView({ value, mode = 'auto', maxHeight = 360 }: { value?:
   };
 
   return (
-    <Box sx={{ position: 'relative' }}>
-      <Box ref={host} sx={{ '& .cm-editor': { borderRadius: 2 }, '& .cm-editor.cm-focused': { outline: 'none' } }} />
+    <Box sx={{ position: 'relative', minWidth: 0 }}>
+      <Box ref={host} />
       <Tooltip title={copied ? 'Copied' : 'Copy'}>
         <IconButton
           size="small"
           aria-label="Copy code"
           onClick={copy}
-          sx={{ position: 'absolute', top: 6, right: 6, color: '#94a3b8', bgcolor: 'rgba(15,23,42,0.6)', '&:hover': { bgcolor: 'rgba(15,23,42,0.85)' } }}
+          sx={{ position: 'absolute', top: 8, right: 8, color: 'text.secondary', bgcolor: 'background.paper', border: 1, borderColor: 'divider', '&:hover': { bgcolor: 'background.paper', color: 'text.primary' } }}
         >
           {copied ? <CheckIcon sx={{ fontSize: 16 }} /> : <ContentCopyIcon sx={{ fontSize: 16 }} />}
         </IconButton>

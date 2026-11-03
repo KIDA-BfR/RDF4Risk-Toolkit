@@ -10,7 +10,6 @@ import {
   TimelineContent,
   timelineItemClasses,
 } from '@mui/lab';
-import { AnimatePresence, motion } from 'motion/react';
 import type { RunStatus } from './AgentRunProgressPanel';
 
 type Entry = { id: string; sig: string; time: string; text: string; kind: 'stage' | 'term' | 'message' | 'activity' };
@@ -70,27 +69,24 @@ export function AgentActivityTimeline({ runStatus, stageLabels }: { runStatus: R
   }
 
   return (
-    <Box ref={scrollRef} sx={{ width: '100%', maxHeight: 240, overflowY: 'auto', borderRadius: 2, border: '1px solid', borderColor: 'divider', bgcolor: 'background.default', px: 1, py: 0.5 }}>
+    <Box ref={scrollRef} sx={{ width: '100%', maxHeight: 240, overflowY: 'auto', borderRadius: 2, border: 1, borderColor: 'divider', bgcolor: 'rdf.subtle', px: 1, py: 0.5 }}>
       <Timeline sx={{ m: 0, p: 0, [`& .${timelineItemClasses.root}:before`]: { flex: 0, p: 0 } }}>
-        <AnimatePresence initial={false}>
-          {entries.map((entry, idx) => {
-            const isLast = idx === entries.length - 1;
-            return (
-              <motion.div key={entry.id} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.25 }}>
-                <TimelineItem sx={{ minHeight: 38 }}>
-                  <TimelineSeparator>
-                    <TimelineDot color={KIND_COLOR[entry.kind] as any} variant={isLast ? 'filled' : 'outlined'} sx={isLast ? { boxShadow: '0 0 0 4px rgba(37,99,235,0.18)' } : undefined} />
-                    {!isLast && <TimelineConnector />}
-                  </TimelineSeparator>
-                  <TimelineContent sx={{ py: 0.25 }}>
-                    <Typography variant="body2" sx={{ fontWeight: isLast ? 700 : 500 }}>{entry.text}</Typography>
-                    <Typography variant="caption" color="text.secondary">{entry.time}</Typography>
-                  </TimelineContent>
-                </TimelineItem>
-              </motion.div>
-            );
-          })}
-        </AnimatePresence>
+        {/* Entries are data: they appear without an entrance animation (DESIGN.md §8). */}
+        {entries.map((entry, idx) => {
+          const isLast = idx === entries.length - 1;
+          return (
+            <TimelineItem key={entry.id} sx={{ minHeight: 38 }}>
+              <TimelineSeparator>
+                <TimelineDot color={KIND_COLOR[entry.kind] as any} variant={isLast ? 'filled' : 'outlined'} />
+                {!isLast && <TimelineConnector />}
+              </TimelineSeparator>
+              <TimelineContent sx={{ py: 0.25 }}>
+                <Typography variant="body2" sx={{ fontWeight: isLast ? 600 : 400 }}>{entry.text}</Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>{entry.time}</Typography>
+              </TimelineContent>
+            </TimelineItem>
+          );
+        })}
       </Timeline>
     </Box>
   );

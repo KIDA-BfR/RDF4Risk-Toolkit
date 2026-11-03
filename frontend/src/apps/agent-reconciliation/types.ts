@@ -185,6 +185,8 @@ export type ReviewItem = {
 export type ReviewState = { items?: ReviewItem[]; counts?: ReviewCounts; selected_source?: string | null };
 
 export type ComponentArgs = {
+  rdf_handoff?: { status?: string; confirmation_token?: string; message?: string } | null;
+  rdf_handoff_revision?: string;
   active_stage?: Stage;
   activeStage?: string;
   config?: Partial<WorkflowConfig>;
@@ -213,4 +215,7 @@ export type ComponentArgs = {
 export type AppEvent = { type: string; [key: string]: unknown };
 // The standalone host passes an async handler; the returned promise resolves after the
 // backend snapshot has been applied, which lets callers await the round-trip.
-export type AgentReconciliationAppProps = { args?: ComponentArgs; onEvent?: (event: AppEvent) => void | Promise<unknown> };
+// `busy` is the shell's pending-request flag; navigation stays disabled while it is set.
+// `onDraftChange` reports unsaved local edits (review match types) so the shell can guard tool
+// switches, as it does for the other tools.
+export type AgentReconciliationAppProps = { args?: ComponentArgs; onEvent?: (event: AppEvent) => void | Promise<unknown>; busy?: boolean; onDraftChange?: (dirty: boolean) => void };

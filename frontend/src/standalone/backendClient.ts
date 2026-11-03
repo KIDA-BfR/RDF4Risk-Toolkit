@@ -53,7 +53,7 @@ export async function postEvent(service: ServiceId, event: AppEvent): Promise<Ba
 }
 
 export type ProjectMeta = { id: string; name: string; saved_at: number | null };
-export type HistoryEntry = { index: number; label: string; service: string; ts: number };
+export type HistoryEntry = { index: number; id?: string; label: string; service: string; ts: number };
 export type WorkspaceSnapshot = { projects: ProjectMeta[]; history: HistoryEntry[] } & Record<string, unknown>;
 
 export async function fetchWorkspace(): Promise<WorkspaceSnapshot> {

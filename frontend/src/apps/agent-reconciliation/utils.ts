@@ -1,15 +1,16 @@
 import type { AdvancedConfig, AutoAcceptPolicy, ProvenanceConfig, Stage, WorkflowConfig } from './types';
 
+// Strategy cards on Setup: one line each; the details go into the section's info popover.
 export const workflows = [
-  { id: 'wikidata_deep_agent', title: 'Wikidata Deep Agent', badge: 'FAST & BROAD', badgeColor: 'primary' as const, description: 'Searches Wikidata only. Optimized for general-purpose entities and high-speed reconciliation.', bullets: ['Broad coverage', 'Fast execution', 'General purpose'] },
-  { id: 'bioportal_wikidata_multiagent', title: 'BioPortal + Wikidata', badge: 'DOMAIN FOCUS', badgeColor: 'success' as const, description: 'Prioritizes domain-specific ontologies via BioPortal, using Wikidata as a fallback.', bullets: ['Domain-aware', 'Scientific/medical data', 'Expert terminology'] },
+  { id: 'wikidata_deep_agent', title: 'Wikidata deep agent', description: 'Wikidata only. Fast, broad coverage of general-purpose entities.', details: ['broad coverage', 'fast execution', 'general-purpose terms'] },
+  { id: 'bioportal_wikidata_multiagent', title: 'BioPortal + Wikidata', description: 'Domain ontologies from BioPortal first, Wikidata as a fallback.', details: ['domain-aware', 'scientific and medical data', 'expert terminology'] },
 ];
 
-export const stages: { id: Stage; label: string; caption: string }[] = [
-  { id: 'setup', label: 'Setup', caption: 'Data & config' },
-  { id: 'run', label: 'Run', caption: 'Execute agents' },
-  { id: 'review', label: 'Review', caption: 'Curate mappings' },
-  { id: 'export', label: 'Export', caption: 'SSSOM & handoff' },
+export const stages: { id: Stage; label: string }[] = [
+  { id: 'setup', label: 'Set up' },
+  { id: 'run', label: 'Run agents' },
+  { id: 'review', label: 'Review matches' },
+  { id: 'export', label: 'Export' },
 ];
 
 export const reviewStatuses = ['all', 'matched', 'candidate_suggested', 'pending', 'accepted', 'rejected', 'no_match'] as const;
@@ -46,15 +47,27 @@ export function formatReviewMode(value?: string) {
   return normalizeCandidateReviewMode(value) === 'exploratory' ? 'Exploratory' : 'Conservative';
 }
 
+type ChipTone = 'default' | 'primary' | 'info' | 'success' | 'warning' | 'error';
+
+// One status vocabulary for grid chips, count facets, filters, triage and the legend popover.
+// Keys are backend protocol values; only the labels are for people.
+export const STATUS_META: Record<string, { label: string; color: ChipTone }> = {
+  pending: { label: 'Pending', color: 'warning' },
+  matched: { label: 'Matched', color: 'primary' },
+  candidate_suggested: { label: 'Review suggestion', color: 'info' },
+  accepted: { label: 'Accepted', color: 'success' },
+  rejected: { label: 'Rejected', color: 'error' },
+  no_match: { label: 'No match', color: 'default' },
+  timeout: { label: 'Timed out', color: 'default' },
+};
+
 export function statusLabel(status?: string) {
   const value = String(status || '').trim();
-  if (value === 'matched') return 'Matched';
-  if (value === 'candidate_suggested') return 'Review suggestion';
-  if (value === 'no_match') return 'No suitable candidate';
-  if (value === 'pending') return 'Pending review';
-  if (value === 'accepted') return 'Accepted';
-  if (value === 'rejected') return 'Rejected';
-  return value || 'Pending review';
+  return STATUS_META[value || 'pending']?.label ?? value;
+}
+
+export function statusColor(status?: string): ChipTone {
+  return STATUS_META[String(status || '').trim() || 'pending']?.color ?? 'default';
 }
 
 export function normalizeEditableSkosMatchType(matchType?: string): typeof editableSkosMatchTypes[number] {
@@ -64,56 +77,45 @@ export function normalizeEditableSkosMatchType(matchType?: string): typeof edita
     : 'skos:closeMatch';
 }
 
-export function skosChipSx(matchType?: string) {
+// SKOS relation tone for chips (theme palette tokens, so both colour schemes work). The CURIE
+// label always carries the meaning; colour only helps scanning.
+export function skosColor(matchType?: string): ChipTone {
   const value = String(matchType || '').trim();
-
-  if (value === 'skos:exactMatch') {
-    return { bgcolor: '#dbeafe', color: '#1d4ed8', fontWeight: 700 };
-  }
-
-  if (value === 'skos:closeMatch') {
-    return { bgcolor: '#dcfce7', color: '#166534', fontWeight: 700 };
-  }
-
-  if (value === 'skos:relatedMatch') {
-    return { bgcolor: '#ffedd5', color: '#9a3412', fontWeight: 700 };
-  }
-
-  if (value === 'no_match') {
-    return { bgcolor: '#f3f4f6', color: '#374151', fontWeight: 700 };
-  }
-
-  return { bgcolor: '#f3f4f6', color: '#374151', fontWeight: 700 };
+  if (value === 'skos:exactMatch') return 'primary';
+  if (value === 'skos:closeMatch') return 'success';
+  if (value === 'skos:relatedMatch') return 'warning';
+  return 'default';
 }
 
-export function reviewStatusChipSx(status?: string) {
-  const value = String(status || '').trim();
+const countFormat = new Intl.NumberFormat();
+const costFormat = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4 });
 
-  if (value === 'matched') {
-    return { bgcolor: '#dcfce7', color: '#166534', fontWeight: 700 };
-  }
+// Formatted numbers for KPIs and summaries. Missing values return '' so MetaList/KpiStrip show "—".
+export function formatCount(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '';
+  const n = Number(value);
+  return Number.isFinite(n) ? countFormat.format(n) : '';
+}
 
-  if (value === 'candidate_suggested') {
-    return { bgcolor: '#e0f2fe', color: '#075985', fontWeight: 700 };
-  }
+export function formatSeconds(value: unknown): string {
+  const seconds = Number(value);
+  if (value === null || value === undefined || value === '' || !Number.isFinite(seconds) || seconds < 0) return '';
+  if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
+  const total = Math.round(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  return hours ? `${hours} h ${minutes} min` : `${minutes} min ${total % 60} s`;
+}
 
-  if (value === 'pending') {
-    return { bgcolor: '#fef3c7', color: '#92400e', fontWeight: 700 };
-  }
+export function formatCost(value: unknown): string {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? costFormat.format(n) : '';
+}
 
-  if (value === 'accepted') {
-    return { bgcolor: '#dcfce7', color: '#166534', fontWeight: 700 };
-  }
-
-  if (value === 'rejected') {
-    return { bgcolor: '#fee2e2', color: '#991b1b', fontWeight: 700 };
-  }
-
-  if (value === 'no_match') {
-    return { bgcolor: '#f3f4f6', color: '#374151', fontWeight: 700 };
-  }
-
-  return { bgcolor: '#f3f4f6', color: '#374151', fontWeight: 700 };
+export function formatScore(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '';
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(2) : String(value);
 }
 
 export function asNumber(value: unknown, fallback: number): number {

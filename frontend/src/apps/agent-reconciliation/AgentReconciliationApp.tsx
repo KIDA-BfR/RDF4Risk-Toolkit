@@ -1,42 +1,58 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
   Button,
   ButtonBase,
-  Card,
-  CardContent,
   Checkbox,
   Chip,
   Collapse,
-  Divider,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   Drawer,
   FormControl,
   FormControlLabel,
+  IconButton,
   InputLabel,
   LinearProgress,
   MenuItem,
   Paper,
   Select,
   Stack,
-  Step,
-  StepButton,
-  Stepper,
   Switch,
   Tab,
   Tabs,
   TextField,
   Tooltip,
   Typography,
-  alpha,
 } from '@mui/material';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
-import RefreshIcon from '@mui/icons-material/Refresh';
-import RateReviewIcon from '@mui/icons-material/RateReview';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import CloseIcon from '@mui/icons-material/Close';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import SkipNextIcon from '@mui/icons-material/SkipNext';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { DataTable } from '../../components/table/DataTable';
-import { AgentRunProgressPanel, type AgentRunWorkflow, type RunStatus } from '../../components/run/AgentRunProgressPanel';
+import { AgentRunProgressPanel, type RunStatus } from '../../components/run/AgentRunProgressPanel';
+import { ToolMenu } from '../../components/actions/ToolMenu';
+import { WizardPage, type WizardStep } from '../../components/layout/WizardPage';
+import { Section } from '../../components/layout/Section';
+import { Disclosure } from '../../components/layout/Disclosure';
+import { MetaList, type MetaItem } from '../../components/layout/MetaList';
+import { KpiStrip } from '../../components/layout/KpiStrip';
+import { InfoButton, type InfoContent } from '../../components/help/InfoButton';
+import { ConfirmActionButton, ConfirmDialog } from '../../components/dialogs/ConfirmActionButton';
+import { DownloadButton, GenerateButton, ResetButton, UploadButton, UseResultButton } from '../../components/actions/WorkflowActionButtons';
+import { EmptyState } from '../../components/states/EmptyState';
+import { fonts } from '../../theme/tokens';
+import { CommitTextField } from './CommitTextField';
 import { ReviewGrid } from './ReviewGrid';
 import { AgentOptionsDialog } from './AgentOptionsDialog';
 import { ReviewProvenancePanel } from './ProvenancePanel';
@@ -47,6 +63,7 @@ import type {
   AppEvent,
   DataStatus,
   ExportPayload,
+  ReadinessCheck,
   ReadinessState,
   ReviewItem,
   ReviewState,
@@ -56,61 +73,21 @@ import type {
   WorkflowConfig,
 } from './types';
 import {
+  formatCost,
+  formatCount,
   formatReviewMode,
+  formatScore,
+  formatSeconds,
   normalizeConfig,
   normalizeStage,
-  skosChipSx,
+  skosColor,
   splitCsv,
   stages,
+  statusColor,
+  statusLabel,
   unique,
   workflows,
 } from './utils';
-import { heroSurface } from '../../shared/surfaces';
-const AgentIcon = () => (
-  <svg
-    width="64"
-    height="64"
-    viewBox="0 0 64 64"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    role="img"
-    style={{ marginRight: '12px' }}
-  >
-    <defs>
-      <linearGradient id="mainGradient" x1="9" y1="9" x2="55" y2="55" gradientUnits="userSpaceOnUse">
-        <stop stopColor="#2563EB"/>
-        <stop offset="0.52" stopColor="#0891B2"/>
-        <stop offset="1" stopColor="#14B8A6"/>
-      </linearGradient>
-      <linearGradient id="accentGradient" x1="40" y1="14" x2="56" y2="30" gradientUnits="userSpaceOnUse">
-        <stop stopColor="#38BDF8"/>
-        <stop offset="1" stopColor="#14B8A6"/>
-      </linearGradient>
-      <filter id="softShadow" x="-40%" y="-40%" width="180%" height="180%">
-        <feDropShadow dx="0" dy="4" stdDeviation="4" floodColor="#0F172A" floodOpacity="0.18"/>
-      </filter>
-    </defs>
-    <circle cx="13.5" cy="18" r="5.5" fill="#F8FAFC" stroke="#2563EB" strokeWidth="2"/>
-    <circle cx="13.5" cy="32" r="5.5" fill="#F8FAFC" stroke="#0891B2" strokeWidth="2"/>
-    <circle cx="13.5" cy="46" r="5.5" fill="#F8FAFC" stroke="#14B8A6" strokeWidth="2"/>
-    <path d="M19.5 18 C25 18 25.5 27 30.5 29" stroke="url(#mainGradient)" strokeWidth="2.6" strokeLinecap="round"/>
-    <path d="M19.5 32 H29" stroke="url(#mainGradient)" strokeWidth="2.6" strokeLinecap="round"/>
-    <path d="M19.5 46 C25 46 25.5 37 30.5 35" stroke="url(#mainGradient)" strokeWidth="2.6" strokeLinecap="round"/>
-    <path
-      d="M32 20.5L42 26.25V37.75L32 43.5L22 37.75V26.25L32 20.5Z"
-      fill="url(#mainGradient)"
-      filter="url(#softShadow)"
-    />
-    <circle cx="32" cy="32" r="4.5" fill="#FFFFFF" opacity="0.96"/>
-    <path d="M28.8 32H35.2" stroke="#2563EB" strokeWidth="1.8" strokeLinecap="round"/>
-    <path d="M32 28.8V35.2" stroke="#14B8A6" strokeWidth="1.8" strokeLinecap="round"/>
-    <path d="M42.5 32H47.5" stroke="url(#mainGradient)" strokeWidth="2.6" strokeLinecap="round"/>
-    <circle cx="52" cy="32" r="8.5" fill="url(#accentGradient)" filter="url(#softShadow)"/>
-    <path d="M48.3 32.1L50.9 34.7L56.1 29.2" stroke="#FFFFFF" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/>
-    <circle cx="25.2" cy="24.6" r="1.7" fill="#38BDF8"/>
-    <circle cx="25.2" cy="39.4" r="1.7" fill="#14B8A6"/>
-  </svg>
-);
 
 async function fileToBase64(file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -119,45 +96,102 @@ async function fileToBase64(file: File) {
   return window.btoa(binary);
 }
 
-
-function SummaryRow({ label, value }: { label: string; value: React.ReactNode }) {
-  return <Stack direction="row" justifyContent="space-between" spacing={2}><Typography variant="body2" color="text.secondary">{label}</Typography><Typography variant="body2" sx={{ fontWeight: 700, textAlign: 'right' }}>{value}</Typography></Stack>;
+function downloadFile(content: string, type: string, filename: string) {
+  const url = window.URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.setTimeout(() => window.URL.revokeObjectURL(url), 0);
 }
 
-function AppShell({ activeStage, onNavigate, onOpenOptions, children, dataStatus, runStatus, review }: { activeStage: Stage; onNavigate: (stage: Stage) => void; onOpenOptions: () => void; children: React.ReactNode; dataStatus: DataStatus; runStatus: RunStatus; review: ReviewState }) {
-  const activeStep = stages.findIndex((s) => s.id === activeStage);
-  return <Box sx={{ bgcolor: 'background.default', minHeight: '100vh', p: { xs: 1, md: 2 }, borderRadius: 4 }}><Stack spacing={2}>
-    <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 }, borderRadius: 4, background: heroSurface, boxShadow: '0 18px 48px rgba(15,23,42,.08)' }}>
-      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems={{ xs: 'stretch', lg: 'center' }} justifyContent="space-between">
-        <Stack direction="row" spacing={1.5} alignItems="center"><AgentIcon /><Stack><Typography variant="h5" component="h2">Agent-Based Reconciliation</Typography><Typography variant="body2" color="text.secondary">Agent-based workflow for semantic reconciliation, curation, and SSSOM export</Typography></Stack></Stack>
-        <Stack direction="row" spacing={1.5} alignItems="center" justifyContent={{ xs: 'space-between', lg: 'flex-end' }}>
-          <Stepper nonLinear activeStep={activeStep} sx={{ minWidth: { lg: 560 } }}>{stages.map((stage, idx) => <Step key={stage.id} completed={idx < activeStep}><StepButton onClick={() => onNavigate(stage.id)}><Stack spacing={0}><Typography variant="body2" sx={{ fontWeight: 800 }}>{stage.label}</Typography><Typography variant="caption" color="text.secondary">{stage.caption}</Typography></Stack></StepButton></Step>)}</Stepper>
-          <Tooltip title="Provider, connection, monitoring, tracing and metadata settings">
-            <Button
-              variant="contained"
-              startIcon={<SettingsOutlinedIcon />}
-              onClick={onOpenOptions}
-              aria-label="Open agent service options"
-              sx={{ flexShrink: 0, alignSelf: { xs: 'flex-start', lg: 'center' }, px: 2.5 }}
-            >
-              Options
-            </Button>
-          </Tooltip>
-        </Stack>
-      </Stack>
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4, 1fr)' }, gap: 1.2, mt: 2 }}>
-        <Chip label={dataStatus.has_table ? `${dataStatus.rows ?? 0} rows loaded` : 'No table loaded'} color={dataStatus.has_table ? 'success' : 'warning'} />
-        <Chip label={dataStatus.required_columns_detected ? 'Schema valid' : 'Schema pending'} color={dataStatus.required_columns_detected ? 'success' : 'warning'} />
-        <Chip label={runStatus.finished ? 'Run finished' : runStatus.running ? 'Running' : 'Ready state'} color={runStatus.finished ? 'success' : runStatus.running ? 'info' : 'default'} />
-        <Chip label={`${review.counts?.pending ?? 0} pending review`} color={(review.counts?.pending ?? 0) ? 'warning' : 'default'} />
-      </Box>
-    </Paper>
-    {children}
-  </Stack></Box>;
+const READ_ERROR = 'This file could not be read. Choose it again or use another file.';
+const SSSOM_FILENAME = 'agent_reconciliation_sssom_export.csv';
+const SSSOM_MIME = 'text/csv;charset=utf-8';
+
+// What fixes each failing readiness check (keys are the backend's), for the Setup hint.
+const SETUP_FIXES: Record<string, string> = {
+  matching_table: 'Load a matching table',
+  required_columns: 'Load a table with the required columns',
+  provider: 'Configure the LLM provider in Options',
+  models: 'Choose an available model in Options',
+  workflow: 'Choose a matching strategy',
+};
+
+const monoSx = { fontFamily: fonts.mono, fontSize: '0.8125rem' } as const;
+const codeSx = { m: 0, p: 1, maxHeight: 280, overflow: 'auto', fontFamily: fonts.mono, fontSize: '0.75rem', lineHeight: 1.6, bgcolor: 'rdf.subtle', border: 1, borderColor: 'divider', borderRadius: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } as const;
+const OPEN_STATUSES = ['pending', 'matched', 'candidate_suggested'] as const;
+
+// One instruction line per stage; the how-it-works copy sits behind the stage ⓘ.
+const STAGE_COPY: Record<Stage, { title: string; lead: string; info: InfoContent }> = {
+  setup: {
+    title: 'Prepare your agent-assisted reconciliation',
+    lead: 'Check your matching table and choose how the agents should find matches.',
+    info: { title: 'Setting up a run', content: <><p>Load the matching table, then choose a strategy. The agents search the chosen sources, rank candidates and propose a SKOS match type for every term.</p><p>Provider, model, keys, monitoring and provenance are in Options. Changes save automatically.</p></> },
+  },
+  run: {
+    title: 'Run and monitor reconciliation',
+    lead: 'Start the agents and follow their progress; you can stop at any time.',
+    info: { title: 'Running the agents', content: <><p>The agents process the terms one by one. Finished terms stay available for review when you stop.</p><ul><li><strong>Resume run</strong> continues with the next term.</li><li><strong>Skip failed term and resume</strong> passes over a term that hit an LLM or runtime error.</li><li><strong>Restart from the beginning</strong> processes every term again.</li></ul></> },
+  },
+  review: {
+    title: 'Review the suggested mappings',
+    lead: 'Check the evidence, adjust match types, and accept or reject each suggestion.',
+    info: { title: 'Reviewing suggestions', content: <><p>Nothing is used without your decision. Accept, reject or confirm a no-match for each suggestion, and adjust the SKOS match type before accepting if needed.</p><p>Decisions are saved to this workspace. Undo in the notification reverts the last action.</p></> },
+  },
+  export: {
+    title: 'Export your reviewed mappings',
+    lead: 'Download accepted mappings as SSSOM, or send them to the RDF generator.',
+    info: { title: 'Exporting mappings', content: <><p>The SSSOM export downloads your accepted mappings as a CSV.</p><p>Continue sends the current mapping table to the RDF generator, where you build RDF from it. Rejected and no-match rows stay in this workspace for audit.</p></> },
+  },
+};
+
+// A field with its explanation in an ⓘ beside it (not inside the floating label, where a button
+// would compete with the input for clicks).
+function WithInfo({ title, info, children }: { title: string; info: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
+      <Box sx={{ flex: 1, minWidth: 0 }}>{children}</Box>
+      <InfoButton title={title}>{info}</InfoButton>
+    </Stack>
+  );
 }
 
-function FileUploadPanel({ dataStatus, emit }: { dataStatus: DataStatus; emit: (event: AppEvent) => void }) {
+function tableSummaryItems(dataStatus: DataStatus): MetaItem[] {
+  return [
+    { label: 'File', value: dataStatus.filename || dataStatus.source_name, mono: true },
+    { label: 'Rows', value: formatCount(dataStatus.rows ?? 0), numeric: true },
+    ...((dataStatus.reconciled_rows ?? 0) > 0 ? [{ label: 'To reconcile', value: `${formatCount(dataStatus.unreconciled_rows ?? 0)} of ${formatCount(dataStatus.rows ?? 0)} (${formatCount(dataStatus.reconciled_rows)} already reconciled)`, numeric: true }] : []),
+    { label: 'Columns', value: formatCount(dataStatus.columns ?? 0), numeric: true },
+    { label: 'Schema', value: dataStatus.schema_message || 'No schema detected' },
+  ];
+}
+
+type TableSource = 'upload' | 'prepared';
+
+// `continueAvailable`: Continue can already move on, so it stays the view's one contained button.
+function MatchingTableSection({ dataStatus, hasResults, continueAvailable, emit }: { dataStatus: DataStatus; hasResults: boolean; continueAvailable: boolean; emit: (event: AppEvent) => void }) {
   const [uploadError, setUploadError] = useState('');
+  const [replacing, setReplacing] = useState<TableSource | null>(null);
+  const csvInput = useRef<HTMLInputElement>(null);
+  const loaded = Boolean(dataStatus.has_table);
+  const uploadDisabled = dataStatus.upload_bridge_available === false;
+  const preparedAvailable = Boolean(dataStatus.shared_table_available);
+  // Until a table is loaded, loading one is the stage's main action: the prepared table when there is one.
+  const primary = !loaded && !continueAvailable;
+  const previewRows = dataStatus.preview ?? [];
+
+  const load = (source: TableSource) => {
+    if (source === 'upload') csvInput.current?.click();
+    else emit({ type: 'load_shared_table' });
+  };
+  // A new table clears the suggestions and review decisions, so ask first when there are any.
+  const requestLoad = (source: TableSource) => {
+    if (loaded && hasResults) setReplacing(source);
+    else load(source);
+  };
 
   async function handleCsvUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -165,59 +199,93 @@ function FileUploadPanel({ dataStatus, emit }: { dataStatus: DataStatus; emit: (
     setUploadError('');
     if (!file) return;
     if (!file.name.toLowerCase().endsWith('.csv')) {
-      setUploadError('Please choose a .csv matching table.');
+      setUploadError('This is not a CSV file. Choose a .csv matching table.');
       return;
     }
     try {
       const content = await file.text();
       emit({ type: 'upload_csv', filename: file.name, content });
-    } catch (error) {
-      setUploadError(error instanceof Error ? error.message : 'Unable to read the selected CSV file.');
+    } catch {
+      setUploadError(READ_ERROR);
     }
   }
 
-  return <Card variant="outlined"><CardContent><Stack spacing={1.5}>
-    <Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="subtitle1">File Upload</Typography><Chip size="small" label={dataStatus.has_table ? 'file selected' : 'waiting'} color={dataStatus.has_table ? 'success' : 'warning'} /></Stack>
-    <Paper variant="outlined" sx={{ p: 3, textAlign: 'center', borderStyle: 'dashed', borderRadius: 3, bgcolor: 'background.default' }}>
-      <Typography variant="h6" component="h3">Upload matching table</Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mt: .5 }}>Choose a CSV matching table directly in the browser app, or load the shared table from the Matching Table Generator.</Typography>
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="center" alignItems="center" sx={{ mt: 1.5 }}>
-        <Button component="label" variant="contained" disabled={dataStatus.upload_bridge_available === false}>
-          Upload CSV file
-          <input hidden type="file" accept=".csv,text/csv" onChange={handleCsvUpload} />
-        </Button>
-        <Button variant="outlined" onClick={() => emit({ type: 'load_shared_table' })} disabled={!dataStatus.shared_table_available}>Load shared matching table</Button>
+  return <Section
+    title="Matching table"
+    description="A CSV file (.csv) with one row per term."
+    info={{ title: 'Matching table', content: <><p>A CSV with one row per term to reconcile, in SSSOM-style columns.</p><p><strong>Use prepared table</strong> picks up the table you prepared in the Matching table tool.</p></> }}
+    actions={<Chip size="small" variant="outlined" label={loaded ? 'Loaded' : 'No table yet'} color={loaded ? 'success' : 'warning'} />}
+  >
+    {/* Outside the Stack so the hidden input does not shift its spacing. */}
+    <input ref={csvInput} hidden type="file" accept=".csv,text/csv" onChange={handleCsvUpload} />
+    <Stack spacing={2}>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }}>
+        <Tooltip title={preparedAvailable ? '' : 'No prepared table yet. Prepare one in the Matching table tool.'}>
+          <span><UseResultButton variant={primary && preparedAvailable ? 'contained' : 'outlined'} disabled={!preparedAvailable} fullWidth onClick={() => requestLoad('prepared')}>Use prepared table</UseResultButton></span>
+        </Tooltip>
+        <Tooltip title={uploadDisabled ? 'File upload is not available right now.' : ''}>
+          <span><UploadButton variant={primary && !preparedAvailable ? 'contained' : 'outlined'} disabled={uploadDisabled} fullWidth onClick={() => requestLoad('upload')}>{loaded ? 'Replace table' : 'Upload table'}</UploadButton></span>
+        </Tooltip>
       </Stack>
-      {uploadError && <Alert severity="warning" variant="outlined" sx={{ mt: 1.5, textAlign: 'left' }}>{uploadError}</Alert>}
-    </Paper>
-    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4,1fr)' }, gap: 1 }}>
-      <SummaryRow label="File" value={dataStatus.filename || dataStatus.source_name || '—'} />
-      <SummaryRow label="Rows" value={dataStatus.rows ?? 0} />
-      {(dataStatus.reconciled_rows ?? 0) > 0 && <SummaryRow label="To reconcile" value={`${dataStatus.unreconciled_rows ?? 0} of ${dataStatus.rows ?? 0} · ${dataStatus.reconciled_rows} already reconciled`} />}
-      <SummaryRow label="Columns" value={dataStatus.columns ?? 0} />
-      <SummaryRow label="Schema" value={dataStatus.schema_message || 'No schema detected'} />
-    </Box>
-    <DataTable rows={dataStatus.preview} empty="No table preview available yet." />
-  </Stack></CardContent></Card>;
+      {uploadError && <Alert severity="error">{uploadError}</Alert>}
+      <MetaList columns={2} items={tableSummaryItems(dataStatus)} />
+      {(loaded || previewRows.length > 0) && <Disclosure plain title="Preview" summary={`Showing ${formatCount(previewRows.length)} of ${formatCount(dataStatus.rows ?? previewRows.length)} rows`}>
+        <DataTable rows={previewRows} empty="No table preview available yet." />
+      </Disclosure>}
+    </Stack>
+    <ConfirmDialog
+      open={replacing !== null}
+      title="Replace the matching table?"
+      message="Loading another table clears the current suggestions and review decisions. You can undo this from History."
+      confirmLabel="Replace table"
+      onClose={() => setReplacing(null)}
+      // Runs inside the confirm click, so the file picker still opens as a user action.
+      onConfirm={() => { if (replacing) load(replacing); }}
+    />
+  </Section>;
 }
 
-function WorkflowConfigPanelInner({ config, providerLabels, modelLabels, ontologyOptions, update, onOpenOptions }: { config: WorkflowConfig; providerLabels: Record<string, string>; modelLabels: Record<string, string>; ontologyOptions: string[]; update: (patch: Partial<WorkflowConfig>) => void; onOpenOptions: () => void }) {
-  const selectedWorkflow = workflows.find((item) => item.id === config.workflow) ?? workflows[0];
+function StrategySection({ config, providerLabels, modelLabels, ontologyOptions, update }: { config: WorkflowConfig; providerLabels: Record<string, string>; modelLabels: Record<string, string>; ontologyOptions: string[]; update: (patch: Partial<WorkflowConfig>) => void }) {
   const ontologySelectOptions = unique([...(ontologyOptions || []), ...(config.bioportal_ontologies || [])]).sort();
   const ontologyMenuProps = { PaperProps: { sx: { maxHeight: 360 } } };
-  return <Card variant="outlined"><CardContent><Stack spacing={2}>
-    <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} spacing={1}>
-      <Stack><Typography variant="subtitle1">Workflow Configuration</Typography><Typography variant="body2" color="text.secondary">Agent strategy and ontology scope for this run.</Typography></Stack>
-      <Button variant="outlined" size="small" startIcon={<SettingsOutlinedIcon />} onClick={onOpenOptions} sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}>Options</Button>
+  return <Section
+    title="Matching strategy"
+    description="Model and provider are set in Options."
+    info={{ title: 'Matching strategies', content: <>{workflows.map((workflow) => <p key={workflow.id}><strong>{workflow.title}</strong>: {workflow.details.join(', ')}.</p>)}</> }}
+  >
+    <Stack spacing={2}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.5 }}>{workflows.map((workflow) => {
+        const selected = config.workflow === workflow.id;
+        return <ButtonBase key={workflow.id} aria-pressed={selected} onClick={() => update({ workflow: workflow.id })} sx={{ display: 'block', textAlign: 'left', p: 2, minWidth: 0, border: 1, borderRadius: 2, borderColor: selected ? 'primary.main' : 'divider', bgcolor: selected ? 'action.selected' : 'background.paper' }}>
+          <Stack direction="row" spacing={1} alignItems="center" component="span"><Typography variant="subtitle2" component="span">{workflow.title}</Typography>{selected && <CheckCircleIcon color="primary" fontSize="small" sx={{ ml: 'auto' }} />}</Stack>
+          <Typography variant="body2" color="text.secondary" component="span" sx={{ display: 'block', mt: 0.5 }}>{workflow.description}</Typography>
+        </ButtonBase>;
+      })}</Box>
+      <Collapse in={config.workflow === 'bioportal_wikidata_multiagent'}>
+        <Stack spacing={1.5}>
+          <Typography variant="subtitle2" component="h4">BioPortal settings</Typography>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.5, alignItems: 'center' }}>
+            <WithInfo title="Ontology search mode" info={<ul><li><strong>Configured ontologies only</strong> searches just the ontologies you select.</li><li><strong>Broad retrieval</strong> searches all BioPortal ontologies and uses the local registry to score candidates, not to filter them.</li></ul>}>
+              <FormControl fullWidth size="small"><InputLabel>Ontology search mode</InputLabel><Select label="Ontology search mode" value={config.ontology_search_mode || (config.bioportal_use_all_ontologies ? 'broad_retrieval_registry_scored' : 'configured_only')} onChange={(e) => update({ ontology_search_mode: e.target.value as WorkflowConfig['ontology_search_mode'], bioportal_use_all_ontologies: false })}><MenuItem value="configured_only">Configured ontologies only</MenuItem><MenuItem value="broad_retrieval_registry_scored">Broad retrieval, registry-scored (recommended)</MenuItem></Select></FormControl>
+            </WithInfo>
+            <FormControl fullWidth size="small" disabled={config.ontology_search_mode !== 'configured_only'}><InputLabel>BioPortal ontologies</InputLabel><Select multiple displayEmpty label="BioPortal ontologies" MenuProps={ontologyMenuProps} value={config.ontology_search_mode !== 'configured_only' ? [] : (config.bioportal_ontologies ?? [])} onChange={(e) => update({ bioportal_ontologies: typeof e.target.value === 'string' ? splitCsv(e.target.value) : (e.target.value as string[]) })} renderValue={(selected) => config.ontology_search_mode === 'broad_retrieval_registry_scored' ? 'All ontologies (registry-scored)' : (selected as string[]).join(', ')}>{ontologySelectOptions.map((ontology) => <MenuItem key={ontology} value={ontology}><Checkbox size="small" checked={config.ontology_search_mode === 'configured_only' && (config.bioportal_ontologies ?? []).includes(ontology)} /><Typography variant="body2">{ontology}</Typography></MenuItem>)}</Select></FormControl>
+            <WithInfo title="Trusted ontologies" info="Trusted ontologies are your preferred BioPortal sources. Their matches count as more reliable for automated acceptance and review prioritization.">
+              {/* Saved on blur or Enter: per-keystroke saves would drop a trailing comma before the next acronym is typed. */}
+              <CommitTextField fullWidth label="Trusted ontologies" helperText="Comma-separated acronyms, saved when you leave the field" value={(config.trusted_ontologies ?? []).join(', ')} normalize={(text) => splitCsv(text).join(', ')} onCommit={(text) => update({ trusted_ontologies: splitCsv(text) })} />
+            </WithInfo>
+            <FormControlLabel control={<Switch checked={Boolean(config.enable_wikidata_fallback)} onChange={(e) => update({ enable_wikidata_fallback: e.target.checked })} />} label="Allow Wikidata fallback" />
+          </Box>
+        </Stack>
+      </Collapse>
+      <MetaList columns={2} items={[{ label: 'Model', value: modelLabels[config.model] ?? config.model }, { label: 'Provider', value: providerLabels[config.provider] ?? config.provider }]} />
     </Stack>
-    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.5 }}>{workflows.map((workflow) => <ButtonBase key={workflow.id} onClick={() => update({ workflow: workflow.id })} sx={{ textAlign: 'left', borderRadius: 3 }}><Paper variant="outlined" sx={{ p: 2, width: '100%', minHeight: 150, borderRadius: 3, borderColor: config.workflow === workflow.id ? 'primary.main' : 'divider', bgcolor: config.workflow === workflow.id ? (t) => alpha(t.palette.primary.main, 0.04) : 'background.paper' }}><Stack spacing={1}><Stack direction="row" justifyContent="space-between"><Typography variant="subtitle2">{workflow.title}</Typography><Chip size="small" variant="outlined" color={workflow.badgeColor} label={workflow.badge} /></Stack><Typography variant="body2" color="text.secondary">{workflow.description}</Typography>{workflow.bullets.map((b) => <Typography key={b} variant="caption" color="text.secondary">✓ {b}</Typography>)}</Stack></Paper></ButtonBase>)}</Box>
-    <Collapse in={config.workflow === 'bioportal_wikidata_multiagent'}><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.2 }}><TextField label={<Stack component="span" direction="row" spacing={.5} alignItems="center">Trusted ontologies<Tooltip title="Trusted ontologies are the preferred BioPortal sources whose matches the app treats as more reliable for automated acceptance and review prioritization."><InfoOutlinedIcon sx={{ fontSize: 16, color: 'text.secondary' }} /></Tooltip></Stack>} value={(config.trusted_ontologies ?? []).join(', ')} onChange={(e) => update({ trusted_ontologies: splitCsv(e.target.value) })} /><FormControl fullWidth size="small" disabled={config.ontology_search_mode !== 'configured_only'}><InputLabel>BioPortal ontologies</InputLabel><Select multiple displayEmpty label="BioPortal ontologies" MenuProps={ontologyMenuProps} value={config.ontology_search_mode !== 'configured_only' ? [] : (config.bioportal_ontologies ?? [])} onChange={(e) => update({ bioportal_ontologies: typeof e.target.value === 'string' ? splitCsv(e.target.value) : (e.target.value as string[]) })} renderValue={(selected) => config.ontology_search_mode === 'broad_retrieval_registry_scored' ? 'Broad retrieval; registry used for candidate scoring (not filtering)' : (selected as string[]).join(', ')}>{ontologySelectOptions.map((ontology) => <MenuItem key={ontology} value={ontology}><Checkbox size="small" checked={config.ontology_search_mode === 'configured_only' && (config.bioportal_ontologies ?? []).includes(ontology)} /><Typography variant="body2">{ontology}</Typography></MenuItem>)}</Select></FormControl><FormControl fullWidth size="small"><InputLabel>Ontology search mode</InputLabel><Select label="Ontology search mode" value={config.ontology_search_mode || (config.bioportal_use_all_ontologies ? 'broad_retrieval_registry_scored' : 'configured_only')} onChange={(e) => update({ ontology_search_mode: e.target.value as WorkflowConfig['ontology_search_mode'], bioportal_use_all_ontologies: false })}><MenuItem value="configured_only">Configured ontologies only</MenuItem><MenuItem value="broad_retrieval_registry_scored">Broad retrieval, registry-scored (recommended)</MenuItem></Select></FormControl><FormControlLabel control={<Switch checked={Boolean(config.enable_wikidata_fallback)} onChange={(e) => update({ enable_wikidata_fallback: e.target.checked })} />} label="Allow Wikidata fallback" /></Box></Collapse>
-    <Alert severity="info" variant="outlined">Selected strategy: <strong>{selectedWorkflow.title}</strong> — model <strong>{modelLabels[config.model] ?? config.model}</strong> via {providerLabels[config.provider] ?? config.provider}. Provider, monitoring, tracing and metadata settings live in Options; every change is applied automatically.</Alert>
-  </Stack></CardContent></Card>;
+  </Section>;
 }
 
 function DefinitionPreparationPanel({ config, update, emit }: { config: WorkflowConfig; update: (patch: Partial<WorkflowConfig>) => void; emit: (event: AppEvent) => void }) {
   const [uploadError, setUploadError] = useState('');
+  const sheetInput = useRef<HTMLInputElement>(null);
+  const publicationInput = useRef<HTMLInputElement>(null);
   const strategy = config.definition_strategy || 'generate_single_shot';
 
   async function handleDefinitionsUpload(event: React.ChangeEvent<HTMLInputElement>) {
@@ -226,13 +294,13 @@ function DefinitionPreparationPanel({ config, update, emit }: { config: Workflow
     setUploadError('');
     if (!file) return;
     if (!/\.(csv|xlsx|xls)$/i.test(file.name)) {
-      setUploadError('Choose a CSV or Excel sheet with Term and Definition columns.');
+      setUploadError('This is not a CSV or Excel file. Choose a sheet with Term and Definition columns.');
       return;
     }
     try {
       emit({ type: 'upload_definitions_sheet', filename: file.name, content_base64: await fileToBase64(file) });
-    } catch (error) {
-      setUploadError(error instanceof Error ? error.message : 'Unable to read the selected definitions sheet.');
+    } catch {
+      setUploadError(READ_ERROR);
     }
   }
 
@@ -242,116 +310,238 @@ function DefinitionPreparationPanel({ config, update, emit }: { config: Workflow
     setUploadError('');
     if (!file) return;
     if (!/\.(pdf|doc|docx)$/i.test(file.name)) {
-      setUploadError('Choose a PDF, DOC, or DOCX reference publication.');
+      setUploadError('This is not a PDF or Word file. Choose a .pdf, .doc or .docx publication.');
       return;
     }
     try {
       emit({ type: 'upload_reference_publication', filename: file.name, content_base64: await fileToBase64(file) });
-    } catch (error) {
-      setUploadError(error instanceof Error ? error.message : 'Unable to read the selected reference publication.');
+    } catch {
+      setUploadError(READ_ERROR);
     }
   }
 
-  return <Card variant="outlined"><CardContent><Stack spacing={1.5}>
-    <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={2}>
-      <Stack><Typography variant="subtitle1">Definition Preparation</Typography><Typography variant="body2" color="text.secondary">Optional definitions for ambiguous terms.</Typography></Stack>
-      <Switch checked={Boolean(config.definition_preparation)} onChange={(e) => update({ definition_preparation: e.target.checked })} inputProps={{ 'aria-label': 'Enable definition preparation' }} />
+  return <Stack spacing={1.5}>
+    <Stack direction="row" spacing={0.5} alignItems="center">
+      <FormControlLabel control={<Switch checked={Boolean(config.definition_preparation)} onChange={(e) => update({ definition_preparation: e.target.checked })} />} label="Prepare definitions for ambiguous terms" sx={{ mr: 0 }} />
+      <InfoButton title="Definition preparation">Definitions give the agents context for ambiguous terms. Generate one per term with the LLM, upload a sheet of definitions, or extract context from a reference publication.</InfoButton>
     </Stack>
     <Collapse in={Boolean(config.definition_preparation)}>
-      <Stack spacing={1.3} sx={{ pt: .5 }}>
+      <Stack spacing={2}>
         <FormControl fullWidth size="small"><InputLabel>Definition strategy</InputLabel><Select label="Definition strategy" value={strategy} onChange={(e) => { setUploadError(''); update({ definition_strategy: String(e.target.value) }); }}><MenuItem value="generate_single_shot">Generate LLM definitions per term</MenuItem><MenuItem value="uploaded_sheet">Upload definitions sheet</MenuItem><MenuItem value="reference_publication">Reference publication</MenuItem></Select></FormControl>
-        {strategy === 'uploaded_sheet' && (
-          <Paper variant="outlined" sx={{ p: 2, borderStyle: 'dashed', borderRadius: 3, bgcolor: 'background.default' }}>
-            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
-              <Stack spacing={.4}>
-                <Typography variant="subtitle2">Definitions sheet</Typography>
-                <Typography variant="body2" color="text.secondary">CSV or Excel with Term and Definition columns.</Typography>
-                {config.definition_uploaded_filename && <Chip size="small" color="success" sx={{ alignSelf: 'flex-start' }} label={`${config.definition_uploaded_filename} - ${config.definition_uploaded_count ?? 0} definitions`} />}
-              </Stack>
-              <Button component="label" variant="contained">
-                Choose sheet
-                <input hidden type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={handleDefinitionsUpload} />
-              </Button>
-            </Stack>
-          </Paper>
-        )}
-        {strategy === 'reference_publication' && (
-          <Stack spacing={1}>
-            <Paper variant="outlined" sx={{ p: 2, borderStyle: 'dashed', borderRadius: 3, bgcolor: 'background.default' }}>
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
-                <Stack spacing={.4}>
-                  <Typography variant="subtitle2">Reference publication</Typography>
-                  <Typography variant="body2" color="text.secondary">PDF, DOC, or DOCX. Extracted text becomes the definition context.</Typography>
-                  {config.definition_reference_filename && <Chip size="small" color="success" sx={{ alignSelf: 'flex-start' }} label={`${config.definition_reference_filename} - ${config.definition_reference_char_count ?? 0} characters`} />}
-                </Stack>
-                <Button component="label" variant="contained">
-                  Choose publication
-                  <input hidden type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={handleReferenceUpload} />
-                </Button>
-              </Stack>
-            </Paper>
-            <TextField label="Extracted reference text" multiline minRows={4} value={config.definition_reference_text || ''} InputProps={{ readOnly: true }} placeholder="Upload a reference publication to preview extracted text." />
+        {strategy === 'uploaded_sheet' && <Stack spacing={1.5}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
+            <Box>
+              <Typography variant="subtitle2" component="h4">Definitions sheet</Typography>
+              <Typography variant="body2" color="text.secondary">CSV or Excel with Term and Definition columns.</Typography>
+            </Box>
+            <input ref={sheetInput} hidden type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={handleDefinitionsUpload} />
+            <UploadButton onClick={() => sheetInput.current?.click()}>{config.definition_uploaded_filename ? 'Replace definitions sheet' : 'Upload definitions sheet'}</UploadButton>
           </Stack>
-        )}
-        {uploadError && <Alert severity="warning" variant="outlined">{uploadError}</Alert>}
+          {config.definition_uploaded_filename && <MetaList items={[{ label: 'File', value: config.definition_uploaded_filename, mono: true }, { label: 'Definitions', value: formatCount(config.definition_uploaded_count ?? 0), numeric: true }]} />}
+        </Stack>}
+        {strategy === 'reference_publication' && <Stack spacing={1.5}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
+            <Box>
+              <Stack direction="row" spacing={0.5} alignItems="center"><Typography variant="subtitle2" component="h4">Reference publication</Typography><InfoButton title="Reference publication">The text extracted from the publication becomes the definition context for the agents.</InfoButton></Stack>
+              <Typography variant="body2" color="text.secondary">PDF, DOC or DOCX.</Typography>
+            </Box>
+            <input ref={publicationInput} hidden type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={handleReferenceUpload} />
+            <UploadButton onClick={() => publicationInput.current?.click()}>{config.definition_reference_filename ? 'Replace publication' : 'Upload publication'}</UploadButton>
+          </Stack>
+          {config.definition_reference_filename && <MetaList items={[{ label: 'File', value: config.definition_reference_filename, mono: true }, { label: 'Characters', value: formatCount(config.definition_reference_char_count ?? 0), numeric: true }]} />}
+          {config.definition_reference_text && <TextField label="Extracted reference text" multiline minRows={3} maxRows={10} value={config.definition_reference_text} InputProps={{ readOnly: true }} />}
+        </Stack>}
+        {uploadError && <Alert severity="error">{uploadError}</Alert>}
       </Stack>
     </Collapse>
-  </Stack></CardContent></Card>;
+  </Stack>;
 }
 
-function SetupPage(props: { config: WorkflowConfig; dataStatus: DataStatus; readiness: ReadinessState; providerLabels: Record<string, string>; modelLabels: Record<string, string>; ontologyOptions: string[]; update: (patch: Partial<WorkflowConfig>) => void; emit: (event: AppEvent) => void; onOpenOptions: () => void }) {
-  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: 'minmax(0, 1fr) 360px' }, gap: 2 }}><Stack spacing={2}><FileUploadPanel dataStatus={props.dataStatus} emit={props.emit} /><DefinitionPreparationPanel config={props.config} update={props.update} emit={props.emit} /><WorkflowConfigPanelInner config={props.config} providerLabels={props.providerLabels} modelLabels={props.modelLabels} ontologyOptions={props.ontologyOptions} update={props.update} onOpenOptions={props.onOpenOptions} /></Stack><Stack spacing={2}><RunPrerequisitesPanel readiness={props.readiness} /><RunSummaryPanel readiness={props.readiness} config={props.config} /><Button variant="contained" size="large" disabled={!props.readiness.ready} onClick={() => props.emit({ type: 'navigate', stage: 'run' })}>Continue to Run</Button></Stack></Box>;
+function ReadinessList({ checks }: { checks: ReadinessCheck[] }) {
+  return <Stack component="ul" spacing={1} sx={{ m: 0, p: 0, listStyle: 'none' }}>{checks.map((check) => <Stack component="li" key={check.key} direction="row" spacing={1} alignItems="flex-start">
+    {check.ok ? <CheckCircleOutlineIcon fontSize="small" color="success" titleAccess="Passed" /> : <WarningAmberIcon fontSize="small" color="warning" titleAccess="Needs attention" />}
+    <Box sx={{ minWidth: 0 }}><Typography variant="body2" sx={{ fontWeight: 500 }}>{check.label}</Typography>{check.detail && <Typography variant="caption" color="text.secondary" component="p" sx={{ overflowWrap: 'anywhere' }}>{check.detail}</Typography>}</Box>
+  </Stack>)}</Stack>;
 }
-function RunPrerequisitesPanel({ readiness }: { readiness: ReadinessState }) { return <Card variant="outlined"><CardContent><Stack spacing={1.2}><Stack direction="row" justifyContent="space-between"><Typography variant="subtitle1">Run Prerequisites</Typography><Chip size="small" color={readiness.ready ? 'success' : 'warning'} label={readiness.ready ? 'All Good' : 'Action Needed'} /></Stack>{(readiness.checks ?? []).map((c) => <Stack key={c.key} direction="row" spacing={1}><Box sx={{ color: c.ok ? 'success.main' : 'warning.main' }}>{c.ok ? '●' : '▲'}</Box><Stack><Typography variant="body2" sx={{ fontWeight: 750 }}>{c.label}</Typography><Typography variant="caption" color="text.secondary">{c.detail}</Typography></Stack></Stack>)}</Stack></CardContent></Card>; }
-function RunSummaryPanel({ readiness, config }: { readiness: ReadinessState; config: WorkflowConfig }) { const summary = readiness.summary ?? {}; return <Card variant="outlined"><CardContent><Stack spacing={1.1}><Typography variant="subtitle1">Run Summary</Typography><SummaryRow label="Workflow" value={summary.Workflow || config.workflow} /><SummaryRow label="Model" value={summary.Model || config.model} /><SummaryRow label="SKOS Matching" value={summary['SKOS Matching'] || (config.skos_matching ? 'Enabled' : 'Disabled')} /><SummaryRow label="Auto-accept" value={summary['Auto-accept'] || (config.auto_accept ? 'Enabled' : 'Disabled')} /><SummaryRow label="Batch Size" value={summary['Batch Size'] || String(config.advanced.batch_size)} /><SummaryRow label="Max Workers" value={summary['Max Workers'] || String(config.advanced.max_workers)} /><SummaryRow label="Est. Runtime" value={summary['Est. Runtime'] || 'n/a'} /><SummaryRow label="Est. Cost" value={summary['Est. Cost'] || 'Available after run telemetry'} /></Stack></CardContent></Card>; }
-function MonitoringMetric({ label, value, tone = 'default' }: { label: string; value: React.ReactNode; tone?: 'default' | 'error' }) {
-  return (
-    <Paper variant="outlined" sx={{ p: 1.2, borderRadius: 2, bgcolor: tone === 'error' ? (t)=>alpha(t.palette.error.main,0.1) : 'background.default', borderColor: tone === 'error' ? 'error.light' : 'divider' }}>
-      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{label}</Typography>
-      <Typography variant="body1" sx={{ fontWeight: 900, color: tone === 'error' ? 'error.main' : 'text.primary' }}>{value}</Typography>
-    </Paper>
-  );
+
+function runSummaryItems(readiness: ReadinessState, config: WorkflowConfig): MetaItem[] {
+  const summary = readiness.summary ?? {};
+  const runtime = summary['Est. Runtime'];
+  const cost = summary['Est. Cost'] || '';
+  return [
+    { label: 'Strategy', value: workflows.find((workflow) => workflow.id === config.workflow)?.title ?? (summary.Workflow || config.workflow) },
+    { label: 'Model', value: summary.Model || config.model },
+    { label: 'SKOS matching', value: summary['SKOS Matching'] || (config.skos_matching ? 'Enabled' : 'Disabled') },
+    { label: 'Auto-accept', value: summary['Auto-accept'] || (config.auto_accept ? 'Enabled' : 'Disabled') },
+    { label: 'Batch size', value: summary['Batch Size'] || String(config.advanced.batch_size), numeric: true },
+    { label: 'Max workers', value: summary['Max Workers'] || String(config.advanced.max_workers), numeric: true },
+    { label: 'Estimated runtime', value: runtime && runtime !== 'n/a' ? runtime : '', numeric: true },
+    // Until telemetry reports a figure the backend sends an explanation, not a cost.
+    { label: 'Estimated cost', value: /\d/.test(cost) ? cost : <Tooltip title={cost || 'Available after run telemetry'}><Box component="span" sx={{ color: 'text.secondary' }}>—</Box></Tooltip> },
+  ];
 }
-function MonitoringPanel({ telemetry, runStatus }: { telemetry: Telemetry; runStatus: RunStatus }) { const [tab, setTab] = useState(0); const hasRealProgress = typeof runStatus.processed_count === 'number' && typeof runStatus.total_count === 'number' && runStatus.total_count > 0; const progress = hasRealProgress ? Math.min(100, Math.round(((runStatus.processed_count as number) / (runStatus.total_count as number)) * 100)) : null; const processedValue = runStatus.processed_count ?? telemetry.processed_terms ?? 0; const totalValue = runStatus.total_count ?? telemetry.total_terms ?? 0; const failureValue = Math.max(0, Number(telemetry.failed_terms ?? 0)); return <Card variant="outlined"><CardContent><Stack spacing={1.5}><Stack direction="row" justifyContent="space-between"><Typography variant="subtitle1">Monitoring / Telemetry</Typography><Chip size="small" label={telemetry.enabled ? 'enabled' : 'disabled'} color={telemetry.enabled ? 'success' : 'default'} /></Stack><Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable"><Tab label="Run Status" /><Tab label="LLM Calls" /><Tab label="LangSmith" /><Tab label="Logs" /></Tabs>{tab === 0 && <Stack spacing={1}><LinearProgress variant="determinate" value={hasRealProgress ? progress ?? 0 : 0} /><Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(5, minmax(0, 1fr))' }, gap: 1 }}><MonitoringMetric label="Processed terms" value={processedValue} /><MonitoringMetric label="Total terms" value={totalValue} /><MonitoringMetric label="Run failures" value={failureValue} tone={failureValue > 0 ? 'error' : 'default'} /><MonitoringMetric label="Duration" value={telemetry.duration_sec ? `${telemetry.duration_sec.toFixed(2)}s` : '—'} /><MonitoringMetric label="Cost" value={`$${(telemetry.total_cost_usd ?? 0).toFixed(4)}`} /></Box><DataTable rows={telemetry.events} empty="No term-level events captured yet." /></Stack>}{tab === 1 && <DataTable rows={telemetry.llm_calls} empty="No LLM prompt/response interactions captured yet." />}{tab === 2 && <Stack spacing={1}><Alert severity={telemetry.enabled ? 'info' : 'warning'} variant="outlined">{telemetry.langsmith_message || (telemetry.enabled ? 'LangSmith monitoring is enabled.' : 'LangSmith monitoring is disabled.')}</Alert>{telemetry.langsmith_project_url && <Button href={telemetry.langsmith_project_url} target="_blank">Open LangSmith project</Button>}{telemetry.langsmith_url && <Button href={telemetry.langsmith_url} target="_blank">Open LangSmith run</Button>}<DataTable rows={telemetry.cascade} empty="No cascade trace captured yet." /></Stack>}{tab === 3 && <Stack spacing={.7}>{(telemetry.logs?.length ? telemetry.logs : ['No logs captured yet.']).slice(-80).map((log, idx) => <Typography key={idx} variant="caption" sx={{ fontFamily: 'monospace' }}>{log}</Typography>)}</Stack>}</Stack></CardContent></Card>; }
-function workflowForRunPanel(workflow: string): AgentRunWorkflow { return workflow === 'wikidata_deep_agent' ? 'wikidata_deep_agent' : 'bioportal_wikidata'; }
-function RunStartPanel({ readiness, running, runStatus, onStart, onBack }: { readiness: ReadinessState; running: boolean; runStatus: RunStatus; onStart: () => void; onBack: () => void }) { return <Card variant="outlined"><CardContent><Stack spacing={1.5}><Typography variant="subtitle1">Run Agent-Based Reconciliation</Typography><Alert severity={readiness.ready ? 'success' : 'warning'} variant="outlined">{runStatus.message || (readiness.ready ? 'Ready to run' : 'Resolve prerequisites before running.')}</Alert><Button variant="contained" disabled={!readiness.ready || running} onClick={onStart}>Start Reconciliation</Button><Button variant="outlined" onClick={onBack}>Back to Setup</Button></Stack></CardContent></Card>; }
-function RunSuccessPanel({ runStatus, telemetry, onContinue }: { runStatus: RunStatus; telemetry: Telemetry; onContinue: () => void }) { const processed = runStatus.processed_count ?? telemetry.processed_terms ?? 0; const total = runStatus.total_count ?? telemetry.total_terms ?? 0; const duration = telemetry.duration_sec ?? runStatus.elapsed_seconds; return <Card variant="outlined" sx={{ borderRadius: 4, borderColor: 'success.light', bgcolor: (t)=>alpha(t.palette.success.main,0.1) }}><CardContent><Stack spacing={1.5}><Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h6" sx={{ fontWeight: 900 }}>Run completed successfully</Typography><Chip color="success" label="Success" /></Stack><Alert severity="success" variant="outlined">Agent-based reconciliation completed. Review the generated mapping suggestions next.</Alert><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 1 }}><SummaryRow label="Processed" value={total ? `${processed} / ${total}` : processed} /><SummaryRow label="Duration" value={typeof duration === 'number' ? `${duration.toFixed(1)}s` : '—'} /><SummaryRow label="Cost" value={`$${(telemetry.total_cost_usd ?? 0).toFixed(4)}`} /></Box><LinearProgress variant="determinate" value={100} sx={{ height: 10, borderRadius: 999 }} /><Button variant="contained" color="success" onClick={onContinue}>Continue to Review</Button></Stack></CardContent></Card>; }
-function RunErrorPanel({ error, onBack, onRetry }: { error: string; onBack: () => void; onRetry: () => void }) { return <Card variant="outlined" sx={{ borderRadius: 4, borderColor: 'error.light', bgcolor: (t)=>alpha(t.palette.error.main,0.1) }}><CardContent><Stack spacing={1.5}><Typography variant="h6" sx={{ fontWeight: 900 }}>Run failed</Typography><Alert severity="error" variant="outlined">{error}</Alert><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><Button variant="contained" color="error" onClick={onRetry}>Retry Reconciliation</Button><Button variant="outlined" onClick={onBack}>Back to Setup</Button></Stack></Stack></CardContent></Card>; }
-function RunStoppedPanel({ runStatus, telemetry, onResume, onReview, onSkipFailedTerm, onRestart, onBack }: { runStatus: RunStatus; telemetry: Telemetry; onResume: () => void; onReview: () => void; onSkipFailedTerm: () => void; onRestart: () => void; onBack: () => void }) {
+
+function SetupPage(props: { config: WorkflowConfig; dataStatus: DataStatus; readiness: ReadinessState; hasResults: boolean; continueAvailable: boolean; providerLabels: Record<string, string>; modelLabels: Record<string, string>; ontologyOptions: string[]; update: (patch: Partial<WorkflowConfig>) => void; emit: (event: AppEvent) => void }) {
+  const { config, dataStatus, readiness } = props;
+  const definitionSummary = !config.definition_preparation ? 'Off' : config.definition_strategy === 'uploaded_sheet' ? `On, definitions sheet${config.definition_uploaded_filename ? ` (${config.definition_uploaded_filename})` : ''}` : config.definition_strategy === 'reference_publication' ? 'On, reference publication' : 'On, a generated definition for each term';
+  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', xl: 'minmax(0, 1fr) 360px' }, gap: 3, alignItems: 'start' }}>
+    <Stack spacing={3} sx={{ minWidth: 0 }}>
+      <MatchingTableSection dataStatus={dataStatus} hasResults={props.hasResults} continueAvailable={props.continueAvailable} emit={props.emit} />
+      <StrategySection config={config} providerLabels={props.providerLabels} modelLabels={props.modelLabels} ontologyOptions={props.ontologyOptions} update={props.update} />
+      <Disclosure title="Definition preparation" optional summary={definitionSummary}><DefinitionPreparationPanel config={config} update={props.update} emit={props.emit} /></Disclosure>
+    </Stack>
+    <Stack spacing={3} sx={{ minWidth: 0 }}>
+      <Section title="Run prerequisites" actions={<Chip size="small" variant="outlined" color={readiness.ready ? 'success' : 'warning'} label={readiness.ready ? 'Ready' : 'Action needed'} />}>
+        <ReadinessList checks={readiness.checks ?? []} />
+      </Section>
+      <Section title="Run summary"><MetaList items={runSummaryItems(readiness, config)} /></Section>
+    </Stack>
+  </Box>;
+}
+
+function MonitoringPanel({ telemetry, runStatus }: { telemetry: Telemetry; runStatus: RunStatus }) {
+  const [tab, setTab] = useState(0);
+  const hasRealProgress = typeof runStatus.processed_count === 'number' && typeof runStatus.total_count === 'number' && runStatus.total_count > 0;
+  const progress = hasRealProgress ? Math.min(100, Math.round(((runStatus.processed_count as number) / (runStatus.total_count as number)) * 100)) : null;
+  const processedValue = runStatus.processed_count ?? telemetry.processed_terms ?? 0;
+  const totalValue = runStatus.total_count ?? telemetry.total_terms ?? 0;
+  const failureValue = Math.max(0, Number(telemetry.failed_terms ?? 0));
+  const summary = `${formatCount(processedValue)} of ${formatCount(totalValue)} terms processed${failureValue ? `, ${formatCount(failureValue)} failed` : ''}`;
+  return <Disclosure title="Monitoring and telemetry" summary={summary}>
+    <Stack spacing={2}>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" allowScrollButtonsMobile sx={{ flex: 1, minWidth: 0 }}><Tab label="Run status" /><Tab label="LLM calls" /><Tab label="LangSmith" /><Tab label="Logs" /></Tabs>
+        <Chip size="small" variant="outlined" label={telemetry.enabled ? 'LangSmith on' : 'LangSmith off'} color={telemetry.enabled ? 'success' : 'default'} />
+      </Stack>
+      {tab === 0 && <Stack spacing={2}>
+        {hasRealProgress && <LinearProgress aria-label="Terms processed" variant="determinate" value={progress ?? 0} />}
+        {/* Inside a Disclosure the figures are a fact list; KpiStrip belongs at page level. */}
+        <MetaList columns={2} items={[
+          { label: 'Terms processed', value: formatCount(processedValue), numeric: true },
+          { label: 'Total terms', value: formatCount(totalValue), numeric: true },
+          { label: 'Run failures', value: failureValue > 0 ? <Box component="span" sx={{ color: 'error.main' }}>{formatCount(failureValue)}</Box> : formatCount(failureValue), numeric: true },
+          { label: 'Duration', value: telemetry.duration_sec ? formatSeconds(telemetry.duration_sec) : '', numeric: true },
+          { label: 'Cost', value: formatCost(telemetry.total_cost_usd ?? 0), numeric: true },
+        ]} />
+        <DataTable rows={telemetry.events} empty="No term-level events captured yet." />
+      </Stack>}
+      {tab === 1 && <DataTable rows={telemetry.llm_calls} empty="No LLM prompt/response interactions captured yet." />}
+      {tab === 2 && <Stack spacing={1.5} alignItems="flex-start">
+        <Alert severity={telemetry.enabled ? 'info' : 'warning'} sx={{ alignSelf: 'stretch' }}>{telemetry.langsmith_message || (telemetry.enabled ? 'LangSmith monitoring is enabled.' : 'LangSmith monitoring is off. Turn it on in Options under Monitoring and tracing.')}</Alert>
+        {(telemetry.langsmith_project_url || telemetry.langsmith_url) && <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          {telemetry.langsmith_project_url && <Button href={telemetry.langsmith_project_url} target="_blank" rel="noreferrer" endIcon={<OpenInNewIcon />}>Open LangSmith project</Button>}
+          {telemetry.langsmith_url && <Button href={telemetry.langsmith_url} target="_blank" rel="noreferrer" endIcon={<OpenInNewIcon />}>Open LangSmith run</Button>}
+        </Stack>}
+        <Box sx={{ alignSelf: 'stretch' }}><DataTable rows={telemetry.cascade} empty="No cascade trace captured yet." /></Box>
+      </Stack>}
+      {tab === 3 && <Box component="pre" tabIndex={0} aria-label="Run logs" sx={{ ...codeSx, p: 1.5, maxHeight: 360 }}>{(telemetry.logs?.length ? telemetry.logs : ['No logs captured yet.']).slice(-80).join('\n')}</Box>}
+    </Stack>
+  </Disclosure>;
+}
+
+// `primary`: Continue cannot move on yet, so starting is the main thing to do on this view.
+function RunStartSection({ readiness, config, dataStatus, running, runStatus, primary, onStart }: { readiness: ReadinessState; config: WorkflowConfig; dataStatus: DataStatus; running: boolean; runStatus: RunStatus; primary: boolean; onStart: () => void }) {
+  const failing = (readiness.checks ?? []).filter((check) => !check.ok);
+  const summary = readiness.summary ?? {};
+  const runtime = summary['Est. Runtime'];
+  return <Section title="Start the agents" actions={<GenerateButton variant={primary ? 'contained' : 'outlined'} disabled={!readiness.ready || running} onClick={onStart}>Start reconciliation</GenerateButton>}>
+    <Stack spacing={2}>
+      <Alert severity={readiness.ready ? 'success' : 'warning'}>{runStatus.message || (readiness.ready ? 'Ready to run' : 'Resolve prerequisites before running.')}</Alert>
+      {failing.length > 0 && <ReadinessList checks={failing} />}
+      <MetaList columns={2} items={[
+        { label: 'Strategy', value: workflows.find((workflow) => workflow.id === config.workflow)?.title ?? config.workflow },
+        { label: 'Model', value: summary.Model || config.model },
+        { label: 'Terms', value: formatCount(dataStatus.unreconciled_rows ?? dataStatus.rows ?? 0), numeric: true },
+        { label: 'Estimated runtime', value: runtime && runtime !== 'n/a' ? runtime : '', numeric: true },
+      ]} />
+    </Stack>
+  </Section>;
+}
+
+function RunSuccessSection({ runStatus, telemetry }: { runStatus: RunStatus; telemetry: Telemetry }) {
+  const processed = runStatus.processed_count ?? telemetry.processed_terms ?? 0;
+  const total = runStatus.total_count ?? telemetry.total_terms ?? 0;
+  const duration = telemetry.duration_sec ?? runStatus.elapsed_seconds;
+  // The headline figures sit at page level above the status section (KpiStrip never nests).
+  return <>
+    <KpiStrip ariaLabel="Run result" items={[
+      { label: 'Terms processed', value: total ? `${formatCount(processed)} of ${formatCount(total)}` : formatCount(processed) },
+      { label: 'Duration', value: typeof duration === 'number' ? formatSeconds(duration) : '' },
+      { label: 'Cost', value: formatCost(telemetry.total_cost_usd ?? 0) },
+    ]} />
+    <Section tone="success" title="Run finished" description={runStatus.message || 'The suggestions are ready for review.'} />
+  </>;
+}
+
+function RunErrorSection({ error, primary, onRetry }: { error: string; primary: boolean; onRetry: () => void }) {
+  return <Section tone="error" title="Run failed">
+    <Stack spacing={2} alignItems="flex-start">
+      <Alert severity="error" sx={{ alignSelf: 'stretch' }}>{error}</Alert>
+      <GenerateButton variant={primary ? 'contained' : 'outlined'} onClick={onRetry}>Rerun reconciliation</GenerateButton>
+    </Stack>
+  </Section>;
+}
+
+// `primary`: Continue cannot move on yet, so resuming is the main thing to do on this view.
+function RunStoppedSection({ runStatus, telemetry, primary, onResume, onSkipFailedTerm, onRestart }: { runStatus: RunStatus; telemetry: Telemetry; primary: boolean; onResume: () => void; onSkipFailedTerm: () => void; onRestart: () => void }) {
   const processed = runStatus.processed_count ?? telemetry.processed_terms ?? 0;
   const total = runStatus.total_count ?? telemetry.total_terms ?? 0;
   const stopEvent = (runStatus.stop_event ?? {}) as StopEvent;
   const stoppedByLlm = runStatus.stop_reason === 'llm_error' || stopEvent.stop_reason === 'llm_error';
   const stoppedByRuntimeError = runStatus.stop_reason === 'runtime_error' || stopEvent.stop_reason === 'runtime_error';
-  const stoppedByUser = !stoppedByLlm && !stoppedByRuntimeError;
   const canSkipFailed = stoppedByLlm || stoppedByRuntimeError;
-  const hasCompleted = Number(processed) > 0;
   const nextTerm = total ? Math.min(total, Number(processed) + 1) : null;
-  return <Card variant="outlined" sx={{ borderRadius: 4, borderColor: 'warning.light', bgcolor: (t)=>alpha(t.palette.warning.main,0.1) }}><CardContent><Stack spacing={1.5}><Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h6" sx={{ fontWeight: 900 }}>Run stopped</Typography><Chip color="warning" label={stoppedByLlm ? 'Needs attention' : 'Stopped'} /></Stack><Alert severity="warning" variant="outlined">{runStatus.message || (stoppedByLlm ? 'The run stopped on a timeout or LLM/API error.' : 'The run was stopped by the user.')}</Alert><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 1 }}><SummaryRow label="Processed" value={total ? `${processed} / ${total}` : processed} /><SummaryRow label="Next resume step" value={nextTerm ? `${nextTerm} / ${total}` : '—'} /><SummaryRow label="Stopped at" value={stopEvent.term || 'Last completed term'} /></Box><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} useFlexGap flexWrap="wrap">{hasCompleted && <Button variant={stoppedByUser ? 'outlined' : 'contained'} color="warning" startIcon={<RateReviewIcon />} onClick={onReview}>Review Completed Terms</Button>}{runStatus.can_resume && <Button variant={stoppedByUser ? 'contained' : 'outlined'} color="warning" onClick={onResume}>Continue from Stopped Point</Button>}{canSkipFailed && <Button variant="outlined" color="warning" startIcon={<SkipNextIcon />} disabled={!runStatus.can_resume} onClick={onSkipFailedTerm}>Skip Failed Term and Continue</Button>}<Button variant="outlined" color="warning" startIcon={<RefreshIcon />} onClick={onRestart}>Rerun from Start</Button><Button variant="outlined" onClick={onBack}>Back to Setup</Button></Stack></Stack></CardContent></Card>;
+  return <Section tone="warning" title="Run stopped" actions={<Chip size="small" variant="outlined" color="warning" label={stoppedByLlm ? 'Needs attention' : 'Stopped'} />}>
+    <Stack spacing={2}>
+      <Alert severity="warning">{runStatus.message || (stoppedByLlm ? 'The run stopped on a timeout or LLM/API error.' : 'The run was stopped by the user.')}</Alert>
+      <MetaList columns={2} items={[
+        { label: 'Terms processed', value: total ? `${formatCount(processed)} of ${formatCount(total)}` : formatCount(processed), numeric: true },
+        { label: 'Resumes at term', value: nextTerm ? `${formatCount(nextTerm)} of ${formatCount(total)}` : '', numeric: true },
+        { label: 'Stopped at', value: stopEvent.term || 'Last completed term' },
+      ]} />
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} useFlexGap flexWrap="wrap">
+        {runStatus.can_resume && <GenerateButton variant={primary ? 'contained' : 'outlined'} onClick={onResume}>Resume run</GenerateButton>}
+        {canSkipFailed && <Button variant="outlined" startIcon={<SkipNextIcon />} disabled={!runStatus.can_resume} onClick={onSkipFailedTerm}>Skip failed term and resume</Button>}
+        <ConfirmActionButton
+          ButtonComponent={ResetButton}
+          dialogTitle="Restart from the beginning?"
+          dialogMessage="The agents start again with the first term. Progress from the stopped run is not resumed."
+          confirmLabel="Restart run"
+          onConfirm={onRestart}
+        >
+          Restart from the beginning
+        </ConfirmActionButton>
+      </Stack>
+    </Stack>
+  </Section>;
 }
-function RunPage({ config, readiness, runStatus, telemetry, dataStatus, emit }: { config: WorkflowConfig; readiness: ReadinessState; runStatus: RunStatus; telemetry: Telemetry; dataStatus: DataStatus; emit: (event: AppEvent) => void }) {
-  const [optimisticRunning, setOptimisticRunning] = useState(false);
-  const [optimisticStartedAt, setOptimisticStartedAt] = useState<string | null>(null);
+
+function RunPage({ config, readiness, runStatus, telemetry, dataStatus, optimisticRunning, optimisticStartedAt, continueAvailable, onStart, onSkipFailedTerm, emit }: { config: WorkflowConfig; readiness: ReadinessState; runStatus: RunStatus; telemetry: Telemetry; dataStatus: DataStatus; optimisticRunning: boolean; optimisticStartedAt: string | null; continueAvailable: boolean; onStart: (resumePrevious?: boolean) => void; onSkipFailedTerm: () => void; emit: (event: AppEvent) => void }) {
   const optimisticTotalCount = runStatus.total_count ?? telemetry.total_terms ?? dataStatus.rows ?? null;
-  useEffect(() => {
-    if (runStatus.finished || runStatus.error || runStatus.running || runStatus.stopped) {
-      setOptimisticRunning(false);
-      if (runStatus.finished || runStatus.error || runStatus.stopped) setOptimisticStartedAt(null);
-    }
-  }, [runStatus.finished, runStatus.error, runStatus.running, runStatus.stopped]);
   const running = Boolean(runStatus.running || optimisticRunning);
   const panelStatus = optimisticRunning && !runStatus.running ? { ...runStatus, running: true, stopped: false, finished: false, error: null, progress: null, started_at: runStatus.started_at ?? optimisticStartedAt, message: runStatus.message || null, total_count: runStatus.total_count ?? telemetry.total_terms ?? dataStatus.rows ?? null } : runStatus;
-  const startRun = (resumePrevious = false) => {
-    setOptimisticStartedAt(new Date().toISOString());
-    setOptimisticRunning(true);
-    emit({ type: 'start_run', resume_previous: resumePrevious });
-  };
   const stopRun = () => emit({ type: 'stop_run' });
-  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: running ? 'minmax(0, 1fr)' : '360px minmax(0,1fr)' }, gap: 2 }}><Stack spacing={2}>{running ? <AgentRunProgressPanel runStatus={panelStatus} workflow={workflowForRunPanel(config.workflow)} optimisticTotalCount={optimisticTotalCount} onStop={stopRun} /> : runStatus.stopped ? <RunStoppedPanel runStatus={runStatus} telemetry={telemetry} onResume={() => startRun(true)} onReview={() => emit({ type: 'review_partial_results' })} onSkipFailedTerm={() => { setOptimisticStartedAt(new Date().toISOString()); setOptimisticRunning(true); emit({ type: 'skip_failed_term_and_resume' }); }} onRestart={() => startRun(false)} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /> : runStatus.error ? <RunErrorPanel error={runStatus.error} onRetry={() => startRun(false)} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /> : runStatus.finished ? <RunSuccessPanel runStatus={runStatus} telemetry={telemetry} onContinue={() => emit({ type: 'navigate', stage: 'review' })} /> : <><RunPrerequisitesPanel readiness={readiness} /><RunSummaryPanel readiness={readiness} config={config} /><RunStartPanel readiness={readiness} running={running} runStatus={runStatus} onStart={() => startRun(false)} onBack={() => emit({ type: 'navigate', stage: 'setup' })} /></>}</Stack><MonitoringPanel telemetry={telemetry} runStatus={panelStatus} /></Box>;
+  // One stable column: the run state on top, monitoring below, whatever the state.
+  return <Stack spacing={3}>
+    {running ? <AgentRunProgressPanel runStatus={panelStatus} optimisticTotalCount={optimisticTotalCount} onStop={stopRun} />
+      : runStatus.stopped ? <RunStoppedSection runStatus={runStatus} telemetry={telemetry} primary={!continueAvailable} onResume={() => onStart(true)} onSkipFailedTerm={onSkipFailedTerm} onRestart={() => onStart(false)} />
+      : runStatus.error ? <RunErrorSection error={runStatus.error} primary={!continueAvailable} onRetry={() => onStart(false)} />
+      : runStatus.finished ? <RunSuccessSection runStatus={runStatus} telemetry={telemetry} />
+      : <RunStartSection readiness={readiness} config={config} dataStatus={dataStatus} running={running} runStatus={runStatus} primary={!continueAvailable} onStart={() => onStart(false)} />}
+    <MonitoringPanel telemetry={telemetry} runStatus={panelStatus} />
+  </Stack>;
 }
-function ReviewPage({ review, dataStatus, emit }: { review: ReviewState; dataStatus: DataStatus; emit: (event: AppEvent) => void }) {
-  const [selected, setSelected] = useState<ReviewItem | null>(null);
+
+function ReviewPage({ review, dataStatus, emit, onDraftChange }: { review: ReviewState; dataStatus: DataStatus; emit: (event: AppEvent) => void; onDraftChange: (dirty: boolean) => void }) {
+  const items = review.items ?? [];
+  // The drawer follows the grid's visible order; the item is read live from the snapshot so it
+  // reflects backend updates, falling back to the row as it was when opened.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [opened, setOpened] = useState<ReviewItem | null>(null);
+  const [order, setOrder] = useState<string[]>([]);
   const [detailTab, setDetailTab] = useState(0);
+  const selected = selectedId ? items.find((item) => item.mapping_id === selectedId) ?? opened : null;
+  const position = selected ? order.indexOf(selected.mapping_id) : -1;
   // "No match" is a property of status + whether a candidate URI survived — NOT of the
   // SKOS relation. A candidate_suggested row with a weak/blank relation still has a
   // suggestion to show and accept.
@@ -380,138 +570,176 @@ function ReviewPage({ review, dataStatus, emit }: { review: ReviewState; dataSta
     return Array.isArray(candidates) ? candidates as Record<string, any>[] : [];
   };
   const rawTraceJsonOf = (item: ReviewItem) => JSON.stringify(executionTraceOf(item) ?? traceOf(item), null, 2);
+  const downloadTraceJson = (item: ReviewItem) => downloadFile(rawTraceJsonOf(item), 'application/json;charset=utf-8', `term_trace_${item.row_index ?? item.mapping_id}.json`);
   useEffect(() => setDetailTab(0), [selected?.mapping_id]);
 
+  const openDetails = (item: ReviewItem, visibleOrder: string[]) => { setOpened(item); setOrder(visibleOrder.includes(item.mapping_id) ? visibleOrder : [item.mapping_id]); setSelectedId(item.mapping_id); };
+  const closeDetails = () => setSelectedId(null);
+  const step = (offset: number) => {
+    const id = order[position + offset];
+    if (!id) return;
+    setOpened(items.find((item) => item.mapping_id === id) ?? null);
+    setSelectedId(id);
+  };
+  const trace = selected ? traceOf(selected) : {};
+  const wikidataPass = Boolean(trace.provider_escalation_used || trace.wikidata_second_pass_mapping_type || trace.wikidata_second_pass_decision_source || trace.wikidata_second_pass_fallback_reason);
+
   return (
-    <Stack spacing={2}>
-      <Card variant="outlined">
-        <CardContent>
-          <Stack spacing={1.5}>
-            <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}>
-              <Stack>
-                <Typography variant="subtitle1">Working table preview</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Live matching table snapshot. Accept/reject/reset actions update this table through the Python backend event handler.
-                </Typography>
-              </Stack>
-              <Chip size="small" label={dataStatus.has_table ? 'live table loaded' : 'no table loaded'} color={dataStatus.has_table ? 'success' : 'warning'} />
+    <Stack spacing={3}>
+      <Disclosure title="Working table" summary={dataStatus.has_table ? `${dataStatus.filename || dataStatus.source_name || 'Table loaded'}, ${formatCount(dataStatus.rows ?? 0)} rows` : 'No table loaded'}>
+        <Stack spacing={2}>
+          <MetaList columns={2} items={tableSummaryItems(dataStatus)} />
+          <DataTable rows={dataStatus.preview} empty="No live working table preview available yet." />
+        </Stack>
+      </Disclosure>
+
+      <Section
+        title="Review suggestions"
+        info={{ title: 'Status legend', content: <><ul><li><strong>Review suggestion</strong>: a candidate that needs manual review, often from Wikidata after BioPortal found no verified match.</li><li><strong>No match</strong>: a negative decision. A low-confidence candidate kept for audit appears only in Details and cannot be accepted.</li></ul><p>If the proposed SKOS predicate is not right, change the match type in the table before accepting.</p></> }}
+      >
+        <ReviewGrid items={items} counts={review.counts} emit={emit} onOpenDetails={openDetails} onDraftChange={onDraftChange} />
+      </Section>
+
+      <Drawer anchor="right" open={Boolean(selected)} onClose={closeDetails} PaperProps={{ role: 'dialog', 'aria-labelledby': 'agent-details-title', sx: { width: { xs: '100%', sm: 520 } } } as any}>
+        {selected && <>
+          <Box sx={{ position: 'sticky', top: 0, zIndex: 1, bgcolor: 'background.paper', borderBottom: 1, borderColor: 'divider', px: 2, py: 1 }}>
+            <Stack direction="row" alignItems="center" spacing={0.5}>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography variant="caption" color="text.secondary" component="p">Suggestion details</Typography>
+                <Typography id="agent-details-title" variant="subtitle1" component="h2" noWrap title={selected.term}>{selected.term || '—'}</Typography>
+              </Box>
+              <Tooltip title="Previous term"><span><IconButton aria-label="Previous term" disabled={position <= 0} onClick={() => step(-1)}><ChevronLeftIcon /></IconButton></span></Tooltip>
+              {position >= 0 && <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>{formatCount(position + 1)} of {formatCount(order.length)}</Typography>}
+              <Tooltip title="Next term"><span><IconButton aria-label="Next term" disabled={position < 0 || position >= order.length - 1} onClick={() => step(1)}><ChevronRightIcon /></IconButton></span></Tooltip>
+              <Tooltip title="Close"><IconButton aria-label="Close details" onClick={closeDetails}><CloseIcon /></IconButton></Tooltip>
             </Stack>
-            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4,1fr)' }, gap: 1 }}>
-              <SummaryRow label="File" value={dataStatus.filename || dataStatus.source_name || '—'} />
-              <SummaryRow label="Rows" value={dataStatus.rows ?? 0} />
-              {(dataStatus.reconciled_rows ?? 0) > 0 && <SummaryRow label="To reconcile" value={`${dataStatus.unreconciled_rows ?? 0} of ${dataStatus.rows ?? 0} · ${dataStatus.reconciled_rows} already reconciled`} />}
-              <SummaryRow label="Columns" value={dataStatus.columns ?? 0} />
-              <SummaryRow label="Schema" value={dataStatus.schema_message || 'No schema detected'} />
-            </Box>
-            <DataTable rows={dataStatus.preview} empty="No live working table preview available yet." />
-          </Stack>
-        </CardContent>
-      </Card>
-
-      <Card variant="outlined">
-        <CardContent>
-          <Stack spacing={1.5}>
-            <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}>
-              <Typography variant="subtitle1">Review Suggestions</Typography>
-              <Stack direction="row" spacing={1} flexWrap="wrap">
-                <Chip label={`Pending ${review.counts?.pending ?? 0}`} color="warning" />
-                <Chip label={`Matched ${review.counts?.matched ?? 0}`} color="success" />
-                <Chip label={`Review suggested ${review.counts?.candidate_suggested ?? 0}`} color="info" />
-                <Chip label={`Accepted ${review.counts?.accepted ?? 0}`} color="success" />
-                <Chip label={`Rejected ${review.counts?.rejected ?? 0}`} />
-                <Chip label={`No match ${review.counts?.no_match ?? 0}`} />
-              </Stack>
+          </Box>
+          <Stack spacing={2} sx={{ p: 2 }}>
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Chip size="small" variant="outlined" color={statusColor(selected.status)} label={statusLabel(selected.status)} />
+              {String(selected.status || '').toLowerCase() === 'candidate_suggested' && <Stack direction="row" spacing={0.5} alignItems="center">
+                <Typography variant="body2" color="text.secondary">Needs manual review: not a verified match.</Typography>
+                <InfoButton title="Review suggestion">This candidate was found after BioPortal did not produce a verified match. It requires manual review because it did not satisfy the strict verified-match policy.</InfoButton>
+              </Stack>}
             </Stack>
-            <Alert severity="info" variant="outlined">
-              Rows marked <strong>Review suggested candidate</strong> are visible manual-review candidates, often from Wikidata after BioPortal did not produce a verified match. Rows marked <strong>no_match</strong> are negative decisions. Any low-confidence candidate kept for audit is shown only in Details; accepting is disabled so “Accept” never writes a rejected URI.
-              For reviewable suggestions, adjust the SKOS match type in the table before clicking <strong>Accept</strong> if the agent’s proposed predicate is not appropriate.
-            </Alert>
-
-            <Stack direction="row" justifyContent="flex-end">
-              <Button variant="contained" onClick={() => emit({ type: 'navigate', stage: 'export' })}>Continue to Export</Button>
-            </Stack>
-
-            <ReviewGrid items={review.items ?? []} emit={emit} onOpenDetails={setSelected} />
-          </Stack>
-        </CardContent>
-      </Card>
-
-      <Drawer anchor="right" open={Boolean(selected)} onClose={() => setSelected(null)}>
-        <Box sx={{ width: 520, p: 2 }}>
-          <Stack spacing={1.5}>
-            <Typography variant="h6">Input vs Agent suggestion</Typography>
-            {selected && (
-              <>
-                <LineageStrip item={selected} />
-                <ReviewProvenancePanel item={selected} />
-                {isNoMatchItem(selected) && <Alert severity="warning" variant="outlined">{selected.no_match_note || 'This row is a no-match decision. A candidate may be shown below for audit only, but accepting is intentionally disabled.'}</Alert>}
-                {String(selected.status || '').toLowerCase() === 'candidate_suggested' && <Alert severity="info" variant="outlined">This candidate was found after BioPortal did not produce a verified match. It requires manual review because it did not satisfy the strict verified-match policy.</Alert>}
-                {Boolean(traceOf(selected).provider_escalation_used) && <Paper variant="outlined" sx={{ p: 1.2, borderRadius: 2, bgcolor: 'background.default' }}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`${traceOf(selected).provider_escalation_from || 'BioPortal'} checked → no verified match`} /><Chip size="small" color="info" label={`${traceOf(selected).provider_escalation_to || 'Wikidata'} second pass started`} /><Chip size="small" color={traceOf(selected).wikidata_second_pass_has_candidate ? 'success' : 'default'} label={traceOf(selected).wikidata_second_pass_has_candidate ? 'Wikidata candidate found' : 'Wikidata checked → no suitable candidate'} /></Stack></Paper>}
-                <Tabs value={detailTab} onChange={(_e, value) => setDetailTab(value)} variant="scrollable" allowScrollButtonsMobile>
-                  <Tab label="Details" />
-                  <Tab label="Candidates" />
-                  <Tab label="Trace" />
-                  <Tab label="LLM Prompts" />
-                  <Tab label="Raw JSON" />
-                </Tabs>
-                {detailTab === 0 && <>
+            <LineageStrip item={selected} />
+            <ReviewProvenancePanel item={selected} />
+            {isNoMatchItem(selected) && <Alert severity="warning">{selected.no_match_note || 'No-match decision. Any candidate shown here is for audit only and cannot be accepted.'}</Alert>}
+            <Tabs value={detailTab} onChange={(_e, value) => setDetailTab(value)} variant="scrollable" allowScrollButtonsMobile>
+              <Tab label="Details" />
+              <Tab label="Candidates" />
+              <Tab label="Trace" />
+              <Tab label="LLM prompts" />
+              <Tab label="Raw JSON" />
+            </Tabs>
+            {detailTab === 0 && <Stack spacing={2}>
+              <Stack spacing={1}>
                 <ComparisonRow leftLabel="Input term" leftValue={selected.term} rightLabel="Suggested term" rightValue={selected.suggested_label} />
                 <ComparisonRow leftLabel="Input definition" leftValue={selected.definition} rightLabel="Suggested description" rightValue={selected.suggested_description} />
-                <ComparisonRow leftLabel="Input URI" leftValue={selected.input_uri} rightLabel="Suggested URI" rightValue={selected.suggested_uri} />
+                <ComparisonRow mono leftLabel="Input URI" leftValue={selected.input_uri} rightLabel="Suggested URI" rightValue={selected.suggested_uri} />
                 {isNoMatchItem(selected) && (selected.candidate_uri || selected.candidate_label) && <>
-                  <ComparisonRow leftLabel="Audit candidate label" leftValue={selected.candidate_label} rightLabel="Audit candidate URI" rightValue={selected.candidate_uri} />
+                  <ComparisonRow leftLabel="Audit candidate label" leftValue={selected.candidate_label} rightLabel="Audit candidate URI" rightValue={selected.candidate_uri ? <Box component="span" sx={monoSx}>{selected.candidate_uri}</Box> : ''} />
                   <ComparisonRow leftLabel="Audit candidate description" leftValue={selected.candidate_description} rightLabel="Why not accepted" rightValue={selected.no_match_note || selected.explanation} />
                 </>}
-                <ComparisonRow leftLabel="Current/accepted match type" leftValue={selected.accepted_match_type} rightLabel="Suggested match type" rightValue={<Chip size="small" label={selected.match_type || 'no_match'} sx={skosChipSx(selected.match_type)} />} />
-                <ComparisonRow leftLabel="Input subject label" leftValue={selected.subject_label} rightLabel="Suggested provider" rightValue={selected.provider} />
-                <Divider />
-                {Boolean(traceOf(selected).provider_signal_boost_applied) && <Alert severity="info" variant="outlined">Confidence adjusted by lexical/provider signal.</Alert>}
-                <SummaryRow label="Provider" value={selected.provider || '—'} />
-                <SummaryRow label="Mapping type" value={selected.match_type || 'no_match'} />
-                <SummaryRow label="Decision source" value={selected.decision_source || '—'} />
-                <SummaryRow label="Confidence" value={isNoMatchItem(selected) || !String(selected.suggested_uri || '').trim() ? '—' : String(selected.confidence ?? '—')} />
-                <SummaryRow label="Confidence before boost" value={String(traceOf(selected).confidence_before_boost ?? '—')} />
-                <SummaryRow label="Confidence after boost" value={String(traceOf(selected).confidence_after_boost ?? '—')} />
-                <SummaryRow label="Candidate review mode" value={selected.review_mode ? formatReviewMode(selected.review_mode) : '—'} />
-                <SummaryRow label="Fallback" value={selected.fallback_reason ? `yes (${selected.fallback_reason})` : 'no'} />
-                {Boolean(traceOf(selected).annotator_rescue_used) && <SummaryRow label="Annotator rescue" value={`${traceOf(selected).annotator_rescue_failed ? 'failed' : 'yes'} (${String(traceOf(selected).annotator_rescue_reason ?? 'triggered')})`} />}
-                {Boolean(traceOf(selected).annotator_rescue_used) && <SummaryRow label="Annotator variants" value={Array.isArray(traceOf(selected).annotator_rescue_matched_variants) ? (traceOf(selected).annotator_rescue_matched_variants as unknown[]).join(', ') || '—' : String(traceOf(selected).annotator_rescue_matched_variants ?? '—')} />}
-                <SummaryRow label="Boost reason" value={String(traceOf(selected).provider_signal_boost_reason ?? '—')} />
-                <SummaryRow label="Wikidata mapping type" value={String(traceOf(selected).wikidata_second_pass_mapping_type ?? '—')} />
-                <SummaryRow label="Wikidata decision source" value={String(traceOf(selected).wikidata_second_pass_decision_source ?? '—')} />
-                <SummaryRow label="Wikidata fallback" value={traceOf(selected).wikidata_second_pass_fallback_reason ? `yes (${traceOf(selected).wikidata_second_pass_fallback_reason})` : 'no'} />
-                <SummaryRow label="Explanation" value={selected.explanation || '—'} />
-                </>}
-                {detailTab === 1 && <Stack spacing={1}>{traceCandidatesOf(selected).length ? traceCandidatesOf(selected).map((candidate, index) => <Paper key={`${candidate.uri || candidate.label || index}`} variant="outlined" sx={{ p: 1, borderRadius: 2 }}><Stack spacing={.4}><Stack direction="row" spacing={.75} alignItems="center" flexWrap="wrap"><Chip size="small" label={String(candidate.ontology || 'provider')} /><Typography variant="subtitle2" sx={{ overflowWrap: 'anywhere' }}>{String(candidate.label || 'Candidate')}</Typography></Stack><Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>{String(candidate.uri || '')}</Typography><Stack direction="row" spacing={.75} flexWrap="wrap"><Chip size="small" variant="outlined" label={`combined ${candidate.combined_confidence ?? '—'}`} /><Chip size="small" variant="outlined" label={`lexical ${candidate.lexical_score ?? '—'}`} /><Chip size="small" variant="outlined" label={`definition ${candidate.definition_score ?? '—'}`} /><Chip size="small" variant="outlined" label={`context ${candidate.ontology_context_score ?? '—'}`} /></Stack>{candidate.discard_reason && <Typography variant="caption" color="warning.main">{String(candidate.discard_reason)}</Typography>}</Stack></Paper>) : <Alert severity="info" variant="outlined">No traced candidate shortlist is available for this row.</Alert>}</Stack>}
-                {detailTab === 2 && <Stack spacing={1}>{traceEventsOf(selected).length ? traceEventsOf(selected).map((event, index) => <Paper key={`${event.step_index ?? index}-${event.event_type || event.stage}`} variant="outlined" sx={{ p: 1, borderRadius: 2 }}><Stack spacing={.5}><Stack direction="row" spacing={.75} alignItems="center" flexWrap="wrap"><Chip size="small" label={`#${String(event.step_index ?? index).padStart(2, '0')}`} /><Chip size="small" variant="outlined" label={String(event.stage || 'stage')} />{event.decision && <Chip size="small" color={String(event.decision).includes('not') || String(event.decision).includes('error') ? 'warning' : 'default'} label={String(event.decision)} />}</Stack><Typography variant="subtitle2">{String(event.event_type || event.stage || 'event')}</Typography>{event.reason && <Typography variant="body2" color="text.secondary">{String(event.reason)}</Typography>}<TextField size="small" multiline minRows={2} value={JSON.stringify(event.output_summary || event.data || {}, null, 2)} InputProps={{ readOnly: true }} /></Stack></Paper>) : <Alert severity="info" variant="outlined">No structured trace events are available for this row.</Alert>}</Stack>}
-                {detailTab === 3 && <Stack spacing={1}>{traceLlmCallsOf(selected).some((call) => call.prompt_sent || call.raw_response) ? traceLlmCallsOf(selected).map((call, index) => <Paper key={`${call.call_id || index}`} variant="outlined" sx={{ p: 1, borderRadius: 2 }}><Stack spacing={1}><Stack direction="row" spacing={.75} flexWrap="wrap"><Chip size="small" label={String(call.purpose || call.stage || 'llm')} /><Chip size="small" variant="outlined" label={String(call.call_id || 'no call id')} /></Stack><TextField label="Prompt" size="small" multiline minRows={4} value={JSON.stringify(call.prompt_sent || {}, null, 2)} InputProps={{ readOnly: true }} /><TextField label="Response" size="small" multiline minRows={4} value={JSON.stringify(call.raw_response || call.parsed_response || {}, null, 2)} InputProps={{ readOnly: true }} /></Stack></Paper>) : <Alert severity="info" variant="outlined">Prompt logging was disabled for this run.</Alert>}</Stack>}
-                {detailTab === 4 && <Stack spacing={1}><Button variant="outlined" component="a" href={`data:application/json;charset=utf-8,${encodeURIComponent(rawTraceJsonOf(selected))}`} download={`term_trace_${selected.row_index ?? selected.mapping_id}.json`}>Download JSON</Button><TextField multiline minRows={16} value={rawTraceJsonOf(selected)} InputProps={{ readOnly: true }} /></Stack>}
-              </>
-            )}
+                <ComparisonRow leftLabel="Current or accepted match type" leftValue={selected.accepted_match_type ? <Box component="span" sx={monoSx}>{selected.accepted_match_type}</Box> : ''} rightLabel="Suggested match type" rightValue={<Chip size="small" variant="outlined" color={skosColor(selected.match_type)} label={selected.match_type || 'no_match'} sx={monoSx} />} />
+              </Stack>
+              <Box>
+                <Typography variant="subtitle2" component="h3" sx={{ mb: 1 }}>Decision</Typography>
+                <MetaList items={[
+                  { label: 'Subject label', value: selected.subject_label },
+                  { label: 'Provider', value: selected.provider },
+                  { label: 'Decision source', value: selected.decision_source },
+                  { label: 'Confidence', value: isNoMatchItem(selected) || !String(selected.suggested_uri || '').trim() ? '' : <>{formatScore(selected.confidence)}{Boolean(trace.provider_signal_boost_applied) && <Chip size="small" variant="outlined" label="Adjusted by lexical/provider signal" sx={{ ml: 1 }} />}</>, numeric: true },
+                  { label: 'Candidate review mode', value: selected.review_mode ? formatReviewMode(selected.review_mode) : '' },
+                  { label: 'Fallback', value: selected.fallback_reason ? `Yes (${selected.fallback_reason})` : 'No' },
+                  { label: 'Explanation', value: selected.explanation },
+                ]} />
+              </Box>
+              {wikidataPass && <Disclosure title="Wikidata second pass" summary={trace.wikidata_second_pass_has_candidate ? 'Candidate found' : 'No suitable candidate'}>
+                <MetaList items={[
+                  { label: 'Mapping type', value: String(trace.wikidata_second_pass_mapping_type ?? ''), mono: true },
+                  { label: 'Decision source', value: String(trace.wikidata_second_pass_decision_source ?? '') },
+                  { label: 'Fallback', value: trace.wikidata_second_pass_fallback_reason ? `Yes (${trace.wikidata_second_pass_fallback_reason})` : 'No' },
+                ]} />
+              </Disclosure>}
+              {Boolean(trace.annotator_rescue_used) && <Disclosure title="Annotator rescue" summary={trace.annotator_rescue_failed ? 'Failed' : 'Used'}>
+                <MetaList items={[
+                  { label: 'Result', value: `${trace.annotator_rescue_failed ? 'Failed' : 'Used'} (${String(trace.annotator_rescue_reason ?? 'triggered')})` },
+                  { label: 'Matched variants', value: Array.isArray(trace.annotator_rescue_matched_variants) ? (trace.annotator_rescue_matched_variants as unknown[]).join(', ') : String(trace.annotator_rescue_matched_variants ?? '') },
+                ]} />
+              </Disclosure>}
+            </Stack>}
+            {detailTab === 1 && <Stack spacing={1}>{traceCandidatesOf(selected).length ? traceCandidatesOf(selected).map((candidate, index) => <Paper key={`${candidate.uri || candidate.label || index}`} variant="outlined" sx={{ p: 1.5 }}>
+              <Stack spacing={1}>
+                <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap><Chip size="small" label={String(candidate.ontology || 'provider')} /><Typography variant="subtitle2" component="p" sx={{ overflowWrap: 'anywhere' }}>{String(candidate.label || 'Candidate')}</Typography></Stack>
+                {candidate.uri && <Typography variant="caption" color="text.secondary" component="p" sx={{ fontFamily: fonts.mono, overflowWrap: 'anywhere' }}>{String(candidate.uri)}</Typography>}
+                <MetaList columns={2} items={[
+                  { label: 'Combined', value: formatScore(candidate.combined_confidence), numeric: true },
+                  { label: 'Lexical', value: formatScore(candidate.lexical_score), numeric: true },
+                  { label: 'Definition', value: formatScore(candidate.definition_score), numeric: true },
+                  { label: 'Context', value: formatScore(candidate.ontology_context_score), numeric: true },
+                ]} />
+                {candidate.discard_reason && <Typography variant="caption" color="warning.main" component="p">{String(candidate.discard_reason)}</Typography>}
+              </Stack>
+            </Paper>) : <EmptyState dense title="No candidate shortlist for this term" description="Raw and discarded candidates are traced when you turn them on in Options under Monitoring and tracing." />}</Stack>}
+            {detailTab === 2 && <Stack spacing={1}>{traceEventsOf(selected).length ? traceEventsOf(selected).map((event, index) => <Paper key={`${event.step_index ?? index}-${event.event_type || event.stage}`} variant="outlined" sx={{ p: 1.5 }}>
+              <Stack spacing={1}>
+                <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap><Chip size="small" label={`#${String(event.step_index ?? index).padStart(2, '0')}`} sx={{ fontVariantNumeric: 'tabular-nums' }} /><Chip size="small" variant="outlined" label={String(event.stage || 'stage')} />{event.decision && <Chip size="small" color={String(event.decision).includes('not') || String(event.decision).includes('error') ? 'warning' : 'default'} label={String(event.decision)} />}</Stack>
+                <Typography variant="subtitle2" component="p">{String(event.event_type || event.stage || 'event')}</Typography>
+                {event.reason && <Typography variant="body2" color="text.secondary">{String(event.reason)}</Typography>}
+                <Box component="pre" tabIndex={0} sx={codeSx}>{JSON.stringify(event.output_summary || event.data || {}, null, 2)}</Box>
+              </Stack>
+            </Paper>) : <EmptyState dense title="No trace events for this term" description="Structured trace events appear here when the run records them." />}</Stack>}
+            {detailTab === 3 && <Stack spacing={1}>{traceLlmCallsOf(selected).some((call) => call.prompt_sent || call.raw_response) ? traceLlmCallsOf(selected).map((call, index) => <Disclosure key={`${call.call_id || index}`} title={String(call.purpose || call.stage || 'llm')} summary={String(call.call_id || 'No call id')}>
+              <Stack spacing={1.5}>
+                <Box><Typography variant="caption" color="text.secondary" component="p" sx={{ mb: 0.5 }}>Prompt</Typography><Box component="pre" tabIndex={0} sx={codeSx}>{JSON.stringify(call.prompt_sent || {}, null, 2)}</Box></Box>
+                <Box><Typography variant="caption" color="text.secondary" component="p" sx={{ mb: 0.5 }}>Response</Typography><Box component="pre" tabIndex={0} sx={codeSx}>{JSON.stringify(call.raw_response || call.parsed_response || {}, null, 2)}</Box></Box>
+              </Stack>
+            </Disclosure>) : <EmptyState dense title="Prompt logging was off for this run" description="Turn on LLM prompts in Options under Monitoring and tracing, then run again." />}</Stack>}
+            {detailTab === 4 && <Stack spacing={1.5} alignItems="flex-start">
+              <DownloadButton onClick={() => downloadTraceJson(selected)}>Download trace (JSON)</DownloadButton>
+              <Box component="pre" tabIndex={0} aria-label="Raw trace JSON" sx={{ ...codeSx, maxHeight: 480, alignSelf: 'stretch' }}>{rawTraceJsonOf(selected)}</Box>
+            </Stack>}
           </Stack>
-        </Box>
+        </>}
       </Drawer>
     </Stack>
   );
 }
-function ExportPage({ review, dataStatus, exportPayload, emit }: { review: ReviewState; dataStatus: DataStatus; exportPayload?: ExportPayload | null; emit: (event: AppEvent) => void }) {
+
+// `onExport` asks the backend for a fresh SSSOM file; the app downloads it when the payload arrives.
+function ExportPage({ review, dataStatus, exportPayload, onExport }: { review: ReviewState; dataStatus: DataStatus; exportPayload?: ExportPayload | null; onExport: () => void }) {
   const preparedContent = exportPayload?.content ?? '';
-  const preparedMimeType = exportPayload?.mime_type || 'text/csv;charset=utf-8';
-  const preparedFilename = exportPayload?.filename || 'agent_reconciliation_sssom_export.csv';
-  const preparedDownloadUrl = useMemo(() => {
-    if (!preparedContent) return '';
-    const blob = new Blob([preparedContent], { type: preparedMimeType });
-    return window.URL.createObjectURL(blob);
-  }, [preparedContent, preparedMimeType, exportPayload?.nonce]);
-
-  useEffect(() => () => {
-    if (preparedDownloadUrl) window.URL.revokeObjectURL(preparedDownloadUrl);
-  }, [preparedDownloadUrl]);
-
-  return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' }, gap: 2 }}><Card variant="outlined"><CardContent><Stack spacing={1.2}><Typography variant="subtitle1">Export Summary</Typography><SummaryRow label="Source" value={dataStatus.source_name || dataStatus.filename || '—'} /><SummaryRow label="Accepted mappings" value={review.counts?.accepted ?? 0} /><SummaryRow label="Rejected" value={review.counts?.rejected ?? 0} /><SummaryRow label="No match" value={review.counts?.no_match ?? 0} /><SummaryRow label="Pending" value={review.counts?.pending ?? 0} /></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.3}><Typography variant="subtitle1">SSSOM Export</Typography><Typography variant="body2" color="text.secondary">Download the finalized accepted mapping table as an SSSOM-oriented CSV snapshot.</Typography><Button variant="contained" onClick={() => emit({ type: 'export_sssom' })}>Prepare SSSOM Export</Button>{preparedDownloadUrl ? <><Alert severity="success" variant="outlined">SSSOM export is prepared. If your browser blocked the automatic download, use the download button below.</Alert><Button variant="contained" component="a" href={preparedDownloadUrl} download={preparedFilename}>Download Prepared SSSOM CSV</Button></> : <Alert severity="info" variant="outlined">Prepare the export first. The download button appears here after the Python backend creates the CSV snapshot.</Alert>}</Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.3}><Typography variant="subtitle1">RDF Generator Handoff</Typography><Typography variant="body2" color="text.secondary">Publish accepted mappings to the shared backend handoff for the RDF Generator.</Typography><Button variant="contained" color="success" onClick={() => emit({ type: 'publish_rdf_handoff' })}>Publish to RDF Generator</Button></Stack></CardContent></Card><Card variant="outlined"><CardContent><Stack spacing={1.3}><Typography variant="subtitle1">Rejected / No-match Summary</Typography><Alert severity="info" variant="outlined">Rejected and no-match rows remain visible for audit and curation records; export currently finalizes accepted mappings.</Alert></Stack></CardContent></Card></Box>;
+  const preparedFilename = exportPayload?.filename || SSSOM_FILENAME;
+  const counts = review.counts;
+  const open = OPEN_STATUSES.reduce((sum, key) => sum + Number(counts?.[key] ?? 0), 0);
+  return <Stack spacing={3}>
+    <KpiStrip ariaLabel="Review decisions" items={[
+      { label: 'Accepted mappings', value: formatCount(counts?.accepted ?? 0), hint: 'Exported' },
+      { label: 'Still open', value: formatCount(open), hint: 'Pending, matched or suggested' },
+      { label: 'Rejected', value: formatCount(counts?.rejected ?? 0) },
+      { label: 'No match', value: formatCount(counts?.no_match ?? 0) },
+    ]} />
+    <Section
+      title="SSSOM export"
+      description="A CSV snapshot of your accepted mappings."
+      info={{ title: 'SSSOM export', content: <><p>SSSOM (Simple Standard for Sharing Ontological Mappings) is a tabular format for mappings. The file contains your accepted mappings.</p><p>Rejected and no-match rows stay in this workspace for audit and curation records.</p></> }}
+    >
+      <Stack spacing={2} alignItems="flex-start">
+        <MetaList items={[{ label: 'Source', value: dataStatus.source_name || dataStatus.filename, mono: true }]} />
+        <DownloadButton onClick={onExport}>Download SSSOM (CSV)</DownloadButton>
+        {preparedContent && <Stack role="status" direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <CheckCircleOutlineIcon color="success" fontSize="small" />
+          <Typography variant="body2">Prepared <Box component="code" sx={{ ...monoSx, overflowWrap: 'anywhere' }}>{preparedFilename}</Box></Typography>
+          {/* Fallback when the browser blocked the automatic download. */}
+          <DownloadButton size="small" variant="text" onClick={() => downloadFile(preparedContent, exportPayload?.mime_type || SSSOM_MIME, preparedFilename)}>Download SSSOM (CSV) again</DownloadButton>
+        </Stack>}
+      </Stack>
+    </Section>
+  </Stack>;
 }
 
-export function AgentReconciliationMuiApp({ args, onEvent }: AgentReconciliationAppProps) {
+export function AgentReconciliationMuiApp({ args, onEvent, busy = false, onDraftChange }: AgentReconciliationAppProps) {
   const providers = args?.providers ?? [];
   const providerLabels = args?.providerLabels ?? {};
   const baseModels = args?.models ?? [];
@@ -536,56 +764,176 @@ export function AgentReconciliationMuiApp({ args, onEvent }: AgentReconciliation
     return () => window.clearInterval(timer);
   }, [onEvent, providerKind, args?.codexAuthStatus?.pending]);
   const ontologyOptions = args?.ontologyOptions ?? [];
-  const downloadedExportNonceRef = useRef<number | string | null>(null);
+  // The export payload stays in the backend snapshot, so remounting the tool (switching tools,
+  // reloading, a project restore) brings it back. Only a payload answering this view's own
+  // Download click is downloaded automatically; the nonce seen at mount counts as handled.
+  const handledExportNonceRef = useRef<number | string | null>(args?.exportPayload?.nonce ?? null);
+  const exportRequestedRef = useRef(false);
   const [config, setConfig] = useState<WorkflowConfig>(() => normalizeConfig(args?.config, providers, baseModels));
   useEffect(() => setConfig(normalizeConfig(args?.config, providers, baseModels)), [args?.config, providers, baseModels]);
   const providerOptions = useMemo(() => unique([...providers, config.provider, config.planner_provider || '']), [providers, config.provider, config.planner_provider]);
   const modelOptions = useMemo(() => unique(baseModels), [baseModels]);
   const activeStage = normalizeStage(args?.active_stage ?? args?.activeStage);
   useEffect(() => {
-    window.scrollTo(0, 0);
-    try {
-        const mainContent = window.parent.document.querySelector('section.main');
-        if (mainContent) {
-            mainContent.scrollTo({ top: 0, behavior: 'smooth' });
-        } else {
-            window.parent.scrollTo({ top: 0, behavior: 'smooth' });
-        }
-    } catch (e) {
-        console.error("Failed to scroll parent window", e);
-    }
-  }, [activeStage]);
-  useEffect(() => {
     const payload = args?.exportPayload;
     const content = payload?.content ?? '';
     const nonce = payload?.nonce ?? null;
-    if (!payload || !content || nonce === null || downloadedExportNonceRef.current === nonce) return;
-
-    downloadedExportNonceRef.current = nonce;
-    const blob = new Blob([content], { type: payload.mime_type || 'text/csv;charset=utf-8' });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = payload.filename || 'agent_reconciliation_sssom_export.csv';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.setTimeout(() => window.URL.revokeObjectURL(url), 0);
+    if (!payload || !content || nonce === null || handledExportNonceRef.current === nonce) return;
+    handledExportNonceRef.current = nonce;
+    if (!exportRequestedRef.current) return;
+    exportRequestedRef.current = false;
+    downloadFile(content, payload.mime_type || SSSOM_MIME, payload.filename || SSSOM_FILENAME);
   }, [args?.exportPayload]);
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [navigationPending, setNavigationPending] = useState(false);
+  const [handoffOpen, setHandoffOpen] = useState(false);
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const [handoffError, setHandoffError] = useState('');
+  // Optimistic run state bridges the gap between Start/Resume/Skip and the first snapshot that
+  // reports the run. It lives here so navigation is locked during that window too.
+  const [optimisticRunning, setOptimisticRunning] = useState(false);
+  const [optimisticStartedAt, setOptimisticStartedAt] = useState<string | null>(null);
+  useEffect(() => {
+    if (runStatus.finished || runStatus.error || runStatus.running || runStatus.stopped) {
+      setOptimisticRunning(false);
+      if (runStatus.finished || runStatus.error || runStatus.stopped) setOptimisticStartedAt(null);
+    }
+  }, [runStatus.finished, runStatus.error, runStatus.running, runStatus.stopped]);
+  const navigationLock = useRef(false);
   // Returns the host's postEvent promise so callers (options dialog Save) can await the round-trip.
   function emit(event: AppEvent) { return onEvent?.({ ...event, nonce: Date.now() }); }
   function update(patch: Partial<WorkflowConfig>) { const next = normalizeConfig({ ...config, ...patch }, providerOptions, modelOptions); setConfig(next); emit({ type: 'config_changed', config: next }); }
-  function navigate(stage: Stage) { emit({ type: 'navigate', stage }); }
-  const openOptions = () => setOptionsOpen(true);
+  const running = Boolean(runStatus.running || optimisticRunning);
+  function startOptimistic(event: AppEvent) {
+    setOptimisticStartedAt(new Date().toISOString());
+    setOptimisticRunning(true);
+    // If the request failed or the returned snapshot shows no run, drop the optimistic state so
+    // the page and navigation are never stuck in a run that did not start.
+    void Promise.resolve(emit(event)).then((result: any) => {
+      if (result === false || (result?.args?.run_status && !result.args.run_status.running)) setOptimisticRunning(false);
+    }, () => setOptimisticRunning(false));
+  }
+  const startRun = (resumePrevious = false) => startOptimistic({ type: 'start_run', resume_previous: resumePrevious });
+  const skipFailedTerm = () => startOptimistic({ type: 'skip_failed_term_and_resume' });
+  const requestExport = () => {
+    const nonceBefore = args?.exportPayload?.nonce ?? null;
+    exportRequestedRef.current = true;
+    // A request that produced no new file must not leave the flag armed for a later restore.
+    void Promise.resolve(emit({ type: 'export_sssom' })).then((result: any) => {
+      const nonce = result?.args?.exportPayload?.nonce ?? null;
+      if (result === false || nonce === null || nonce === nonceBefore) exportRequestedRef.current = false;
+    }, () => { exportRequestedRef.current = false; });
+  };
+
+  // Match-type edits in the review grid are only sent with Accept; leaving the stage drops them.
+  const reviewDraftRef = useRef(false);
+  const onReviewDraft = useCallback((dirty: boolean) => {
+    reviewDraftRef.current = dirty;
+    onDraftChange?.(dirty);
+  }, [onDraftChange]);
+
+  const processed = Number(runStatus.processed_count ?? telemetry.processed_terms ?? 0);
+  // Leaving a stopped run for Review emits review_partial_results (as the former "Review
+  // completed terms" button did), so the backend shows its partial-results notice.
+  const partialReview = activeStage === 'run' && !running && Boolean(runStatus.stopped) && processed > 0;
+  async function sendNavigation(event: AppEvent) {
+    if (navigationLock.current || running) return;
+    if (reviewDraftRef.current && !window.confirm('Discard unsaved match-type changes? Accepted and rejected decisions are kept.')) return;
+    navigationLock.current = true; setNavigationPending(true);
+    try { await emit(event); }
+    finally { navigationLock.current = false; setNavigationPending(false); }
+  }
+  const navigate = (stage: Stage) => sendNavigation(partialReview && stage === 'review' ? { type: 'review_partial_results' } : { type: 'navigate', stage });
+  const openHandoff = () => { setHandoffError(''); setHandoffOpen(true); void emit({ type: 'dismiss_rdf_handoff' }); };
+
+  const activeIndex = Math.max(0, stages.findIndex((stage) => stage.id === activeStage));
+  const ready = Boolean(readiness.ready);
+  const hasResults = Boolean(runStatus.finished || Number(runStatus.processed_count) > 0 || review.items?.some(item => ['matched', 'candidate_suggested', 'accepted', 'rejected', 'no_match', 'timeout'].includes(String(item.status))));
+  const navLocked = busy || navigationPending || running;
+  // Continue's gate out of each stage (the last one is the RDF hand-off). The stepper walks the
+  // same gates, so it never reaches a stage Continue would not; earlier stages stay open like Back.
+  // Existing results keep Review and Export reachable when setup breaks later (e.g. a missing
+  // key); Start stays gated on readiness on the Run stage.
+  const canLeave = [ready || hasResults, hasResults, hasResults, hasResults];
+  const reachable = (index: number) => index <= activeIndex || canLeave.slice(activeIndex, index).every(Boolean);
+  const counts = review.counts;
+  const openCount = OPEN_STATUSES.reduce((sum, key) => sum + Number(counts?.[key] ?? 0), 0);
+  const decidedCount = Number(counts?.accepted ?? 0) + Number(counts?.rejected ?? 0) + Number(counts?.no_match ?? 0);
+  const completed = [ready, Boolean(runStatus.finished), hasResults && decidedCount > 0 && openCount === 0, Boolean(args?.exportPayload?.content) || args?.rdf_handoff?.status === 'complete'];
+  const steps: WizardStep[] = stages.map((stage, index) => ({ id: stage.id, label: stage.label, completed: completed[index], disabled: navLocked || !reachable(index) }));
+
+  // The failing check's own detail stays in "Run prerequisites"; the hint names the fix.
+  const blockedCheck = readiness.checks?.find(check => !check.ok);
+  const setupFix = (blockedCheck && SETUP_FIXES[blockedCheck.key]) || 'Complete the run prerequisites';
+  const hint = running ? 'Reconciliation is running. Stop the run to change steps.'
+    : navigationPending || busy ? 'Saving changes…'
+    : activeStage === 'setup' ? ready ? 'Next: start the agents.' : hasResults ? `Next: check the existing results. ${setupFix} before starting a new run.` : `${setupFix} to continue.`
+    : !hasResults ? activeStage === 'run' ? 'Start reconciliation to continue.' : 'Run reconciliation to continue.'
+    : activeStage === 'run' ? partialReview ? 'Next: review the terms completed before the run stopped.' : 'Next: review the mapping suggestions.'
+    : activeStage === 'review' ? 'Next: export the reviewed mappings.'
+    : 'Next: send the current mappings to the RDF generator.';
+  const previous = stages[activeIndex - 1];
+  const following = stages[activeIndex + 1];
+  const copy = STAGE_COPY[activeStage];
+  // The RDF generator already holds mappings: the confirm button names the overwrite.
+  const replaceInRdf = args?.rdf_handoff?.status === 'confirmation_required';
+
   let page: React.ReactNode;
-  if (activeStage === 'setup') page = <SetupPage config={config} dataStatus={dataStatus} readiness={readiness} providerLabels={providerLabels} modelLabels={modelLabels} ontologyOptions={ontologyOptions} update={update} emit={emit} onOpenOptions={openOptions} />;
-  else if (activeStage === 'run') page = <RunPage config={config} readiness={readiness} runStatus={runStatus} telemetry={telemetry} dataStatus={dataStatus} emit={emit} />;
-  else if (activeStage === 'review') page = <ReviewPage review={review} dataStatus={dataStatus} emit={emit} />;
-  else page = <ExportPage review={review} dataStatus={dataStatus} exportPayload={args?.exportPayload} emit={emit} />;
-  return <AppShell activeStage={activeStage} onNavigate={navigate} onOpenOptions={openOptions} dataStatus={dataStatus} runStatus={runStatus} review={review}>
-    {args?.statusMessage?.text && <Alert severity={args.statusMessage.severity ?? 'info'}>{args.statusMessage.text}</Alert>}
+  if (activeStage === 'setup') page = <SetupPage config={config} dataStatus={dataStatus} readiness={readiness} hasResults={hasResults} continueAvailable={canLeave[0]} providerLabels={providerLabels} modelLabels={modelLabels} ontologyOptions={ontologyOptions} update={update} emit={emit} />;
+  else if (activeStage === 'run') page = <RunPage config={config} readiness={readiness} runStatus={runStatus} telemetry={telemetry} dataStatus={dataStatus} optimisticRunning={optimisticRunning} optimisticStartedAt={optimisticStartedAt} continueAvailable={hasResults} onStart={startRun} onSkipFailedTerm={skipFailedTerm} emit={emit} />;
+  else if (activeStage === 'review') page = <ReviewPage review={review} dataStatus={dataStatus} emit={emit} onDraftChange={onReviewDraft} />;
+  else page = <ExportPage review={review} dataStatus={dataStatus} exportPayload={args?.exportPayload} onExport={requestExport} />;
+  return <WizardPage
+    steps={steps}
+    activeIndex={activeIndex}
+    onStepClick={(index) => { if (index !== activeIndex) navigate(stages[index].id); }}
+    title={copy.title}
+    lead={copy.lead}
+    info={copy.info}
+    actions={<>
+      <Tooltip title="Provider, model, keys, monitoring and metadata" describeChild><Button variant="outlined" startIcon={<SettingsOutlinedIcon />} onClick={() => setOptionsOpen(true)}>Options</Button></Tooltip>
+      <ToolMenu items={[{ label: 'Reset AI-assisted matching', icon: <RestartAltIcon fontSize="small" />, disabled: navLocked, onSelect: () => { void emit({ type: 'reset_workflow' }); }, confirm: { title: 'Reset AI-assisted matching?', message: 'This clears the loaded table, the agent results, the run record and uploaded definition sources. Model, prompt and provenance settings are kept, and mappings already sent to the RDF generator stay there. You can undo this from History.', confirmLabel: 'Reset AI-assisted matching' } }]} />
+    </>}
+    status={args?.statusMessage?.text ? <Alert severity={args.statusMessage.severity ?? 'info'}>{args.statusMessage.text}</Alert> : undefined}
+    nav={{
+      // On the first stage Back falls through to the shell (previous tool).
+      back: previous ? { onClick: () => navigate(previous.id), disabled: navLocked, tooltip: `Back to ${previous.label}` } : { disabled: navLocked },
+      next: following
+        ? { onClick: () => navigate(following.id), disabled: navLocked || !canLeave[activeIndex], tooltip: `Continue to ${following.label}` }
+        : { onClick: openHandoff, disabled: navLocked || !hasResults, tooltip: 'Continue to RDF generator' },
+      hint,
+    }}
+  >
     {page}
+    <Dialog open={handoffOpen} onClose={handoffBusy ? undefined : () => { setHandoffOpen(false); void emit({ type: 'dismiss_rdf_handoff' }); }} fullWidth maxWidth="sm" aria-labelledby="agent-rdf-handoff-title">
+      <DialogTitle id="agent-rdf-handoff-title">Send mappings to the RDF generator?</DialogTitle>
+      <DialogContent><Stack spacing={2}>
+        <DialogContentText>The current mapping table will be loaded into the RDF generator, and you will continue there. This does not generate RDF automatically.</DialogContentText>
+        <MetaList items={[
+          { label: 'Terms', value: formatCount(dataStatus.rows ?? 0), numeric: true },
+          { label: 'Accepted mappings', value: formatCount(counts?.accepted ?? 0), numeric: true },
+          { label: 'Still open', value: formatCount(openCount), numeric: true },
+        ]} />
+        <Typography variant="body2" color="text.secondary">Confirmed mappings are transferred; terms without a confirmed mapping remain unmapped.</Typography>
+        {replaceInRdf && <Alert severity="warning">{args?.rdf_handoff?.message}</Alert>}
+        {handoffError && <Alert severity="error">{handoffError}</Alert>}
+        {!args?.rdf_handoff_revision && <Alert severity="warning">The updated backend must be running before this handoff is available.</Alert>}
+      </Stack></DialogContent>
+      <DialogActions>
+        <Button autoFocus disabled={handoffBusy} onClick={() => { setHandoffOpen(false); void emit({ type: 'dismiss_rdf_handoff' }); }}>Cancel</Button>
+        <Button variant="contained" color={replaceInRdf ? 'warning' : 'primary'} disabled={handoffBusy || Boolean(runStatus.running) || !args?.rdf_handoff_revision} onClick={async () => {
+          setHandoffBusy(true); setHandoffError('');
+          try {
+            const result = await emit({ type: 'handoff_rdf_generator', expected_revision: args?.rdf_handoff_revision, confirmation_token: args?.rdf_handoff?.confirmation_token }) as any;
+            // The shell's request error sits behind this modal, so the dialog says it too.
+            if (!result || result === false) setHandoffError('The transfer did not complete. Try again.');
+            else if (result.args?.rdf_handoff?.status === 'complete') setHandoffOpen(false);
+            else if (result.args?.rdf_handoff?.status !== 'confirmation_required') setHandoffError(result.args?.statusMessage?.text || 'The table changed. Review it before trying again.');
+          } catch (error) { setHandoffError(error instanceof Error ? error.message : 'The transfer failed.'); }
+          finally { setHandoffBusy(false); }
+        }}>{handoffBusy ? 'Sending…' : replaceInRdf ? 'Replace mappings in RDF generator' : 'Send to RDF generator'}</Button>
+      </DialogActions>
+    </Dialog>
     <AgentOptionsDialog
       open={optionsOpen}
       onClose={() => setOptionsOpen(false)}
@@ -602,7 +950,7 @@ export function AgentReconciliationMuiApp({ args, onEvent }: AgentReconciliation
       update={update}
       emit={emit}
     />
-  </AppShell>;
+  </WizardPage>;
 }
 
 export const WorkflowConfigPanel = AgentReconciliationMuiApp;

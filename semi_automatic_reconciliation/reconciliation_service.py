@@ -15,6 +15,7 @@ import os
 import tempfile
 import threading
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pandas as pd
 
@@ -29,6 +30,7 @@ try:
         CUSTOM_SPARQL_PROVIDER_NAME,
         CONFIG,
         USER_AGENT,
+        calculate_levenshtein_score,
         format_suggestion_display,
         get_combined_and_sorted_suggestions,
     )
@@ -69,6 +71,7 @@ except ImportError:  # pragma: no cover - direct script fallback
         CUSTOM_SPARQL_PROVIDER_NAME,
         CONFIG,
         USER_AGENT,
+        calculate_levenshtein_score,
         format_suggestion_display,
         get_combined_and_sorted_suggestions,
     )
@@ -104,14 +107,58 @@ logger = logging.getLogger(__name__)
 STATE: dict[str, object] = {}
 
 
-def _prefill_best_matches_for_backend() -> None:
-    """Apply best candidate suggestions to the backend dataframe without UI rendering state."""
+def _invalidate_reconciliation_outputs() -> None:
+    STATE["review_revision"] = int(STATE.get("review_revision", 0)) + 1
+    STATE.pop("shared_reconciled_matching_table", None)
+    STATE.pop("rdf_handoff", None)
+
+
+def _clear_search_results() -> None:
+    """Discard cached candidates after query changes, keeping confirmed mappings."""
+    STATE["suggestions"] = {}
+    STATE["custom_search_results"] = {}
+    STATE["custom_search_summaries"] = {}
+    STATE["provider_has_results"] = set()
+    STATE["display_provider"] = None
+    STATE["display_mixed_results"] = False
+    STATE["processed_terms_count"] = 0
+    STATE["search_performed"] = False
+    STATE["run_status"] = "idle"
+    STATE["provider_status"] = {provider: {"status": "pending", "results_count": 0, "error_msg": "", "progress": 0.0}
+                                for provider in STATE.get("provider_queue", [])}
+
+
+def _review_summary() -> dict[str, int]:
     df = STATE.get("df")
     if not isinstance(df, pd.DataFrame):
-        return
+        return {"total": 0, "matched": 0, "unmatched": 0, "missing_relation": 0}
+    uri_column = "URI" if "URI" in df.columns else "object_id"
+    uris = df[uri_column].fillna("").astype(str).str.strip()
+    matched = ~uris.isin(["", NO_MATCH_URI])
+    relations = df["predicate_id"].fillna("").astype(str).str.strip()
+    return {"total": len(df), "matched": int(matched.sum()), "unmatched": int((~matched).sum()),
+            "missing_relation": int((matched & relations.eq("")).sum()) if STATE.get("skos_matching_enabled") else 0}
+
+
+def _prefill_best_matches_for_backend() -> dict[str, object]:
+    """Select each unmapped row's top candidate when its label is spelled similarly enough to the term.
+
+    The gate is the "Spelling similarity threshold" setting (levenshtein_threshold_slider), as in the
+    original prefill: a top candidate below it leaves the row unmapped for review rather than prefilling
+    a lexically implausible match; lower-ranked candidates are not tried. A threshold of 0 prefills
+    every top candidate.
+    """
+    try:
+        threshold = min(1.0, max(0.0, float(STATE.get("levenshtein_threshold_slider", 0.7))))
+    except (TypeError, ValueError):
+        threshold = 0.7
+    result: dict[str, object] = {"prefilled": 0, "below_threshold": 0, "threshold": threshold}
+    df = STATE.get("df")
+    if not isinstance(df, pd.DataFrame):
+        return result
     display_mode = _current_reconciliation_display_mode()
     if not display_mode:
-        return
+        return result
     for idx in STATE.get("total_indices_to_process", list(df.index)):
         if idx not in df.index:
             continue
@@ -121,8 +168,18 @@ def _prefill_best_matches_for_backend() -> None:
         term = str(df.loc[idx, "Term"]).strip() if "Term" in df.columns else str(df.loc[idx, "subject_label"]).strip()
         options = _suggestion_options_for_row(idx, term, display_mode)
         best_option = next((option for option in options if option.get("uri") and option.get("uri") != NO_MATCH_URI), None)
-        if best_option:
-            _apply_reconciliation_selection(idx, best_option)
+        if not best_option:
+            continue
+        score = calculate_levenshtein_score(term, str(best_option.get("label") or ""))
+        if score < threshold:
+            result["below_threshold"] += 1
+            continue
+        # Single-provider candidates carry no score; record the one that passed, so the SSSOM
+        # justification can tell exact spelling (LexicalMatching) from threshold matches.
+        raw = best_option.get("raw") if isinstance(best_option.get("raw"), dict) else {}
+        _apply_reconciliation_selection(idx, {**best_option, "raw": {**raw, "levenshtein_score": score}})
+        result["prefilled"] += 1
+    return result
 
 # ---------------------------------------------------------------------------
 # Material-UI reconciliation application bridge
@@ -165,6 +222,15 @@ def _read_matching_table_payload(event: dict) -> tuple[pd.DataFrame, str]:
 
 
 def _reset_reconciliation_state_and_load_df(df_to_load: pd.DataFrame, source_name_msg: str, is_from_shared_generator: bool = False) -> bool:
+    missing_cols = [col for col in REQUIRED_MATCHING_TABLE_COLUMNS if col not in df_to_load.columns]
+    if missing_cols:
+        STATE["csv_load_error_message"] = f"Loaded data is missing required columns: {', '.join(missing_cols)}"
+        return False
+    _invalidate_reconciliation_outputs()
+    STATE["search_performed"] = False
+    STATE["run_status"] = "idle"
+    STATE["table_revision"] = int(STATE.get("table_revision", 0)) + 1
+    STATE["run_attempted"] = False
     STATE["suggestions"] = {}
     STATE["selected_uris"] = {}
     STATE["custom_search_results"] = {}
@@ -264,7 +330,7 @@ def _default_selected_ontologies_for_provider(provider_name: str, available_onto
 
 def _missing_provider_configurations(provider_queue: list[str]) -> list[str]:
     missing = []
-    if CONFIG:
+    if isinstance(CONFIG, dict):
         for provider_name in provider_queue:
             if provider_name == "NCBI" and not CONFIG.get("ncbi", {}).get("api_key"):
                 missing.append("NCBI API Key")
@@ -278,6 +344,14 @@ def _missing_provider_configurations(provider_queue: list[str]) -> list[str]:
                 geonames_user = CONFIG.get("geonames", {}).get("username")
                 if not geonames_user or geonames_user == "YourUsername":
                     missing.append("GeoNames Username")
+    if "Local Ontology" in provider_queue and not STATE.get("local_resources"):
+        missing.append("Local Ontology: upload and index at least one resource")
+    if CUSTOM_SPARQL_PROVIDER_NAME in provider_queue:
+        endpoint = urlparse(str(STATE.get("custom_sparql_endpoint", "")))
+        if not STATE.get("custom_sparql_enabled") or endpoint.scheme not in {"http", "https"} or not endpoint.netloc:
+            missing.append("Custom SPARQL: enable a valid HTTP(S) endpoint")
+        if not str(STATE.get("custom_sparql_query_template", "")).strip():
+            missing.append("Custom SPARQL: enter a query template")
     return missing
 
 
@@ -378,7 +452,7 @@ def _current_reconciliation_display_mode() -> str | None:
 
 def _build_reconciliation_rows(limit: int = 250) -> dict[str, object]:
     df = STATE.get("df")
-    display_mode = _current_reconciliation_display_mode()
+    display_mode = _current_reconciliation_display_mode() or "Mixed Results"
     if not isinstance(df, pd.DataFrame) or df.empty or not display_mode:
         return {"display_mode": display_mode, "rows": [], "total_rows": 0, "page": 1, "total_pages": 1}
 
@@ -499,6 +573,13 @@ def _build_reconciliation_mui_snapshot() -> dict[str, object]:
 
     total_terms = len(STATE.get("total_indices_to_process", []))
     processed_terms = int(STATE.get("processed_terms_count", 0) or 0)
+    # Projects saved before run_status existed still contain reliable completion
+    # evidence. Never override an explicit status or infer readiness from candidates.
+    queue = STATE.get("provider_queue", [])
+    legacy_completed = bool(queue and total_terms > 0 and processed_terms >= total_terms and
+                            all(STATE.get("provider_status", {}).get(provider, {}).get("status") == "completed" for provider in queue))
+    run_status = "running" if STATE.get("processing_active") else STATE.get("run_status", "completed" if legacy_completed else "idle")
+    summary = _review_summary()
     progress = min(100, round((processed_terms / max(total_terms, 1)) * 100)) if total_terms else 0
     missing_config_alerts = []
     if CONFIG:
@@ -513,8 +594,12 @@ def _build_reconciliation_mui_snapshot() -> dict[str, object]:
     base_filename = os.path.splitext(str(original_filename))[0]
     return {
         "active_stage": STATE.get(RECONCILIATION_MUI_ACTIVE_STAGE_KEY, "load"),
+        "review_summary": summary,
+        "review_revision": int(STATE.get("review_revision", 0)),
+        "rdf_handoff": STATE.get("rdf_handoff"),
         "statusMessage": STATE.get(RECONCILIATION_MUI_STATUS_MESSAGE_KEY),
         "data": {
+            "table_revision": int(STATE.get("table_revision", 0)),
             "has_table": isinstance(df, pd.DataFrame),
             "rows": len(df) if isinstance(df, pd.DataFrame) else 0,
             "columns": len(df.columns) if isinstance(df, pd.DataFrame) else 0,
@@ -562,16 +647,22 @@ def _build_reconciliation_mui_snapshot() -> dict[str, object]:
             "missing_config_alerts": missing_config_alerts,
         },
         "run": {
+            "status": run_status,
+            "results_ready": run_status == "completed" and not STATE.get("processing_active"),
+            "has_run": bool(STATE.get("run_attempted") or STATE.get("search_performed") or legacy_completed),
+            "search_performed": bool(STATE.get("search_performed") or any(p.get("status") in {"completed", "stopped", "error"} for p in STATE.get("provider_status", {}).values())),
             "processing_active": bool(STATE.get("processing_active", False)),
             "processed_terms": processed_terms,
             "total_terms": total_terms,
             "progress": progress,
             "current_term_index": STATE.get("current_term_index_processing", 0),
-            "can_start": bool(isinstance(df, pd.DataFrame) and total_terms > 0 and STATE.get("provider_queue") and not _missing_provider_configurations(STATE.get("provider_queue", []))),
+            "can_start": bool(isinstance(df, pd.DataFrame) and not df.empty and not STATE.get("processing_active") and (summary["unmatched"] == 0 or (STATE.get("provider_queue") and not _missing_provider_configurations(STATE.get("provider_queue", []))))),
             "missing_start_configs": _missing_provider_configurations(STATE.get("provider_queue", [])),
         },
         "reconciliation": _build_reconciliation_rows(),
         "downloads": {
+            "sssom_preview": _records(sssom_df, limit=20),
+            "candidate_review_preview": _records(candidate_review_df, limit=20),
             "sssom_csv": _download_csv_payload(sssom_df),
             "sssom_filename": f"{base_filename}_sssom_curated.csv",
             "candidate_review_csv": _download_csv_payload(candidate_review_df),
@@ -583,12 +674,11 @@ def _build_reconciliation_mui_snapshot() -> dict[str, object]:
 def _apply_provider_queue(provider_queue: list[str]):
     available = set(_available_reconciliation_providers())
     selected = [str(provider) for provider in provider_queue if str(provider) in available]
+    selected = list(dict.fromkeys(selected))
+    changed = selected != STATE.get("provider_queue", [])
     STATE["provider_queue"] = selected
-    STATE["provider_status"] = {}
-    for provider in selected:
-        STATE["provider_status"][provider] = {"status": "pending", "results_count": 0, "error_msg": "", "progress": 0.0, "processed_indices": set()}
-    STATE["display_provider"] = None
-    STATE["display_mixed_results"] = False
+    if changed:
+        _clear_search_results()
     _ensure_ontology_options_for_queue()
 
 
@@ -605,14 +695,20 @@ def _start_reconciliation_queue_processing():
     if not isinstance(df, pd.DataFrame):
         STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": "Cannot start processing: no table is loaded."}
         return
-    missing_configs = _missing_provider_configurations(STATE.get("provider_queue", []))
-    if missing_configs:
-        STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": f"Cannot start: missing configuration values: {', '.join(missing_configs)}"}
-        return
     total_indices = list(df[(pd.isnull(df["URI"]) | (df["URI"] == "") | (df["URI"] == NO_MATCH_URI))].index)
     STATE["total_indices_to_process"] = total_indices
     if not total_indices:
+        if df.empty:
+            STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "warning", "text": "The loaded table has no entries to review."}
+            return
+        STATE["run_status"] = "completed"
+        STATE["run_attempted"] = True
+        STATE["search_performed"] = True
         STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "info", "text": "All terms already have URIs. Nothing to process."}
+        return
+    missing_configs = _missing_provider_configurations(STATE.get("provider_queue", []))
+    if missing_configs:
+        STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": f"Cannot start: missing configuration values: {', '.join(missing_configs)}"}
         return
     provider_queue = list(STATE.get("provider_queue", []))
     if not provider_queue:
@@ -620,6 +716,9 @@ def _start_reconciliation_queue_processing():
         return
 
     STATE["processing_active"] = True
+    STATE["run_status"] = "running"
+    STATE["run_attempted"] = True
+    STATE["search_performed"] = True
     STATE["processed_terms_count"] = 0
     STATE["current_term_index_processing"] = 0
     STATE["stop_processing_requested"] = False
@@ -638,7 +737,9 @@ def _start_reconciliation_queue_processing():
 def _process_reconciliation_queue(df: pd.DataFrame, total_indices: list, provider_queue: list[str]):
     try:
         _process_reconciliation_queue_inner(df, total_indices, provider_queue)
+        STATE["run_status"] = "stopped" if STATE.get("stop_processing_requested") else "completed"
     except Exception as exc:
+        STATE["run_status"] = "failed"
         logger.error("Reconciliation queue processing failed: %s", exc, exc_info=True)
         STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": f"Processing failed: {exc}"}
     finally:
@@ -708,7 +809,7 @@ def _process_reconciliation_queue_inner(df: pd.DataFrame, total_indices: list, p
     if stopped:
         STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {
             "severity": "info",
-            "text": f"Processing stopped after {processed} of {len(total_indices)} term(s). Suggestions fetched so far remain available in the Reconcile step.",
+            "text": f"Run stopped after {processed} of {len(total_indices)} term(s). Run again to finish before reviewing candidates. Saved mappings are kept.",
         }
     else:
         STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Processing queue finished. Review provider suggestions in the Reconcile step."}
@@ -760,6 +861,7 @@ def _apply_reconciliation_selection(row_index, selected_option: dict, match_type
         force_when_mapped=True,
     )
     STATE["df"] = df
+    _invalidate_reconciliation_outputs()
 
 
 def _perform_custom_search(row_index, search_term: str, display_mode: str):
@@ -836,9 +938,16 @@ def _handle_reconciliation_mui_event(event: object) -> bool:
         STATE[RECONCILIATION_MUI_EVENT_NONCE_KEY] = nonce
     event_type = str(event.get("type", "") or "")
 
+    if STATE.get("processing_active") and event_type not in {"navigate", "stop_processing", "select_display_provider"}:
+        STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "warning", "text": "Stop or finish the candidate search before changing data, settings or mappings."}
+        return True
+
     if event_type == "navigate":
         stage = str(event.get("stage", "") or "")
         if stage in RECONCILIATION_STAGES:
+            if stage != "load" and not isinstance(STATE.get("df"), pd.DataFrame):
+                STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "warning", "text": "Load a matching table before continuing."}
+                return True
             STATE[RECONCILIATION_MUI_ACTIVE_STAGE_KEY] = stage
         return True
     if event_type == "upload_table":
@@ -846,7 +955,7 @@ def _handle_reconciliation_mui_event(event: object) -> bool:
             df_loaded, filename = _read_matching_table_payload(event)
             if _reset_reconciliation_state_and_load_df(df_loaded, filename, is_from_shared_generator=False):
                 STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": f"Matching table '{filename}' loaded."}
-                STATE[RECONCILIATION_MUI_ACTIVE_STAGE_KEY] = "configure"
+                STATE[RECONCILIATION_MUI_ACTIVE_STAGE_KEY] = "load"
             else:
                 STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": STATE.get("csv_load_error_message") or "Failed to load matching table."}
         except Exception as exc:
@@ -865,6 +974,8 @@ def _handle_reconciliation_mui_event(event: object) -> bool:
         return True
     if event_type == "update_settings":
         patch = event.get("settings", {}) if isinstance(event.get("settings"), dict) else {}
+        query_keys = {"custom_sparql_enabled", "custom_sparql_endpoint", "custom_sparql_query_template", "custom_sparql_var_uri", "custom_sparql_var_label", "custom_sparql_var_description", "local_backend", "suggestion_slider", "ncbi_selected_databases", "selected_ontologies_by_provider"}
+        query_changed = any(key in query_keys and STATE.get(key) != value for key, value in patch.items())
         for key in [
             "custom_sparql_enabled", "custom_sparql_endpoint", "custom_sparql_query_template", "custom_sparql_var_uri",
             "custom_sparql_var_label", "custom_sparql_var_description", "local_backend", "matching_strategy_radio",
@@ -879,6 +990,9 @@ def _handle_reconciliation_mui_event(event: object) -> bool:
             STATE["selected_ontologies_by_provider"] = patch["selected_ontologies_by_provider"]
         if "provider_queue" in patch and isinstance(patch["provider_queue"], list):
             _apply_provider_queue(patch["provider_queue"])
+        if query_changed:
+            _clear_search_results()
+        STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "info", "text": "Search settings saved. Search again to update candidates; saved mappings are kept." if query_changed else "Settings saved."}
         return True
     if event_type == "confirm_queue":
         _apply_provider_queue(event.get("provider_queue", []))
@@ -903,6 +1017,7 @@ def _handle_reconciliation_mui_event(event: object) -> bool:
                 STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": f"Error indexing local resource: {exc}"}
         if resources:
             STATE["local_resources"] = resources
+            _clear_search_results()
             STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": f"Indexed {len(resources)} local resource(s)."}
         return True
     if event_type == "start_processing":
@@ -933,12 +1048,22 @@ def _handle_reconciliation_mui_event(event: object) -> bool:
         except Exception:
             pass
         selected_option = event.get("selected_option", {}) if isinstance(event.get("selected_option"), dict) else {}
+        if not isinstance(STATE.get("df"), pd.DataFrame) or row_index not in STATE["df"].index:
+            STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": "This row is no longer available. Reload the current table."}
+            return True
+        if event.get("match_type") is not None and event.get("match_type") not in SKOS_MATCH_TYPES:
+            STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "error", "text": "Choose a supported SKOS relation."}
+            return True
         _apply_reconciliation_selection(row_index, selected_option, event.get("match_type"))
         STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Mapping selection updated."}
         return True
     if event_type == "prefill_best_match":
-        _prefill_best_matches_for_backend()
-        STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Best available suggestions were prefilled for unreconciled rows."}
+        prefill = _prefill_best_matches_for_backend()
+        text = f"Prefilled {prefill['prefilled']} term(s) with their top candidate."
+        if prefill["below_threshold"]:
+            text += (f" {prefill['below_threshold']} term(s) stay unmapped: their top candidate's spelling similarity"
+                     f" is below the threshold of {prefill['threshold']:.2f}.")
+        STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": text}
         return True
     if event_type == "custom_search":
         row_index = event.get("row_index")
@@ -962,10 +1087,16 @@ def _handle_reconciliation_mui_event(event: object) -> bool:
             STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "warning", "text": "No reconciled data is available yet."}
         return True
     if event_type == "reset_workflow":
+        _invalidate_reconciliation_outputs()
+        STATE["search_performed"] = False
+        STATE["run_status"] = "idle"
+        STATE["run_attempted"] = False
+        STATE["table_revision"] = int(STATE.get("table_revision", 0)) + 1
         for key in ["df", "suggestions", "selected_uris", "custom_search_results", "custom_search_summaries", "provider_queue", "provider_status", "provider_has_results", "display_provider", "display_mixed_results", "total_indices_to_process"]:
             if key in STATE:
                 del STATE[key]
         _initialize_reconciliation_mui_state()
+        STATE[RECONCILIATION_MUI_ACTIVE_STAGE_KEY] = "load"
         STATE[RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "info", "text": "Semi-automatic reconciliation workflow reset."}
         return True
     return False

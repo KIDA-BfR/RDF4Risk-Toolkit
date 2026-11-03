@@ -1,21 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
   Box,
   Button,
-  Card,
-  CardContent,
   Chip,
   LinearProgress,
   Stack,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
-import StopCircleIcon from '@mui/icons-material/StopCircle';
+import StopIcon from '@mui/icons-material/Stop';
 import { AgentActivityTimeline } from './AgentActivityTimeline';
+import { KpiStrip } from '../layout/KpiStrip';
+import { Section } from '../layout/Section';
 
 const agentLoaderMp4 = new URL('../../assets/animations/agent-loader.mp4', import.meta.url).href;
-
-export type AgentRunWorkflow = 'wikidata_deep_agent' | 'bioportal_wikidata';
+const countFormat = new Intl.NumberFormat();
 
 export type RunStage =
   | 'validating_input'
@@ -52,7 +51,6 @@ export type RunStatus = {
 
 export type AgentRunProgressPanelProps = {
   runStatus: RunStatus;
-  workflow?: AgentRunWorkflow;
   optimisticTotalCount?: number | null;
   onStop?: () => void;
 };
@@ -67,43 +65,12 @@ const stageLabels: Record<string, string> = {
   writing_output: 'Writing output',
 };
 
-const baseMessages = [
-  'Validating SSSOM-compatible table columns',
-  'Normalizing source labels and identifiers',
-  'Comparing candidate labels and aliases',
-  'Checking semantic context from definitions',
-  'Ranking candidates by confidence and evidence',
-  'Selecting suitable SKOS match types',
-  'Checking exactMatch versus closeMatch evidence',
-  'Filtering weak or ambiguous candidates',
-  'Preparing reviewable mapping suggestions',
-  'Writing provenance-aware mapping metadata',
-  'Preparing SSSOM-compatible output rows',
-];
-
-const bioportalMessages = [
-  'Searching BioPortal for ontology candidates',
-  'Retrieving labels, synonyms, and definitions',
-  'Checking domain-specific ontology evidence',
-  'Querying Wikidata fallback candidates',
-  'Comparing ontology and Wikidata candidates',
-  'Ranking semantic matches',
-];
-
-const wikidataMessages = [
-  'Searching Wikidata for candidate entities',
-  'Retrieving labels, aliases, and descriptions',
-  'Checking entity context and semantic type',
-  'Comparing candidates against source terms',
-  'Ranking semantic matches',
-];
-
 function toFiniteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function formatDuration(seconds: number | null | undefined): string {
-  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '—';
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '';
   const rounded = Math.floor(seconds);
   const hours = Math.floor(rounded / 3600);
   const minutes = Math.floor((rounded % 3600) / 60);
@@ -128,47 +95,30 @@ function elapsedFromStartedAt(startedAt?: string | null): number | null {
   return Math.max(0, (Date.now() - timestamp) / 1000);
 }
 
+// The live run view: headline figures in a KpiStrip at page level (never inside the Section), then
+// the activity trace and progress in one flat Section with the Stop action in its header.
 export function AgentRunProgressPanel({
   runStatus,
-  workflow = 'bioportal_wikidata',
   optimisticTotalCount = null,
   onStop,
 }: AgentRunProgressPanelProps) {
-  const workflowMessages = useMemo(() => {
-    return workflow === 'wikidata_deep_agent'
-      ? [...baseMessages.slice(0, 2), ...wikidataMessages, ...baseMessages.slice(2)]
-      : [...baseMessages.slice(0, 2), ...bioportalMessages, ...baseMessages.slice(2)];
-  }, [workflow]);
-  const activityMessages = baseMessages;
-  const [messageIndex, setMessageIndex] = useState(0);
   const [clockTick, setClockTick] = useState(0);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setMessageIndex((idx) => (idx + 1) % activityMessages.length);
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [activityMessages.length]);
+  // The loader video is decorative: it stays on its first frame when the user prefers less motion.
+  const reduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)', { noSsr: true });
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockTick((tick) => tick + 1), 1000);
     return () => window.clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    setMessageIndex(0);
-  }, [workflow]);
-
   const processedCount = toFiniteNumber(runStatus.processed_count);
   const reportedTotalCount = toFiniteNumber(runStatus.total_count);
   const optimisticTotal = toFiniteNumber(optimisticTotalCount);
   const totalCount = reportedTotalCount ?? optimisticTotal;
   const hasRealProgress = processedCount != null && totalCount != null && totalCount > 0;
-  const hasReportedProgress = processedCount != null && reportedTotalCount != null && reportedTotalCount > 0;
   const progress = hasRealProgress
     ? Math.min(100, Math.round((Math.max(0, processedCount) / totalCount) * 100))
     : null;
-  const activityQueuePosition = totalCount && totalCount > 0 ? (messageIndex % totalCount) + 1 : null;
 
   const elapsedSeconds = useMemo(() => {
     const backendElapsed = toFiniteNumber(runStatus.elapsed_seconds);
@@ -186,107 +136,69 @@ export function AgentRunProgressPanel({
 
   const stage = String(runStatus.stage || '').trim();
   const phaseLabel = stageLabels[stage] || (stage ? stage.replace(/_/g, ' ') : 'Agent is running');
-  const visibleMessage = workflowMessages[messageIndex % workflowMessages.length];
   const remainingLabel = hasRealProgress ? formatRemaining(estimatedRemainingSeconds) : null;
+  const stopping = Boolean(runStatus.stop_requested);
 
   return (
-    <Card
-      variant="outlined"
-      sx={{
-        borderRadius: 5,
-        borderColor: 'divider',
-        overflow: 'hidden',
-        background: 'background.paper',
-        boxShadow: '0 18px 60px rgba(15,23,42,.10)',
-      }}
-    >
-      <CardContent sx={{ p: { xs: 3, md: 4 } }}>
-        <Stack spacing={2.5} alignItems="center">
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems="center" justifyContent="center" sx={{ width: '100%' }}>
-            <Chip label={runStatus.stop_requested ? 'Stopping run' : 'Run in progress'} color={runStatus.stop_requested ? 'warning' : 'primary'} variant="outlined" sx={{ fontWeight: 800 }} />
+    <>
+      <KpiStrip
+        ariaLabel="Run figures"
+        items={[
+          { label: 'Terms processed', value: hasRealProgress ? `${countFormat.format(Math.max(0, processedCount ?? 0))} of ${countFormat.format(totalCount ?? 0)}` : '', hint: progress != null ? `${progress}%` : undefined },
+          { label: 'Elapsed', value: formatDuration(elapsedSeconds) },
+          { label: 'Estimated remaining', value: remainingLabel || (hasRealProgress ? 'Calculating…' : '') },
+        ]}
+      />
+      <Section
+        title="Run in progress"
+        description={`Current phase: ${phaseLabel}`}
+        actions={
+          <>
+            {stopping && <Chip size="small" variant="outlined" color="warning" label="Stopping" />}
             {onStop && (
-              <Button
-                variant="contained"
-                color="error"
-                size="large"
-                startIcon={<StopCircleIcon />}
-                onClick={onStop}
-                disabled={Boolean(runStatus.stop_requested)}
-                sx={{ fontWeight: 900, px: 3, boxShadow: '0 10px 24px rgba(220,38,38,.22)' }}
-              >
-                {runStatus.stop_requested ? 'Stopping...' : 'Stop Run'}
+              <Button variant="outlined" color="warning" startIcon={<StopIcon />} onClick={onStop} disabled={stopping}>
+                {stopping ? 'Stopping…' : 'Stop run'}
               </Button>
             )}
-          </Stack>
-
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="center" sx={{ width: '100%' }}>
+          </>
+        }
+      >
+        <Stack spacing={2.5}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ xs: 'center', sm: 'flex-start' }}>
             <Box
               component="video"
-              autoPlay
-              loop
+              autoPlay={!reduceMotion}
+              loop={!reduceMotion}
               muted
               playsInline
               preload="auto"
-              sx={{ width: 120, height: 120, objectFit: 'contain', display: 'block', flexShrink: 0 }}
+              aria-hidden
+              sx={{ width: 96, height: 96, objectFit: 'contain', display: 'block', flexShrink: 0 }}
             >
               <source src={agentLoaderMp4} type="video/mp4" />
             </Box>
             <Box sx={{ flex: 1, width: '100%', minWidth: 0 }}>
-              <Typography variant="h6" fontWeight={900} sx={{ mb: 0.5 }}>
-                Reconciling semantic mappings
-              </Typography>
               <AgentActivityTimeline runStatus={runStatus} stageLabels={stageLabels} />
             </Box>
           </Stack>
 
-          {runStatus.current_term && (
-            <Alert severity="info" variant="outlined" sx={{ width: '100%', borderRadius: 3, bgcolor: 'background.paper' }}>
-              <strong>Current term:</strong> {runStatus.current_term}
-            </Alert>
-          )}
-
-          <Box sx={{ width: '100%', display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 1.2 }}>
-            <Box sx={{ p: 1.5, borderRadius: 3, bgcolor: 'background.default', border: '1px solid', borderColor: 'divider' }}>
-              <Typography variant="caption" color="text.secondary">Current phase</Typography>
-              <Typography variant="body2" sx={{ fontWeight: 850 }}>{phaseLabel}</Typography>
-            </Box>
-            <Box sx={{ p: 1.5, borderRadius: 3, bgcolor: 'background.default', border: '1px solid', borderColor: 'divider' }}>
-              <Typography variant="caption" color="text.secondary">Elapsed</Typography>
-              <Typography variant="body2" sx={{ fontWeight: 850 }}>{formatDuration(elapsedSeconds)}</Typography>
-            </Box>
-            <Box sx={{ p: 1.5, borderRadius: 3, bgcolor: 'background.default', border: '1px solid', borderColor: 'divider' }}>
-              <Typography variant="caption" color="text.secondary">Estimated remaining</Typography>
-              <Typography variant="body2" sx={{ fontWeight: 850 }}>{remainingLabel || (hasRealProgress ? 'calculating…' : '—')}</Typography>
-            </Box>
-          </Box>
-
-          <Box sx={{ width: '100%' }}>
-            <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'baseline' }} sx={{ mb: 0.75 }} spacing={0.5}>
-              <Typography variant="body2" sx={{ fontWeight: 850 }}>Progress</Typography>
-              {hasRealProgress ? (
-                <Typography variant="body2" color="text.secondary">
-                  {hasReportedProgress
-                    ? `${Math.max(0, processedCount ?? 0)} / ${totalCount} terms processed · ${progress}%`
-                    : `Activity cycle ${activityQueuePosition} / ${totalCount} queued terms`}
-                </Typography>
-              ) : (
-                <Typography variant="body2" color="text.secondary">Waiting for the first processed term.</Typography>
-              )}
-            </Stack>
+          <Box>
             <LinearProgress
+              aria-label="Run progress"
               variant={hasRealProgress ? 'determinate' : 'indeterminate'}
               value={hasRealProgress ? progress ?? 0 : undefined}
-              sx={{ height: 10, borderRadius: 999 }}
             />
+            {!hasRealProgress && (
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Waiting for the first processed term.</Typography>
+            )}
+            {runStatus.current_term && (
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1, overflowWrap: 'anywhere' }}>
+                Current term: <Box component="span" sx={{ color: 'text.primary' }}>{runStatus.current_term}</Box>
+              </Typography>
+            )}
           </Box>
-
-          {runStatus.last_activity && (
-            <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'stretch' }}>
-              Last activity: {runStatus.last_activity}
-            </Typography>
-          )}
         </Stack>
-      </CardContent>
-    </Card>
+      </Section>
+    </>
   );
 }

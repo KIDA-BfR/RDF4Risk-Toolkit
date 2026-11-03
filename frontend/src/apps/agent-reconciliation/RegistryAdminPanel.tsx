@@ -4,11 +4,11 @@ import {
   Box,
   Button,
   Checkbox,
+  Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
-  Divider,
   FormControl,
   FormControlLabel,
   InputLabel,
@@ -30,9 +30,23 @@ import {
   type RegistryJobPreview,
   type RegistryJobStatus,
 } from '../../standalone/backendClient';
+import { InfoButton } from '../../components/help/InfoButton';
+import { Disclosure } from '../../components/layout/Disclosure';
+import { KpiStrip } from '../../components/layout/KpiStrip';
+import { MetaList } from '../../components/layout/MetaList';
 
 type Mode = 'catalog' | 'full_context';
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+// Human labels for the job's protocol values.
+const JOB_STATUS: Record<string, { label: string; color: 'default' | 'info' | 'success' | 'error' | 'warning' }> = {
+  pending: { label: 'Queued', color: 'info' },
+  running: { label: 'Running', color: 'info' },
+  completed: { label: 'Completed', color: 'success' },
+  failed: { label: 'Failed', color: 'error' },
+  cancelled: { label: 'Cancelled', color: 'warning' },
+};
+const MODE_LABEL: Record<string, string> = { catalog: 'Catalog refresh', full_context: 'Deep-fetch' };
+const countFormat = new Intl.NumberFormat();
 
 export default function RegistryAdminPanel({ embedded = false }: { embedded?: boolean }): JSX.Element {
   const [open, setOpen] = useState(false);
@@ -127,52 +141,49 @@ export default function RegistryAdminPanel({ embedded = false }: { embedded?: bo
     stopPolling();
   };
 
+  const jobStatus = job ? JOB_STATUS[job.status] ?? { label: job.status, color: 'default' as const } : null;
+
   const trigger = (
     <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} spacing={1}>
-      <Stack>
-        <Typography variant="subtitle2">BioPortal ontology registry</Typography>
-        <Typography variant="caption" color="text.secondary">
-          Pre-fill local ontology context used for routing. Heavy operation — explicit confirmation required.
-        </Typography>
-      </Stack>
-      <Button size="small" variant="outlined" startIcon={<StorageIcon />} onClick={openDialog}>
-        Update BioPortal Ontology Registry
+      <Typography variant="body2" color="text.secondary">
+        A heavy operation that needs explicit confirmation.
+      </Typography>
+      <Button size="small" variant="outlined" startIcon={<StorageIcon />} onClick={openDialog} sx={{ flexShrink: 0 }}>
+        Update registry…
       </Button>
     </Stack>
   );
 
   const dialog = (
-      <Dialog open={open} onClose={closeDialog} maxWidth="sm" fullWidth>
-        <DialogTitle>
+      <Dialog open={open} onClose={closeDialog} maxWidth="sm" fullWidth aria-labelledby="registry-update-title">
+        <DialogTitle id="registry-update-title">
           <Stack direction="row" spacing={1} alignItems="center">
             <WarningAmberIcon color="warning" />
-            <span>Update BioPortal Ontology Registry</span>
+            <span>Update the BioPortal registry</span>
           </Stack>
         </DialogTitle>
         <DialogContent dividers>
-          <Stack spacing={1.5}>
+          <Stack spacing={2}>
             <Alert severity="warning">
-              Two distinct modes: <strong>Catalog refresh (recommended)</strong> only discovers the list of
-              BioPortal ontologies and stubs missing entries — fast, one listing request. <strong>Deep-fetch
-              (advanced)</strong> fetches full quality/context metadata per ontology and can issue <strong>thousands
-              of BioPortal API requests</strong> across the whole BioPortal universe, taking a long time. Both
-              require a BioPortal API key on the backend, should not be run repeatedly, and preserve existing
-              curated notes. You can cancel a running job at any time.
+              Needs a BioPortal API key on the backend and should not be run repeatedly. Curated notes are kept, and a running job can be cancelled.
             </Alert>
+            <Disclosure title="About the two modes">
+              <Stack spacing={1}>
+                <Typography variant="body2"><strong>Catalog refresh (recommended)</strong> only discovers the list of BioPortal ontologies and stubs missing entries. Fast, one listing request.</Typography>
+                <Typography variant="body2"><strong>Deep-fetch (advanced)</strong> fetches full quality and context metadata per ontology and can issue thousands of BioPortal API requests across the whole BioPortal universe, taking a long time.</Typography>
+              </Stack>
+            </Disclosure>
 
             {previewError && <Alert severity="error">{previewError}</Alert>}
             {preview && !preview.error && (
-              <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2, bgcolor: 'background.default' }}>
-                <Typography variant="body2">
-                  Discovered on BioPortal: <strong>{preview.total_discovered}</strong> ontologies.
-                </Typography>
-                <Typography variant="body2">
-                  Already in local registry: <strong>{preview.already_in_registry}</strong>.
-                </Typography>
-                <Typography variant="body2">
-                  Planned for fetch/update: <strong>{preview.planned_for_fetch}</strong>.
-                </Typography>
-              </Paper>
+              <KpiStrip
+                ariaLabel="Registry preview"
+                items={[
+                  { label: 'Discovered on BioPortal', value: countFormat.format(preview.total_discovered ?? 0) },
+                  { label: 'Already in registry', value: countFormat.format(preview.already_in_registry ?? 0) },
+                  { label: 'Planned for update', value: countFormat.format(preview.planned_for_fetch ?? 0) },
+                ]}
+              />
             )}
 
             <FormControl size="small" fullWidth disabled={running}>
@@ -184,19 +195,19 @@ export default function RegistryAdminPanel({ embedded = false }: { embedded?: bo
             </FormControl>
             {mode === 'full_context' && (
               <Alert severity="error">
-                Deep-fetch performs multiple API calls <strong>per ontology</strong> across the entire BioPortal
-                universe{preview?.total_discovered ? ` (~${preview.total_discovered} ontologies discovered)` : ''} —
-                potentially <strong>thousands of BioPortal API requests</strong> and a very long run. Strongly
-                consider setting a <strong>max-requests</strong> cap. Catalog
-                refresh is the recommended default for routine updates.
+                Deep-fetch makes several API calls <strong>per ontology</strong>{preview?.total_discovered ? ` (~${countFormat.format(preview.total_discovered)} ontologies discovered)` : ''}, potentially thousands of requests and a very long run. Set a max-requests cap.
               </Alert>
             )}
 
-            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.2 }}>
-              <FormControlLabel
-                control={<Checkbox checked={refresh} onChange={(e) => setRefresh(e.target.checked)} disabled={running} />}
-                label="Force refresh (re-fetch even fresh entries; overwrites fetched metadata — curated notes are kept)"
-              />
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.5, alignItems: 'center' }}>
+              <Stack direction="row" alignItems="center" spacing={0.5}>
+                <FormControlLabel
+                  control={<Checkbox checked={refresh} onChange={(e) => setRefresh(e.target.checked)} disabled={running} />}
+                  label="Force refresh"
+                  sx={{ mr: 0 }}
+                />
+                <InfoButton title="Force refresh">Re-fetch entries even when they are still fresh. Fetched metadata is overwritten; curated notes are kept.</InfoButton>
+              </Stack>
               <TextField
                 size="small"
                 type="number"
@@ -209,25 +220,30 @@ export default function RegistryAdminPanel({ embedded = false }: { embedded?: bo
 
             {error && <Alert severity="error">{error}</Alert>}
 
-            {job && (
-              <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2 }} role="status">
-                <Divider sx={{ mb: 1 }} />
-                <Typography variant="body2" gutterBottom>
-                  Status: <strong>{job.status}</strong> · mode {job.mode}
-                  {job.dry_run ? ' · dry-run' : ''}
-                </Typography>
+            {job && jobStatus && (
+              <Box role="status" sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 2 }}>
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                  <Chip size="small" variant="outlined" color={jobStatus.color} label={jobStatus.label} />
+                  <Typography variant="body2" color="text.secondary">{MODE_LABEL[job.mode] ?? job.mode}{job.dry_run ? ' (dry run)' : ''}</Typography>
+                </Stack>
                 <LinearProgress
+                  aria-label="Registry update progress"
                   variant={running && job.total === 0 ? 'indeterminate' : 'determinate'}
                   value={Math.max(0, Math.min(100, job.percent || 0))}
-                  sx={{ height: 8, borderRadius: 1, my: 1 }}
+                  sx={{ my: 1.5 }}
                 />
-                <Typography variant="caption" color="text.secondary">
-                  {job.processed}/{job.total} ({(job.percent || 0).toFixed(1)}%)
-                  {job.current_acronym ? ` · current: ${job.current_acronym}` : ''}
-                  {' · '}fetched {job.fetched} · skipped {job.skipped} · failed {job.failed}
-                </Typography>
-                {job.error && <Alert severity="error" sx={{ mt: 1 }}>{job.error}</Alert>}
-              </Paper>
+                <MetaList
+                  columns={2}
+                  items={[
+                    { label: 'Processed', value: `${countFormat.format(job.processed ?? 0)} of ${countFormat.format(job.total ?? 0)} (${(job.percent || 0).toFixed(1)}%)`, numeric: true },
+                    { label: 'Current', value: job.current_acronym, mono: true },
+                    { label: 'Fetched', value: countFormat.format(job.fetched ?? 0), numeric: true },
+                    { label: 'Skipped', value: countFormat.format(job.skipped ?? 0), numeric: true },
+                    { label: 'Failed', value: countFormat.format(job.failed ?? 0), numeric: true },
+                  ]}
+                />
+                {job.error && <Alert severity="error" sx={{ mt: 1.5 }}>{job.error}</Alert>}
+              </Box>
             )}
           </Stack>
         </DialogContent>
@@ -238,7 +254,7 @@ export default function RegistryAdminPanel({ embedded = false }: { embedded?: bo
             <Button onClick={closeDialog}>Close</Button>
           )}
           <Button variant="contained" onClick={proceed} disabled={busy || running || Boolean(preview?.error)}>
-            Proceed
+            Start update
           </Button>
         </DialogActions>
       </Dialog>
@@ -248,7 +264,7 @@ export default function RegistryAdminPanel({ embedded = false }: { embedded?: bo
     return <>{trigger}{dialog}</>;
   }
   return (
-    <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
+    <Paper variant="outlined" sx={{ p: 1.5 }}>
       {trigger}
       {dialog}
     </Paper>

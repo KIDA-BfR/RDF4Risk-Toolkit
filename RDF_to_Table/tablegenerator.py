@@ -153,6 +153,10 @@ def get_property_counts(converter: TriGConverter) -> dict:
 RDF_TABLE_COMPONENT_ACTION_NONCE_KEY = "rdf_to_table_component_action_nonce"
 RDF_TABLE_STATUS_MESSAGE_KEY = "rdf_to_table_status_message"
 RDF_TABLE_DOWNLOADS_KEY = "rdf_to_table_downloads"
+# UTF-8 bytes of the loaded TriG. project_store never snapshots the parsed converter (_RUNTIME_DENY), so
+# History and projects keep this instead and the converter is rebuilt from it on first use. Bytes, not
+# str, so export_recipe treats it as data rather than configuration.
+TRIG_SOURCE_BYTES_KEY = "trig_source_bytes"
 
 DCAT_GRAPH_URI = 'https://fskx-graphdb.risk-ai-cloud.com/graph/dcat-metadata'
 PUBLICATION_GRAPH_URI = 'https://fskx-graphdb.risk-ai-cloud.com/graph/publication-reference'
@@ -161,6 +165,7 @@ PUBLICATION_GRAPH_URI = 'https://fskx-graphdb.risk-ai-cloud.com/graph/publicatio
 def _init_rdf_to_table_state() -> None:
     defaults = {
         "trig_converter": None,
+        TRIG_SOURCE_BYTES_KEY: None,
         "trig_file_name": None,
         "rdf_to_table_active_stage": "load",
         RDF_TABLE_STATUS_MESSAGE_KEY: None,
@@ -181,15 +186,44 @@ def _preview_records(df: Optional[pd.DataFrame], limit: int = 100) -> List[Dict[
     return df.head(limit).fillna("").astype(str).to_dict(orient="records")
 
 
+def _parse_converter(data: str) -> Optional[TriGConverter]:
+    converter = TriGConverter(data=data)
+    if not converter.parse_trig():
+        return None
+    converter.extract_all_data()
+    converter.expand_list_values()
+    return converter
+
+
+def _current_converter() -> Optional[TriGConverter]:
+    """Return the parsed catalog, rebuilding it from the stored TriG after a History or project restore."""
+    converter = runtime_state.get("trig_converter")
+    if isinstance(converter, TriGConverter):
+        return converter
+    source = runtime_state.get(TRIG_SOURCE_BYTES_KEY)
+    if not isinstance(source, (bytes, bytearray)) or not source:
+        return None
+    try:
+        converter = _parse_converter(bytes(source).decode("utf-8"))
+    except Exception:
+        converter = None
+    if converter is None:
+        # Drop the source so every later snapshot doesn't retry the same failing parse.
+        runtime_state[TRIG_SOURCE_BYTES_KEY] = None
+        _set_status("error", "The restored catalog could not be read. Load it again.")
+        return None
+    runtime_state["trig_converter"] = converter
+    return converter
+
+
 def _process_trig_data(data: str, file_name: str) -> None:
     try:
-        converter = TriGConverter(data=data)
-        if not converter.parse_trig():
+        converter = _parse_converter(data)
+        if converter is None:
             _set_status("error", "Failed to parse TriG data. Please check the file format.")
             return
-        converter.extract_all_data()
-        converter.expand_list_values()
         runtime_state["trig_converter"] = converter
+        runtime_state[TRIG_SOURCE_BYTES_KEY] = data.encode("utf-8")
         runtime_state["trig_file_name"] = file_name
         runtime_state[RDF_TABLE_DOWNLOADS_KEY] = {}
         runtime_state["rdf_to_table_active_stage"] = "preview"
@@ -298,8 +332,8 @@ def _file_stem() -> str:
 
 
 def _prepare_downloads() -> None:
-    converter = runtime_state.get("trig_converter")
-    if not isinstance(converter, TriGConverter):
+    converter = _current_converter()
+    if converter is None:
         _set_status("warning", "Load TriG data before preparing downloads.")
         return
     stem = _file_stem() or "rdf_table"
@@ -331,9 +365,7 @@ def _prepare_downloads() -> None:
 
 
 def _build_snapshot() -> Dict[str, Any]:
-    converter = runtime_state.get("trig_converter")
-    if not isinstance(converter, TriGConverter):
-        converter = None
+    converter = _current_converter()
     preview_df = create_preview_dataframe(converter) if converter else pd.DataFrame()
     return {
         "active_stage": runtime_state.get("rdf_to_table_active_stage", "load"),
@@ -374,10 +406,11 @@ def _handle_mui_event(event: Any) -> bool:
         _prepare_downloads()
     elif event_type == "reset_workflow":
         runtime_state["trig_converter"] = None
+        runtime_state[TRIG_SOURCE_BYTES_KEY] = None
         runtime_state["trig_file_name"] = None
         runtime_state[RDF_TABLE_DOWNLOADS_KEY] = {}
         runtime_state["rdf_to_table_active_stage"] = "load"
-        _set_status("info", "RDF-to-Table workflow reset.")
+        _set_status("info", "RDF inspector reset.")
     elif event_type == "download_ack":
         should_rerun = False
     else:

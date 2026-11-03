@@ -16,7 +16,7 @@ export function EmptyState({
 }: {
   icon?: React.ReactNode;
   title: string;
-  description?: string;
+  description?: React.ReactNode;
   primaryAction?: React.ReactNode;
   secondaryAction?: React.ReactNode;
   dense?: boolean;
@@ -25,28 +25,33 @@ export function EmptyState({
     <Stack
       alignItems="center"
       justifyContent="center"
-      spacing={1.25}
+      spacing={1}
       sx={{
         textAlign: 'center',
-        py: dense ? 3 : 5,
+        py: dense ? 3 : 4,
         px: 2,
         border: '1px dashed',
         borderColor: 'divider',
-        borderRadius: 3,
+        borderRadius: 2,
         bgcolor: 'background.default',
       }}
     >
-      {icon && <Box sx={{ color: 'text.secondary', display: 'flex', '& svg': { fontSize: 40 } }}>{icon}</Box>}
-      <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+      {icon && (
+        <Box aria-hidden sx={{ color: 'text.secondary', display: 'flex', '& svg': { fontSize: dense ? 'h3.fontSize' : 'h1.fontSize' } }}>
+          {icon}
+        </Box>
+      )}
+      {/* A paragraph, not a heading: empty states sit inside sections and must not break the outline. */}
+      <Typography variant="subtitle1" component="p">
         {title}
       </Typography>
       {description && (
-        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 440 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: '60ch' }}>
           {description}
         </Typography>
       )}
       {(primaryAction || secondaryAction) && (
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 0.5 }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ pt: 0.5 }}>
           {primaryAction}
           {secondaryAction}
         </Stack>
