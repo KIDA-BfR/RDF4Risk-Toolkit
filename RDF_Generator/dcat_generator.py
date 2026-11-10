@@ -3,7 +3,9 @@ import json
 import logging
 from pathlib import Path
 from rdflib import Graph, Namespace, URIRef, Literal, Dataset, BNode
-from rdflib.namespace import DCTERMS, DCAT, FOAF, RDF, XSD, SKOS
+from rdflib.namespace import DCTERMS, DCAT, FOAF, RDF, RDFS, XSD, SKOS
+
+from . import license_registry
 from datetime import date
 
 # Define necessary namespaces
@@ -31,12 +33,6 @@ _FALLBACK_DCAT_TEMPLATE = {
         "TECH – Science and technology": "http://publications.europa.eu/resource/authority/data-theme/TECH",
         "TRAN – Transport": "http://publications.europa.eu/resource/authority/data-theme/TRAN",
     },
-    "licenses": {
-        "CC BY 4.0": "http://creativecommons.org/licenses/by/4.0/",
-        "CC0 1.0": "http://creativecommons.org/publicdomain/zero/1.0/",
-        "Data Use Agreement for Official Statistics": "http://dcat-ap.de/def/licenses/official",
-        "CC-BY-4.0": "https://creativecommons.org/licenses/by/4.0/",
-    },
     "media_types": {
         "turtle": "text/turtle",
         "nquads": "application/n-quads",
@@ -54,7 +50,8 @@ def _load_dcat_template():
     except (OSError, json.JSONDecodeError):
         payload = {}
     template = {**_FALLBACK_DCAT_TEMPLATE, **(payload if isinstance(payload, dict) else {})}
-    for key in ("themes", "licenses", "media_types"):
+    # Licences are not part of this template: they come from license_registry (DCAT-AP.de vocabulary).
+    for key in ("themes", "media_types"):
         value = template.get(key)
         if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
             template[key] = _FALLBACK_DCAT_TEMPLATE[key]
@@ -69,8 +66,22 @@ def _load_dcat_template():
 _DCAT_TEMPLATE = _load_dcat_template()
 DCAT_CATALOG_DEFAULTS = dict(_DCAT_TEMPLATE["catalog"])
 THEMES = dict(_DCAT_TEMPLATE["themes"])
-LICENSES = dict(_DCAT_TEMPLATE["licenses"])
 MEDIA_TYPES = dict(_DCAT_TEMPLATE["media_types"])
+
+def _add_license(graph, dataset_uri, license_id):
+    """dct:license with the DCAT-AP.de licence URI, typed as dct:LicenseDocument (DCAT-AP).
+
+    An unknown or empty licence is left out with a warning instead of failing the whole catalog.
+    """
+    lic = license_registry.resolve(license_id)
+    if not lic:
+        logging.warning("Unknown licence %r; the catalog is written without dct:license.", license_id)
+        return
+    license_uri = URIRef(lic["uri"])
+    graph.add((dataset_uri, DCTERMS.license, license_uri))
+    graph.add((license_uri, RDF.type, DCTERMS.LicenseDocument))
+    graph.add((license_uri, RDFS.label, Literal(lic["label"], lang="en")))
+
 
 def display_dcat_builder():
     """Deprecated placeholder for the removed Python DCAT form.
@@ -172,8 +183,10 @@ def create_dcat_catalog_bundle(
         raise
 
     catalog_uri = EX["catalog"]
-    dataset_uri = data_graph_uri+"dataset/main"
-    distribution_uri = data_graph_uri+"distribution/main"
+    # The graph IRI does not end in "/", so plain concatenation produced e.g. ".../da…tadataset/main".
+    resource_base = str(data_graph_uri).rstrip("/") + "/"
+    dataset_uri = URIRef(resource_base + "dataset/main")
+    distribution_uri = URIRef(resource_base + "distribution/main")
     publisher_uri = URIRef(metadata_config["publisher_uri"])
 
     # Catalog
@@ -195,7 +208,7 @@ def create_dcat_catalog_bundle(
     meta_graph.add((dataset_uri, DCTERMS.publisher, publisher_uri))
     meta_graph.add((dataset_uri, DCTERMS.issued, Literal(date.today().isoformat(), datatype=XSD.date)))
     meta_graph.add((dataset_uri, DCTERMS.modified, Literal(date.today().isoformat(), datatype=XSD.date)))
-    meta_graph.add((dataset_uri, DCTERMS.license, URIRef(LICENSES[metadata_config["license"]])))
+    _add_license(meta_graph, dataset_uri, metadata_config.get("license"))
     meta_graph.add((dataset_uri, DCAT.distribution, distribution_uri))
 
     # Keywords
@@ -287,7 +300,7 @@ def create_dcat_catalog_bundle(
     meta_graph.add((distribution_uri, RDF.type, DCAT.Distribution))
     meta_graph.add((distribution_uri, DCAT.accessURL, URIRef(data_graph_uri_str)))
     meta_graph.add((distribution_uri, DCTERMS.title, Literal(f"Distribution of {metadata_config['title']} in {rdf_format} format", lang="en")))
-    meta_graph.add((distribution_uri, DCTERMS.license, URIRef(LICENSES[metadata_config["license"]])))
+    _add_license(meta_graph, distribution_uri, metadata_config.get("license"))
     meta_graph.add((distribution_uri, DCAT.mediaType, URIRef(f"http://www.iana.org/assignments/media-types/{distribution_media_type}")))
     meta_graph.add((distribution_uri, DCAT.byteSize, Literal(byte_size, datatype=XSD.decimal)))
 

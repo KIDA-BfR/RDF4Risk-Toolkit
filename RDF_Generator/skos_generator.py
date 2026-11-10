@@ -10,23 +10,51 @@ import re
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+
+def _normalize_term(value) -> str:
+    """Same normalization rdf_processor uses to match terms against the mapping table."""
+    return str(value).strip().lower()
+
+
+def collect_used_terms(df: 'pd.DataFrame', exclude_columns=()) -> set:
+    """Return the normalized terms a data table can reference: its column headers and cell values.
+
+    ``exclude_columns`` should hold the subject ID / cross-file linking columns, which
+    rdf_processor never maps to concepts.
+    """
+    excluded = {col for col in exclude_columns if col}
+    columns = [col for col in df.columns if col not in excluded]
+    used = {_normalize_term(col) for col in columns}
+    for col in columns:
+        for value in df[col].dropna().unique():
+            value_str = safe_value(value)
+            if value_str:
+                used.add(value_str.lower())
+    return used
+
+
 def create_skos_graph_and_lookup_map(
     mapping_df: 'pd.DataFrame',
     config: dict,
-    data_graph_uri: str  # Accept the dynamic data graph URI
+    data_graph_uri: str,  # Accept the dynamic data graph URI
+    used_terms: set = None,
 ) -> (ConjunctiveGraph, dict):
     """
     Creates a SKOS graph in a dedicated named graph from a mapping table.
     Also returns a map for linking data values to the correct URI (either an
     exactMatch URI or the internal concept URI).
+
+    ``used_terms`` (see ``collect_used_terms``) restricts the vocabulary to the terms the
+    dataset actually uses. A mapping table shared across datasets otherwise puts every
+    dataset's terms into this dataset's SKOS graph. ``None`` keeps all rows.
     """
     g = ConjunctiveGraph()
     # The SKOS terms get their own graph, defined in the config
     terms_graph_uri = URIRef(config['terms_graph_uri'])
     terms_graph = g.get_context(terms_graph_uri)
 
-    # The data graph URI is now passed in dynamically
-    data_graph_uri_ref = URIRef(data_graph_uri)
+    # The data graph URI is passed in dynamically; it is None when the user chose no named graph.
+    data_graph_uri_ref = URIRef(data_graph_uri) if data_graph_uri else None
 
     # Bind namespaces for a cleaner output
     terms_graph.bind("skos", SKOS)
@@ -49,11 +77,15 @@ def create_skos_graph_and_lookup_map(
     terms_graph.add((scheme_uri, RDF.type, SKOS.ConceptScheme))
     terms_graph.add((scheme_uri, RDFS.label, Literal("Concept Scheme from Mapping Table")))
 
+    skipped_unused = 0
     for _, row in mapping_df.iterrows():
         term = safe_value(row.get('subject_label'))
         if not term:
             term = safe_value(row.get('Term'))
         if not term:
+            continue
+        if used_terms is not None and _normalize_term(term) not in used_terms:
+            skipped_unused += 1
             continue
 
         uri = strip_angle_brackets(safe_value(row.get('object_id')))
@@ -76,7 +108,8 @@ def create_skos_graph_and_lookup_map(
         terms_graph.add((concept_uri, SKOS.prefLabel, Literal(term)))
         terms_graph.add((concept_uri, DCTERMS.created, creation_timestamp))
         # Link the concept to the dynamically provided data graph URI
-        terms_graph.add((concept_uri, VOID.inDataset, data_graph_uri_ref))
+        if data_graph_uri_ref is not None:
+            terms_graph.add((concept_uri, VOID.inDataset, data_graph_uri_ref))
 
         provider_term = safe_value(row.get('object_label'))
         if not provider_term:
@@ -126,4 +159,6 @@ def create_skos_graph_and_lookup_map(
                     terms_graph.add((concept_uri, SKOS.closeMatch, match_uri))
                     # FIXED Problem 2: Don't add labels to external URIs
 
+    if skipped_unused:
+        logging.info(f"SKOS: skipped {skipped_unused} mapping-table term(s) not used in this dataset.")
     return g, term_to_uri_lookup

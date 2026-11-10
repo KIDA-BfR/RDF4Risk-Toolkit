@@ -63,6 +63,54 @@ def convert_value_to_markdown(value, converter: TriGConverter) -> str:
 
     return value_str
 
+def _label_cell(value: Any, converter: TriGConverter) -> Dict[str, Any]:
+    """One value as {text, iri}: the converter's label for IRIs, the value itself for literals."""
+    value_str = "" if value is None or (isinstance(value, float) and pd.isna(value)) else str(value)
+    if value_str.startswith(("http://", "https://")):
+        if value_str in converter.uri_to_label:
+            label = converter.uri_to_label[value_str]
+        elif converter._should_use_local_name(value_str):
+            label = converter._extract_local_name(value_str)
+        else:
+            label = value_str
+        return {"text": label, "iri": value_str}
+    return {"text": value_str, "iri": None}
+
+
+def labelled_table(converter: TriGConverter, limit: Optional[int] = None, column_order: Optional[List[str]] = None) -> Dict[str, Any]:
+    """The converter's subject rows as a table whose cells keep both label and IRI.
+
+    Same rows and labels as the preview (create_preview_dataframe), but every IRI stays available,
+    including internal concepts, so a viewer can switch between labels and IRIs. Multi-valued
+    properties are joined with "; ". ``column_order`` (e.g. the source file's columns) orders the
+    property columns; others follow in the converter's order. Used by the RDF generator's full table.
+    """
+    rows_data = converter.subjects_data or []
+    keys: List[str] = []
+    for subject in rows_data:
+        for key in subject:
+            if key != "subject_uri" and key not in keys:
+                keys.append(key)
+    position = {str(name).strip().lower(): index for index, name in enumerate(column_order or [])}
+    keys.sort(key=lambda key: position.get(key.strip().lower(), len(position)))
+    columns = [{"key": "subject", "text": "Subject", "iri": None}] + [
+        {"key": f"p{index}", "text": key, "iri": converter.label_to_property_uri.get(key)} for index, key in enumerate(keys)]
+    rows = []
+    for subject in rows_data[: limit if limit is not None else len(rows_data)]:
+        row: Dict[str, Any] = {"subject": _label_cell(subject.get("subject_uri"), converter)}
+        for index, key in enumerate(keys):
+            values = subject.get(key)
+            if values is None or values == "":
+                continue
+            cells = [_label_cell(v, converter) for v in (values if isinstance(values, list) else [values])]
+            row[f"p{index}"] = {
+                "text": "; ".join(c["text"] for c in cells),
+                "iri": "; ".join(c["iri"] or c["text"] for c in cells) if any(c["iri"] for c in cells) else None,
+            }
+        rows.append(row)
+    return {"columns": columns, "rows": rows, "total": len(rows_data), "truncated": len(rows) < len(rows_data)}
+
+
 def create_preview_dataframe(converter: TriGConverter) -> pd.DataFrame:
     """Convert subjects_data to DataFrame with markdown links."""
     if not converter.subjects_data:

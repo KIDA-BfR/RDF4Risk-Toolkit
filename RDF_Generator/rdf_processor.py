@@ -87,6 +87,26 @@ def _initialize_graph_with_namespaces(mapping_df, df, iri_column, instance_class
 
     return g, EX, DATASET_Default
 
+def _with_normalized_keys(term_map: dict) -> dict:
+    """Copy of the term -> concept URI map that also answers for the normalized term
+    (stripped, lower-case), the same normalization used to match the mapping table."""
+    result = dict(term_map)
+    for term, uri in term_map.items():
+        result.setdefault(str(term).strip().lower(), uri)
+    return result
+
+
+def _lookup_concept(term_map: dict, term):
+    """Concept URI for a column header or cell value, ignoring case and surrounding spaces.
+    Expects a map prepared with _with_normalized_keys; exact spelling wins over normalized."""
+    if not term_map or term is None:
+        return None
+    key = str(term).strip()
+    if key in term_map:
+        return term_map[key]
+    return term_map.get(key.lower())
+
+
 def _prepare_mappings(mapping_df, string_column, iri_column, rdf_role_column):
     logging.info(f"Mapping table columns: {mapping_df.columns.tolist()}")
     mapping_df.columns = [col.strip() for col in mapping_df.columns]
@@ -131,8 +151,9 @@ def _define_predicates(df, pred_mappings, id_column, subject_column, column_to_g
         pred_uri = None
 
         # CRITICAL FIX: Check term_to_concept_uri_map FIRST
-        if term_to_concept_uri_map and col in term_to_concept_uri_map:
-            pred_uri = term_to_concept_uri_map[col]
+        concept_uri = _lookup_concept(term_to_concept_uri_map, col)
+        if concept_uri is not None:
+            pred_uri = concept_uri
             logging.debug(f"Column '{col}': Using internal concept URI from map: {pred_uri}")
         else:
             col_norm = str(col).strip().lower()
@@ -207,7 +228,8 @@ def _process_rows(df, id_column, subject_column, subject_uri_base, config, class
             config=config,
             _create_object_node_func=_create_object_node,
             iri_column=iri_column,
-            string_column=pred_mappings.columns[0]  # Pass string column name
+            string_column=pred_mappings.columns[0],  # Pass string column name
+            term_to_concept_uri_map=term_to_concept_uri_map,
         )
 
     def _process_grouped_columns(row, df_columns, column_to_group_info, group_bnodes, graph_target, defined_predicates, pred_mappings, obj_mappings, DATASET_Default, EX, config, term_to_concept_uri_map, iri_column):
@@ -228,8 +250,9 @@ def _process_rows(df, id_column, subject_column, subject_uri_base, config, class
 
                 if not pred_uri_for_group_prop:  # Define if not already (Keeping fallback logic)
                     # CRITICAL FIX: Check term_to_concept_uri_map FIRST for grouped columns too
-                    if term_to_concept_uri_map and col_name in term_to_concept_uri_map:
-                        pred_uri_for_group_prop = term_to_concept_uri_map[col_name]
+                    concept_uri = _lookup_concept(term_to_concept_uri_map, col_name)
+                    if concept_uri is not None:
+                        pred_uri_for_group_prop = concept_uri
                         logging.debug(f"Grouped column '{col_name}': Using internal concept URI from map")
                     else:
                         # Fallback to mapping table or generate new URI
@@ -291,6 +314,7 @@ def _process_rows(df, id_column, subject_column, subject_uri_base, config, class
                 logging.warning(f"Row {idx+1}, Col '{col}': Could not determine object for '{obj_value_raw}'.")
 
     active_template = _get_active_template(schema_templates, active_template_name)
+    template_sets_type = bool(active_template and is_valid_uri_simple(str(active_template.get("rdf_type") or "")))
 
     for idx, row in df.iterrows():
         group_bnodes = {}
@@ -336,7 +360,9 @@ def _process_rows(df, id_column, subject_column, subject_uri_base, config, class
             logging.error(f"Row {idx+1}: Failed to determine subject URI unexpectedly. Skipping.")
             continue
 
-        if class_uri_ref and not active_template:  # Only add if not using a template that defines its own type
+        # The subject class applies unless the active template sets its own rdf:type (which
+        # _apply_schema_template adds). A template without a type keeps the class.
+        if class_uri_ref and not template_sets_type:
             graph_target.add((subject_uri, RDF.type, class_uri_ref))
 
 
@@ -389,8 +415,9 @@ def _create_object_node(value_raw: str, column_name: str, obj_mappings_df: pd.Da
     value_norm = value_str.lower()
 
     # 0. Check if the value maps to a SKOS concept
-    if term_to_concept_uri_map and value_str in term_to_concept_uri_map:
-        return term_to_concept_uri_map[value_str]
+    concept_uri = _lookup_concept(term_to_concept_uri_map, value_str)
+    if concept_uri is not None:
+        return concept_uri
 
     # 1. Check mapping table for explicit object URI
     obj_match_row = obj_mappings_df[obj_mappings_df['_norm_term'] == value_norm]
@@ -463,6 +490,8 @@ def create_rdf_with_mappings(
     Handles grouping and schema mapping templates.
     """
     schema_templates = schema_templates or []
+    if term_to_concept_uri_map:
+        term_to_concept_uri_map = _with_normalized_keys(term_to_concept_uri_map)
     g, EX, DATASET_Default = _initialize_graph_with_namespaces(mapping_df, df, iri_column, instance_class_uri, subject_uri_base, named_graph_uri, config)
 
     group_config = group_config or {}
@@ -475,18 +504,24 @@ def create_rdf_with_mappings(
     class_uri_ref = None
     if instance_class_uri and is_valid_uri_simple(instance_class_uri):
         class_uri_ref = URIRef(instance_class_uri)
-        class_label = extract_label(instance_class_uri)
-        graph_target.add((class_uri_ref, RDF.type, RDFS.Class))
-        graph_target.add((class_uri_ref, RDFS.label, Literal(class_label, datatype=XSD.string)))
+        # Only declare classes from our own namespace. External ontology classes (sosa:Sample,
+        # OBO terms, ...) are defined by their ontology; a label guessed from the URI (e.g.
+        # "OBI_0000747") would only add a meaningless second label.
+        own_namespace = (config or {}).get('default_namespace')
+        if own_namespace and instance_class_uri.startswith(own_namespace):
+            graph_target.add((class_uri_ref, RDF.type, RDFS.Class))
+            graph_target.add((class_uri_ref, RDFS.label, Literal(extract_label(instance_class_uri), datatype=XSD.string)))
     elif instance_class_uri: logging.warning(f"Provided Class URI '{instance_class_uri}' invalid.")
 
     # --- Pre-process Grouping Configuration ---
     column_to_group_info = {}; valid_group_config = {}
-    for group_key, config in group_config.items():
-        conn_pred = config.get('connecting_predicate'); cols = config.get('columns', [])
+    # Loop variable must not be called `config`: that would replace the generator config
+    # passed to _define_predicates/_process_rows below with the last group's settings.
+    for group_key, group_settings in group_config.items():
+        conn_pred = group_settings.get('connecting_predicate'); cols = group_settings.get('columns', [])
         if conn_pred and cols:
-            valid_group_config[group_key] = config
-            for col_name in cols: column_to_group_info[col_name] = {'group_key': group_key, 'config': config}
+            valid_group_config[group_key] = group_settings
+            for col_name in cols: column_to_group_info[col_name] = {'group_key': group_key, 'config': group_settings}
         else: logging.warning(f"Skipping invalid group config for key '{group_key}'.")
 
     defined_predicates = _define_predicates(df, pred_mappings, id_column, subject_column, column_to_group_info, iri_column, graph_target, config, term_to_concept_uri_map)

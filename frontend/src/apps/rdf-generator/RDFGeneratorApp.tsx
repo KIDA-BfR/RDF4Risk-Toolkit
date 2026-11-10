@@ -16,6 +16,8 @@ import {
   Tab,
   Tabs,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Tooltip,
   Typography,
 } from '@mui/material';
@@ -36,10 +38,11 @@ import { WizardPage, type WizardStep } from '../../components/layout/WizardPage'
 import { EmptyState } from '../../components/states/EmptyState';
 import { useToolNavigation } from '../../shared/toolNavigation';
 import { fonts, motion } from '../../theme/tokens';
+import { ResultOverview, type Overview } from './ResultOverview';
 
 type Severity = 'success' | 'info' | 'warning' | 'error';
 type TableRow = Record<string, unknown>;
-type Stage = 'load' | 'enrich' | 'templates' | 'model' | 'reference' | 'generate' | 'export';
+type Stage = 'metadata' | 'load' | 'enrich' | 'templates' | 'model' | 'reference' | 'generate' | 'export';
 
 type TemplateProperty = { id?: string; predicate?: string; map_type?: string; value?: string };
 type SchemaTemplate = { template_name?: string; rdf_type?: string; properties?: TemplateProperty[] };
@@ -52,7 +55,7 @@ type Snapshot = {
   mapping?: { has_table?: boolean; rows?: number; columns?: number; column_names?: string[]; filename?: string; source_message?: string; shared_available?: boolean; preview?: TableRow[] };
   load_options?: { data_header_row?: number; mapping_header_row?: number; data_csv_separator?: string | null; mapping_csv_separator?: string | null; data_sheets?: string[]; mapping_sheets?: string[]; data_sheet?: string | null; mapping_sheet?: string | null };
   templates?: { items?: SchemaTemplate[]; json?: string; map_types?: string[]; guidance?: string };
-  reference?: { loaded?: boolean; method?: string; doi?: string; summary?: string; preview?: string };
+  reference?: { loaded?: boolean; method?: string; doi?: string; summary?: string; preview?: string; manual?: Partial<Record<ManualField, string>>; manual_missing?: string[] };
   config?: {
     data_columns?: string[];
     mapping_columns?: string[];
@@ -63,6 +66,7 @@ type Snapshot = {
     subject_base_uri?: string;
     graph_option?: string;
     graph_base_uri?: string;
+    graph_base_uri_default?: string;
     named_graph_uri?: string;
     term_col?: string;
     uri_col?: string;
@@ -76,26 +80,26 @@ type Snapshot = {
     group_config?: Record<string, { columns?: string[]; connecting_predicate?: string; group_type?: string | null }>;
   };
   ready?: { can_generate?: boolean; issues?: string[] };
-  outputs?: { has_rdf?: boolean; has_skos?: boolean; has_dcat_metadata?: boolean; has_dcat_catalog?: boolean; has_reference?: boolean; file_stem?: string; rdf_data?: string; skos_data?: string; dcat_metadata_data?: string; dcat_catalog_data?: string; reference_rdf?: string; previews?: Record<string, string> };
-  dcat?: { available?: boolean; title?: string; description?: string; access_rights?: string; contact_point?: string; publisher_name?: string; publisher_uri?: string; themes?: string[]; theme_options?: string[]; license?: string; license_options?: string[]; link_reference?: boolean };
+  outputs?: { has_rdf?: boolean; has_skos?: boolean; has_dcat_metadata?: boolean; has_dcat_catalog?: boolean; has_reference?: boolean; file_stem?: string; rdf_data?: string; skos_data?: string; dcat_metadata_data?: string; dcat_catalog_data?: string; reference_rdf?: string; previews?: Record<string, string>; overview?: Overview | null };
+  dcat?: { available?: boolean; confirmed?: boolean; missing?: string[]; title?: string; description?: string; access_rights?: string; contact_point?: string; publisher_name?: string; publisher_uri?: string; themes?: string[]; theme_options?: string[]; license?: string; license_options?: LicenseOption[]; link_reference?: boolean };
 };
+
+type ManualField = 'title' | 'journal' | 'authors' | 'year' | 'volume' | 'pages' | 'doi';
+type LicenseOption = { id: string; label: string; uri?: string };
 
 type AppProps = { args?: { app?: string; snapshot?: Snapshot }; busy?: boolean; onDraftChange?: (dirty: boolean) => void };
 
 // Backend protocol values are sent unchanged; only their visible labels are sentence case.
 type Option = { value: string; label: React.ReactNode };
 const NO_TEMPLATE = 'None (use default column mapping)';
-const NO_GRAPH = 'No Named Graph';
 const GENERATED_IDS = 'Generated IDs';
-const idOptions: Option[] = [{ value: 'Existing ID Column', label: 'Existing ID column' }, { value: GENERATED_IDS, label: 'Generated IDs' }];
-const graphOptions: Option[] = [{ value: 'Use Named Graph', label: 'Use a named graph' }, { value: NO_GRAPH, label: 'No named graph' }];
 const formatOptions: Option[] = ['Turtle', 'N-Quads', 'JSON-LD', 'RDF/XML', 'TriG'].map((value) => ({ value, label: value }));
-const referenceMethods: Option[] = [{ value: 'DOI', label: 'DOI' }, { value: 'Manual Entry', label: 'Manual entry' }];
+const NO_REFERENCE = 'None';
+const referenceMethods: Option[] = [{ value: NO_REFERENCE, label: 'No publication' }, { value: 'DOI', label: 'Look up by DOI' }, { value: 'Manual Entry', label: 'Enter manually' }];
 const accessRights: Option[] = [{ value: 'PUBLIC', label: 'Public' }, { value: 'RESTRICTED', label: 'Restricted' }, { value: 'NON_PUBLIC', label: 'Non-public' }];
 const mapTypeLabels: Record<string, string> = { 'Column Value (Literal)': 'Column value (literal)', 'Column Value (URI)': 'Column value (URI)', 'Fixed URI': 'Fixed URI', 'Nested Template': 'Nested template' };
 // Columns URI enrichment adds to the mapping table; all present means it has run.
 const ENRICHMENT_COLUMNS = ['label', 'ui_link', 'acronym', 'source', 'message'];
-const EMPTY_REFERENCE = { title: '', authors: '', journal: '', year: 2023, volume: '', pages: '', doi: '' };
 
 const csvSeparators = [
   { label: 'Auto-detect', value: '', summary: 'auto-detected separator' },
@@ -126,9 +130,9 @@ function outputFiles(out: NonNullable<Snapshot['outputs']>): OutputFile[] {
   return [
     { label: 'Data graph', what: 'data graph', format: 'Turtle', value: out.rdf_data, suffix: '_data.ttl', mime: 'text/turtle', preview: out.previews?.rdf, source: 'Generate RDF' },
     { label: 'SKOS vocabulary', what: 'SKOS vocabulary', format: 'Turtle', value: out.skos_data, suffix: '_skos.ttl', mime: 'text/turtle', preview: out.previews?.skos, source: 'Generate RDF' },
-    { label: 'DCAT metadata', what: 'DCAT metadata', format: 'Turtle', value: out.dcat_metadata_data, suffix: '_dcat_metadata.ttl', mime: 'text/turtle', preview: out.previews?.dcat_metadata, source: 'Generate RDF › Dataset metadata' },
-    { label: 'Full catalog', what: 'full catalog', format: 'TriG', value: out.dcat_catalog_data, suffix: '_full_catalog.trig', mime: 'application/trig', preview: out.previews?.dcat_catalog, source: 'Generate RDF › Dataset metadata' },
-    { label: 'Publication reference', what: 'publication reference', format: 'Turtle', value: out.reference_rdf, suffix: '_reference.ttl', mime: 'text/turtle', preview: out.previews?.reference, source: 'Configure RDF › Publication reference' },
+    { label: 'DCAT metadata', what: 'DCAT metadata', format: 'Turtle', value: out.dcat_metadata_data, suffix: '_dcat_metadata.ttl', mime: 'text/turtle', preview: out.previews?.dcat_metadata, source: 'Generate RDF, needs a named graph' },
+    { label: 'Full catalog', what: 'full catalog', format: 'TriG', value: out.dcat_catalog_data, suffix: '_full_catalog.trig', mime: 'application/trig', preview: out.previews?.dcat_catalog, source: 'Generate RDF, needs a named graph' },
+    { label: 'Publication reference', what: 'publication reference', format: 'Turtle', value: out.reference_rdf, suffix: '_reference.ttl', mime: 'text/turtle', preview: out.previews?.reference, source: 'Describe dataset › Publication reference' },
   ];
 }
 
@@ -162,7 +166,7 @@ function afterPress(run: () => void) {
   PRESS_END.forEach((type) => window.addEventListener(type, finish, true));
 }
 
-function CommitTextField({ value, onCommit, onDraftChange, helperText, ...field }: { label: string; value: string; onCommit: (value: string) => void; onDraftChange?: (value: string) => void; placeholder?: string; helperText?: React.ReactNode; fullWidth?: boolean }) {
+function CommitTextField({ value, onCommit, onDraftChange, helperText, ...field }: { label: string; value: string; onCommit: (value: string) => void; onDraftChange?: (value: string) => void; placeholder?: string; helperText?: React.ReactNode; fullWidth?: boolean; required?: boolean; error?: boolean; multiline?: boolean; minRows?: number }) {
   const scope = useContext(CommitScope);
   const input = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState(value);
@@ -198,7 +202,7 @@ function CommitTextField({ value, onCommit, onDraftChange, helperText, ...field 
   }, [unsaved]);
   return <TextField
     {...field}
-    helperText={unsaved ? 'Press Enter or leave the field to save.' : helperText}
+    helperText={unsaved ? (field.multiline ? 'Leave the field to save.' : 'Press Enter or leave the field to save.') : helperText}
     inputRef={input}
     value={draft}
     onChange={(event) => { setDraft(event.target.value); onDraftChange?.(event.target.value); }}
@@ -207,7 +211,7 @@ function CommitTextField({ value, onCommit, onDraftChange, helperText, ...field 
       if (scope?.pressing.current) afterPress(() => { if (input.current?.isConnected && commit()) scope.remember(document.activeElement); });
       else if (commit()) scope?.remember(next);
     }}
-    onKeyDown={(event) => { if (event.key === 'Enter' && commit()) scope?.remember(input.current); }}
+    onKeyDown={(event) => { if (event.key === 'Enter' && !field.multiline && commit()) scope?.remember(input.current); }}
   />;
 }
 
@@ -238,6 +242,13 @@ function CodePreview({ value, full }: { value?: string; full?: string }) {
 // label: the stepper (verb + object); title: the stage h2, a short sentence (DESIGN.md wording table).
 const mainStages: { id: Stage; label: string; title: string; lead: string; info: InfoContent }[] = [
   {
+    id: 'metadata',
+    label: 'Describe dataset',
+    title: 'Describe the dataset and its publication',
+    lead: 'Enter the DCAT metadata and, optionally, the publication behind the data.',
+    info: { title: 'Describing the dataset', content: <><p>The metadata describes the dataset as a whole: title, publisher, license, access rights and themes. It becomes the DCAT catalog that is generated together with the RDF.</p><p>The publication reference is optional. It is exported as its own file and can be linked from the catalog.</p></> },
+  },
+  {
     id: 'load',
     label: 'Load tables',
     title: 'Load your data and mapping tables',
@@ -248,22 +259,22 @@ const mainStages: { id: Stage; label: string; title: string; lead: string; info:
     id: 'model',
     label: 'Configure RDF',
     title: 'Choose how your rows become RDF',
-    lead: 'Set subject IDs, mapping columns and the named graph.',
-    info: { title: 'Configuring RDF', content: <><p>Decide how each row becomes an RDF subject, which mapping-table columns hold the terms and URIs, and whether the triples go into a named graph. The other sections are optional.</p><p>Text fields are saved when you leave them or press Enter.</p></> },
+    lead: 'Check subject IDs and the named graph; everything else is optional.',
+    info: { title: 'Configuring RDF', content: <><p>Subject IDs and the named graph are generated automatically. The optional sections change how subjects are identified, link subjects across files, group columns, enrich URIs or apply schema templates. The mapping-table columns are detected automatically.</p><p>Text fields are saved when you leave them or press Enter.</p></> },
   },
   {
     id: 'generate',
     label: 'Generate RDF',
     title: 'Turn your tables into RDF',
-    lead: 'Generate the RDF, check the result and optionally add dataset metadata.',
-    info: { title: 'Generating RDF', content: <><p>Generating builds the data graph from your rows and a SKOS vocabulary from the mapped terms, using the current settings.</p><p>Dataset metadata adds a DCAT catalog, which the RDF inspector can load.</p></> },
+    lead: 'Generate the RDF and check the result.',
+    info: { title: 'Generating RDF', content: <><p>Generating builds the data graph from your rows, a SKOS vocabulary from the mapped terms and, with a named graph, the DCAT catalog from the dataset metadata.</p><p>The RDF inspector can load the catalog.</p></> },
   },
   {
     id: 'export',
     label: 'Export',
     title: 'Download the generated files',
     lead: 'Pick the files you need and check their content in the preview.',
-    info: { title: 'Exporting files', content: <ul><li><strong>Data graph</strong>: your rows as RDF (Turtle).</li><li><strong>SKOS vocabulary</strong>: the mapped terms.</li><li><strong>DCAT metadata</strong> and <strong>full catalog</strong> (TriG): from Generate RDF › Dataset metadata. Continue opens the catalog in the RDF inspector.</li><li><strong>Publication reference</strong>: from Configure RDF › Publication reference.</li></ul> },
+    info: { title: 'Exporting files', content: <ul><li><strong>Data graph</strong>: your rows as RDF (Turtle).</li><li><strong>SKOS vocabulary</strong>: the mapped terms.</li><li><strong>DCAT metadata</strong> and <strong>full catalog</strong> (TriG): built with the RDF when it uses a named graph. Continue opens the catalog in the RDF inspector.</li><li><strong>Publication reference</strong>: from Describe dataset.</li></ul> },
   },
 ];
 
@@ -331,7 +342,6 @@ function EnrichPage({ snapshot }: { snapshot: Snapshot }) {
   return <Stack spacing={2}>
     <Stack direction="row" alignItems="center" flexWrap="wrap" useFlexGap gap={1}>
       <GenerateButton disabled={!ready} onClick={() => emit({ type: 'enrich_uris' })}>Run URI enrichment</GenerateButton>
-      <InfoButton title="URI enrichment">URI enrichment looks up every mapped URI in the configured services (BioPortal, OLS, Ontobee) and adds readable labels, source acronyms, messages and links to the mapping table.</InfoButton>
       <Typography variant="body2" color="text.secondary">{ready ? 'Large tables can take a few minutes.' : 'Load a mapping table first.'}</Typography>
     </Stack>
     <Box>
@@ -439,72 +449,98 @@ function TemplatesPage({ snapshot, onDirty }: { snapshot: Snapshot; onDirty: (di
   </Stack>;
 }
 
-function ModelPage({ snapshot, children }: { snapshot: Snapshot; children?: React.ReactNode }) {
+// Common classes for the subjects of risk-assessment data (SOSA, W3C Semantic Sensor Network).
+const CLASS_SUGGESTIONS = [
+  { label: 'sosa:Sample', uri: 'http://www.w3.org/ns/sosa/Sample', hint: 'Each row is a sample, e.g. a food, feed or swab sample.' },
+  { label: 'sosa:Observation', uri: 'http://www.w3.org/ns/sosa/Observation', hint: 'Each row is an observation, e.g. a measurement or test result.' },
+  { label: 'sosa:FeatureOfInterest', uri: 'http://www.w3.org/ns/sosa/FeatureOfInterest', hint: 'Each row is the thing observed, e.g. a farm, batch or animal.' },
+];
+
+// One block of the Custom options panel: heading and explanation, then its controls.
+function OptionBlock({ title, description, children }: { title: string; description: React.ReactNode; children: React.ReactNode }) {
+  return <Stack spacing={1.5}>
+    <Box>
+      <Typography variant="subtitle2" component="h3">{title}</Typography>
+      <Typography variant="body2" color="text.secondary">{description}</Typography>
+    </Box>
+    {children}
+  </Stack>;
+}
+
+function ModelPage({ snapshot, children, activeExtras = [], openOptions = false }: { snapshot: Snapshot; children?: React.ReactNode; activeExtras?: string[]; openOptions?: boolean }) {
   const scope = useContext(CommitScope);
-  const cfg = snapshot.config ?? {}; const columns = cfg.data_columns ?? []; const mapCols = cfg.mapping_columns ?? []; const groupSuggestions = Object.entries(cfg.group_suggestions ?? {});
+  const cfg = snapshot.config ?? {}; const columns = cfg.data_columns ?? []; const groupSuggestions = Object.entries(cfg.group_suggestions ?? {});
   const [local, setLocal] = useState(cfg); useEffect(() => setLocal(cfg), [snapshot.config]);
   // Same update_settings payloads as before; text fields call this once per edit.
   const patch = (settings: Record<string, unknown>) => { setLocal((previous) => ({ ...previous, ...settings })); emit({ type: 'update_settings', settings }); scope?.remember(document.activeElement); };
   const groupConfig = local.group_config ?? {};
-  const usesGraph = local.graph_option !== NO_GRAPH;
+  const ownId = local.id_option !== GENERATED_IDS;
+  const linking = Boolean(local.use_shared_id);
+  // A template with its own rdf:type replaces the subject class (rdf_processor); say so.
+  const appliedTemplate = (snapshot.templates?.items ?? []).find((template) => template.template_name === local.active_template);
+  const templateType = appliedTemplate?.rdf_type?.trim() || '';
+  const active = [ownId && !linking && 'own ID column', linking && 'cross-file linking', Boolean(local.graph_base_uri && local.graph_base_uri !== cfg.graph_base_uri_default) && 'custom base URI', Boolean(local.group_active) && 'grouping', ...activeExtras].filter((name): name is string => Boolean(name));
+  const subjectIds = linking ? `From column “${local.shared_id_col || '…'}”, linked across files` : ownId ? `From column “${local.default_id_col || '…'}”` : 'Generated: id_1, id_2, … (row numbers)';
   return <Stack spacing={3}>
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'repeat(2, minmax(0, 1fr))' }, gap: 3, alignItems: 'start' }}>
-      <Section title="Subjects" info={{ title: 'Subjects', content: 'Every row of the data table becomes one RDF subject. Use an existing ID column for stable URIs, or let the generator create IDs.' }}>
+      <Section title="Subjects" info={{ title: 'Subjects', content: 'Every row of the data table becomes one RDF subject. By default the generator numbers the rows and builds each subject URI from the named graph, for example …/subjects/id_1. Other ID sources are under Subject ID options.' }}>
         <Stack spacing={2}>
-          <SelectField label="Identify subjects by" value={local.id_option ?? 'Existing ID Column'} options={idOptions} onChange={(value) => patch({ id_option: value })} />
-          <SelectField label="ID column" value={local.default_id_col ?? ''} options={columnOptions(columns)} disabled={local.id_option === GENERATED_IDS} onChange={(value) => patch({ default_id_col: value })} />
+          <MetaList items={[{ label: 'Subject IDs', value: subjectIds }]} />
           <Box>
-            <SwitchField label="Cross-file linking" info={{ title: 'Cross-file linking', content: 'Cross-file linking builds subject URIs from a shared key column and a base URI instead of the default IDs, so rows from different files can describe the same subject.' }} checked={Boolean(local.use_shared_id)} onChange={(checked) => patch({ use_shared_id: checked })} />
-            <Collapse in={Boolean(local.use_shared_id)}><Stack spacing={2} sx={{ pt: 1.5 }}>
-              <SelectField label="Shared identifier column" value={local.shared_id_col ?? ''} options={columnOptions(columns)} onChange={(value) => patch({ shared_id_col: value })} />
-              <CommitTextField fullWidth label="Subject base URI" value={local.subject_base_uri ?? ''} onCommit={(value) => patch({ subject_base_uri: value })} />
+            <Stack direction="row" alignItems="center" flexWrap="wrap" useFlexGap gap={1}>
+              <SwitchField label="Subject class (rdf:type)" checked={Boolean(local.use_class)} onChange={(checked) => patch({ use_class: checked })} />
+              {!local.use_class && <Chip size="small" color="primary" variant="outlined" label="Recommended" />}
+            </Stack>
+            <Typography variant="body2" color="text.secondary">States what kind of thing each row is, such as a sample or an observation: every row gets rdf:type with this class. That makes the data queryable by type, and it is what validation (SHACL) shapes attach to.</Typography>
+            <Collapse in={Boolean(local.use_class)}><Stack spacing={1.5} sx={{ pt: 1.5 }}>
+              <CommitTextField fullWidth label="Class URI" placeholder="http://www.w3.org/ns/sosa/Sample" value={local.class_uri ?? ''} onCommit={(value) => patch({ class_uri: value })} />
+              <Stack direction="row" alignItems="center" flexWrap="wrap" useFlexGap gap={1}>
+                <Typography variant="caption" color="text.secondary">Common choices:</Typography>
+                {CLASS_SUGGESTIONS.map((option) => <Tooltip key={option.uri} title={<>{option.hint}<br />{option.uri}</>}><Chip size="small" clickable label={option.label} variant={local.class_uri === option.uri ? 'filled' : 'outlined'} color={local.class_uri === option.uri ? 'primary' : 'default'} onClick={() => patch({ class_uri: option.uri })} /></Tooltip>)}
+              </Stack>
+              {templateType && <Alert severity="info">The applied schema template “{local.active_template}” sets its own type ({templateType}), which replaces this class.</Alert>}
             </Stack></Collapse>
-          </Box>
-          <Box>
-            <SwitchField label="Subject class (rdf:type)" info={{ title: 'Subject class', content: 'This adds an rdf:type statement with the class URI to every main subject.' }} checked={Boolean(local.use_class)} onChange={(checked) => patch({ use_class: checked })} />
-            <Collapse in={Boolean(local.use_class)}><Box sx={{ pt: 1.5 }}><CommitTextField fullWidth label="Class URI" value={local.class_uri ?? ''} onCommit={(value) => patch({ class_uri: value })} /></Box></Collapse>
           </Box>
         </Stack>
       </Section>
-      <Stack spacing={3} sx={{ minWidth: 0 }}>
-        <Section title="Mapping columns" info={{ title: 'Mapping columns', content: 'These columns of the mapping table hold the term as written in your data, the ontology URI it maps to and, optionally, the SKOS match type (for example skos:exactMatch).' }}>
-          <Stack spacing={2}>
-            <SelectField label="Term column" value={local.term_col ?? ''} options={columnOptions(mapCols)} onChange={(value) => patch({ term_col: value })} />
-            <SelectField label="URI column" value={local.uri_col ?? ''} options={columnOptions(mapCols)} onChange={(value) => patch({ uri_col: value })} />
-            <SelectField label="SKOS predicate column (optional)" value={local.match_type_col ?? ''} options={columnOptions(mapCols)} onChange={(value) => patch({ match_type_col: value })} />
+      <Section title="Named graph" info={{ title: 'Named graph', content: <><p>All triples of this dataset go into one named graph. Its URI is generated from the base URI and the data file name, so the same file always gets the same graph. The DCAT catalog records it.</p><p>The data graph download is Turtle, which holds the graph contents without the graph name.</p></> }}>
+        <Stack spacing={2}>
+          <MetaList items={[{ label: 'Graph URI', value: cfg.named_graph_uri, mono: true }]} />
+          <Stack direction="row" alignItems="center" spacing={0.5}>
+            <SelectField label="DCAT distribution format" value={local.rdf_format ?? 'Turtle'} options={formatOptions} onChange={(value) => patch({ rdf_format: value })} />
+            <InfoButton title="DCAT distribution format">This sets the format the DCAT catalog gives for the data distribution. It is applied when you generate the RDF. The data graph and SKOS downloads are always Turtle.</InfoButton>
           </Stack>
-        </Section>
-        <Section title="Named graph and format" info={{ title: 'Named graph', content: <><p>A named graph gives the generated triples their own graph URI. The DCAT catalog needs it and records it.</p><p>The data graph download is Turtle, which holds the graph contents without the graph name.</p></> }}>
-          <Stack spacing={2}>
-            <Box>
-              <SelectField label="Graph option" value={local.graph_option ?? 'Use Named Graph'} options={graphOptions} onChange={(value) => patch({ graph_option: value })} />
-              <Collapse in={usesGraph}><Stack spacing={2} sx={{ pt: 2 }}>
-                <CommitTextField fullWidth label="Base URI for graph" value={local.graph_base_uri ?? ''} onCommit={(value) => patch({ graph_base_uri: value })} />
-                <CommitTextField fullWidth label="Full named graph URI" value={local.named_graph_uri ?? ''} onCommit={(value) => patch({ named_graph_uri: value })} />
-              </Stack></Collapse>
-            </Box>
-            <Stack direction="row" alignItems="center" spacing={0.5}>
-              <SelectField label="DCAT distribution format" value={local.rdf_format ?? 'Turtle'} options={formatOptions} onChange={(value) => patch({ rdf_format: value })} />
-              <InfoButton title="DCAT distribution format">This sets the format the DCAT catalog gives for the data distribution. It is applied when you generate the RDF. The data graph and SKOS downloads are always Turtle.</InfoButton>
-            </Stack>
-          </Stack>
-        </Section>
-      </Stack>
+        </Stack>
+      </Section>
     </Box>
-    <Stack spacing={1.5}>
-      <Disclosure title="Grouping" optional defaultExpanded={Boolean(cfg.group_active)} summary={local.group_active ? groupSuggestions.length ? `On, ${plural(groupSuggestions.length, 'group')}` : 'On, no groups detected yet' : 'Off'}>
-        <Box>
+    <Disclosure title="Custom options" optional defaultExpanded={openOptions || active.length > 0} summary={active.length ? `Active: ${joinNames(active)}` : 'None active, defaults are used'}>
+      <Stack spacing={3} divider={<Divider />} sx={{ pt: 1 }}>
+        <OptionBlock title="Own ID column" description="By default every row gets a generated number. Use a column instead when each row already has a unique identifier, such as a sample number; the subject URIs then contain that value. Values must be unique, otherwise rows merge into one subject.">
+          <SwitchField label="Use a column of the data as ID" checked={ownId} onChange={(checked) => patch({ id_option: checked ? 'Existing ID Column' : GENERATED_IDS })} />
+          <Collapse in={ownId}><SelectField label="ID column" value={local.default_id_col ?? ''} options={columnOptions(columns)} onChange={(value) => patch({ default_id_col: value })} /></Collapse>
+        </OptionBlock>
+        <OptionBlock title="Cross-file linking" description={<>Normally a subject URI belongs to one file (…/subjects/id_1). With linking, the URI is built from a key column and a base URI you choose, e.g. https://example.org/sample/S1, so rows with the same key in different files become the same subject in the knowledge graph. Use the same base URI in every file that should link; keys must be unique within a file.</>}>
+          <SwitchField label="Link subjects across files" checked={linking} onChange={(checked) => patch({ use_shared_id: checked })} />
+          <Collapse in={linking}><Stack spacing={2}>
+            <SelectField label="Shared key column" value={local.shared_id_col ?? ''} options={columnOptions(columns)} onChange={(value) => patch({ shared_id_col: value })} />
+            <CommitTextField fullWidth label="Subject base URI" placeholder="https://example.org/sample/" value={local.subject_base_uri ?? ''} onCommit={(value) => patch({ subject_base_uri: value })} />
+          </Stack></Collapse>
+        </OptionBlock>
+        <OptionBlock title="Named graph base URI" description="The named graph URI is generated from this base and the data file name. Change it to publish under your own domain.">
+          <CommitTextField fullWidth label="Base URI" placeholder="https://example.org/" value={local.graph_base_uri ?? ''} onCommit={(value) => patch({ graph_base_uri: value })} />
+        </OptionBlock>
+        <OptionBlock title="Grouping" description="Bundles related columns, such as a value and its unit, into a nested node linked to the subject by a connecting predicate (optionally typed with rdf:type).">
           <Stack direction="row" alignItems="center" flexWrap="wrap" useFlexGap gap={1.5}>
-            <SwitchField label="Enable grouping" info={{ title: 'Grouping', content: 'Grouping bundles related columns (for example a value and its unit) into a nested blank node, linked to the subject by a connecting predicate and optionally typed with rdf:type.' }} checked={Boolean(local.group_active)} onChange={(checked) => patch({ group_active: checked })} />
+            <SwitchField label="Enable grouping" checked={Boolean(local.group_active)} onChange={(checked) => patch({ group_active: checked })} />
             <SearchActionButton onClick={() => emit({ type: 'detect_groups' })}>Detect groups</SearchActionButton>
           </Stack>
-          <Collapse in={Boolean(local.group_active)}><Box sx={{ pt: 2 }}>
+          <Collapse in={Boolean(local.group_active)}><Box>
             {groupSuggestions.length ? <Stack divider={<Divider />} spacing={2}>{groupSuggestions.map(([key, group]) => {
               const name = group.display || key;
               const current = groupConfig[name] ?? { columns: group.columns ?? [] };
               return <Stack key={key} spacing={1.5}>
                 <Stack direction="row" alignItems="center" flexWrap="wrap" useFlexGap gap={1}>
-                  <Typography variant="subtitle2" component="h3">{group.display}</Typography>
+                  <Typography variant="body2" component="h4" sx={{ fontWeight: 600 }}>{group.display}</Typography>
                   {(group.columns ?? []).map((column) => <Chip key={column} size="small" variant="outlined" label={column} />)}
                 </Stack>
                 <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'repeat(2, minmax(0, 1fr))' }, gap: 2 }}>
@@ -514,84 +550,169 @@ function ModelPage({ snapshot, children }: { snapshot: Snapshot; children?: Reac
               </Stack>;
             })}</Stack> : <Typography variant="body2" color="text.secondary">No column groups detected yet. Use Detect groups to find them.</Typography>}
           </Box></Collapse>
-        </Box>
-      </Disclosure>
-      {children}
-    </Stack>
+        </OptionBlock>
+        {children}
+      </Stack>
+    </Disclosure>
   </Stack>;
 }
 
-function ReferencePage({ snapshot, onDirty }: { snapshot: Snapshot; onDirty: (dirty: boolean) => void }) {
+function ReferencePage({ snapshot }: { snapshot: Snapshot }) {
   const scope = useContext(CommitScope);
   const ref = snapshot.reference ?? {};
-  const [method, setMethod] = useState(ref.method ?? 'DOI');
+  const [method, setMethod] = useState(ref.method ?? NO_REFERENCE);
+  useEffect(() => setMethod(ref.method ?? NO_REFERENCE), [ref.method]);
   const [doi, setDoi] = useState(ref.doi ?? '');
-  const [manual, setManual] = useState(EMPTY_REFERENCE);
-  const dirty = Boolean(manual.title || manual.authors || manual.journal || manual.volume || manual.pages || manual.doi || manual.year !== EMPTY_REFERENCE.year);
-  useEffect(() => { onDirty(dirty); return () => onDirty(false); }, [dirty, onDirty]);
-  useEffect(() => { if (ref.loaded) setManual(EMPTY_REFERENCE); }, [ref.summary]);
-  return <Stack spacing={2} sx={{ pt: 1 }}>
-    <Stack direction="row" alignItems="center" spacing={0.5}>
-      <SelectField label="Reference input method" value={method} options={referenceMethods} onChange={(value) => { setMethod(value); emit({ type: 'update_settings', settings: { reference_method: value } }); }} />
-      <InfoButton title="Publication reference">Attach the publication that describes this dataset, fetched by DOI or entered by hand. It is exported as its own file and can be linked in the DCAT catalog.</InfoButton>
-    </Stack>
-    {method === 'DOI'
-      ? <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ md: 'flex-start' }}>
-        <CommitTextField fullWidth label="DOI" placeholder="10.1038/nature12373" value={ref.doi ?? ''} onDraftChange={setDoi} onCommit={(value) => emit({ type: 'update_settings', settings: { doi: value } })} />
+  const choose = (next: string | null) => { if (!next || next === method) return; setMethod(next); emit({ type: 'set_reference_method', method: next }); };
+  return <Stack spacing={2}>
+    {/* All three ways are visible at once, so it is clear that a DOI is not required. */}
+    <ToggleButtonGroup exclusive size="small" color="primary" value={method} onChange={(_event, next: string | null) => choose(next)} aria-label="How to add the publication" sx={{ flexWrap: 'wrap' }}>
+      {referenceMethods.map((option) => <ToggleButton key={option.value} value={option.value} sx={{ textTransform: 'none', px: 2 }}>{option.label}</ToggleButton>)}
+    </ToggleButtonGroup>
+    {method === NO_REFERENCE && <Typography variant="body2" color="text.secondary">No publication is attached. Add one at any time: look it up by DOI, or enter title, authors and journal by hand if it has no DOI.</Typography>}
+    {method === 'DOI' && <Stack spacing={1}>
+      <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ md: 'flex-start' }}>
+        <CommitTextField fullWidth label="DOI" placeholder="10.1038/nature12373" value={ref.doi ?? ''} onDraftChange={setDoi} onCommit={(value) => emit({ type: 'update_settings', settings: { doi: value } })} helperText="Title, authors and journal are fetched from Crossref and OpenAlex." />
+        {/* A real lookup at Crossref/OpenAlex, so it stays an explicit action. */}
         <Button variant="outlined" disabled={!doi.trim()} sx={{ flexShrink: 0 }} onClick={() => { scope?.flush(); emit({ type: 'generate_reference', method: 'DOI', doi }); }}>Fetch publication metadata</Button>
       </Stack>
-      : <Stack spacing={2}>
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'repeat(2, minmax(0, 1fr))' }, gap: 2 }}>
-          <TextField required label="Title" value={manual.title} onChange={(e) => setManual({ ...manual, title: e.target.value })} />
-          <TextField required label="Journal or publication" value={manual.journal} onChange={(e) => setManual({ ...manual, journal: e.target.value })} />
-          <TextField required label="Authors" multiline minRows={2} value={manual.authors} onChange={(e) => setManual({ ...manual, authors: e.target.value })} placeholder="Smith, John; Doe, Alice" helperText="Separate authors with semicolons." />
-          <Stack spacing={2}>
-            <TextField type="number" label="Year" value={manual.year} onChange={(e) => setManual({ ...manual, year: asNumber(e.target.value, EMPTY_REFERENCE.year) })} />
-            <TextField label="Volume" value={manual.volume} onChange={(e) => setManual({ ...manual, volume: e.target.value })} />
-            <TextField label="Pages" value={manual.pages} onChange={(e) => setManual({ ...manual, pages: e.target.value })} />
-            <TextField label="DOI (optional)" value={manual.doi} onChange={(e) => setManual({ ...manual, doi: e.target.value })} />
-          </Stack>
-        </Box>
-        <Box><GenerateButton onClick={() => emit({ type: 'generate_reference', method: 'Manual Entry', metadata: manual })}>Generate reference RDF</GenerateButton></Box>
-      </Stack>}
-    {ref.preview && <Box>
+      <Typography variant="body2" color="text.secondary">No DOI? <Button size="small" sx={{ textTransform: 'none', p: 0, minWidth: 0, verticalAlign: 'baseline' }} onClick={() => choose('Manual Entry')}>Enter the publication manually</Button>.</Typography>
+    </Stack>}
+    {method === 'Manual Entry' && <ManualReference snapshot={snapshot} />}
+    {ref.preview && method !== NO_REFERENCE && <Box>
       <Typography variant="subtitle2" component="h3" sx={{ mb: 1 }}>Reference preview</Typography>
       <CodePreview value={ref.preview} full={snapshot.outputs?.reference_rdf} />
     </Box>}
   </Stack>;
 }
 
-function GeneratePage({ snapshot, onDirty }: { snapshot: Snapshot; onDirty: (dirty: boolean) => void }) {
+// Manual entry saves field by field, like the dataset metadata. The reference exists once title,
+// journal and authors are filled in, and follows every later edit.
+const MANUAL_REQUIRED: ManualField[] = ['title', 'journal', 'authors'];
+function ManualReference({ snapshot }: { snapshot: Snapshot }) {
+  const scope = useContext(CommitScope);
+  const ref = snapshot.reference ?? {};
+  const saved = ref.manual ?? {};
+  const [touched, setTouched] = useState<Partial<Record<ManualField, boolean>>>({});
+  const [drafts, setDrafts] = useState<Partial<Record<ManualField, string>>>({});
+  const value = (key: ManualField) => drafts[key] ?? saved[key] ?? '';
+  const field = (key: ManualField, label: string, extra: { required?: boolean; multiline?: boolean; minRows?: number; placeholder?: string; helperText?: string } = {}) => {
+    const empty = Boolean(extra.required) && !value(key).trim();
+    return <Box onBlur={() => setTouched((previous) => ({ ...previous, [key]: true }))} sx={{ minWidth: 0 }}>
+      <CommitTextField fullWidth label={label} {...extra} value={saved[key] ?? ''} error={empty && Boolean(touched[key])} helperText={empty && touched[key] ? `${label} is required.` : extra.helperText}
+        onDraftChange={(next) => setDrafts((previous) => ({ ...previous, [key]: next }))}
+        onCommit={(next) => { emit({ type: 'save_manual_reference', fields: { [key]: next } }); scope?.remember(document.activeElement); }} />
+    </Box>;
+  };
+  const missing = MANUAL_REQUIRED.filter((key) => !value(key).trim()).length;
+  return <Stack spacing={2}>
+    <Typography variant="body2" color="text.secondary">For publications without a DOI, such as reports, theses or grey literature. Fields marked * are required; the reference is saved as soon as they are filled in.</Typography>
+    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'repeat(2, minmax(0, 1fr))' }, gap: 2 }}>
+      {field('title', 'Title', { required: true })}
+      {field('journal', 'Journal or publisher', { required: true })}
+      {field('authors', 'Authors', { required: true, multiline: true, minRows: 2, placeholder: 'Smith, John; Doe, Alice', helperText: 'Separate authors with semicolons.' })}
+      <Stack spacing={2}>
+        {field('year', 'Year', { placeholder: String(new Date().getFullYear()) })}
+        {field('volume', 'Volume')}
+        {field('pages', 'Pages')}
+        {field('doi', 'DOI (optional)')}
+      </Stack>
+    </Box>
+    {ref.loaded && ref.method !== 'DOI' && !missing ? <Alert severity="success">Publication reference saved.</Alert> : null}
+  </Stack>;
+}
+
+function LicenseField({ dcat, onChange }: { dcat: NonNullable<Snapshot['dcat']>; onChange: (value: string) => void }) {
+  const options = dcat.license_options ?? [];
+  const selected = options.find((option) => option.id === dcat.license);
+  // Licences from the DCAT-AP.de vocabulary; the helper shows the URI the catalog will use.
+  return <SelectField label="License" value={dcat.license ?? ''} options={options.map((option) => ({ value: option.id, label: option.label }))} onChange={onChange}
+    helperText={selected?.uri ? <Box component="span" sx={{ fontFamily: fonts.mono, overflowWrap: 'anywhere' }}>{selected.uri}</Box> : undefined} />;
+}
+
+type MetadataField = 'dcat_title' | 'dcat_description' | 'dcat_publisher_name';
+// DCAT-AP mandatory: dataset title and description, catalog publisher. Labels match the backend's.
+const REQUIRED_METADATA: { key: MetadataField; label: string }[] = [
+  { key: 'dcat_title', label: 'dataset title' },
+  { key: 'dcat_description', label: 'description' },
+  { key: 'dcat_publisher_name', label: 'publisher name' },
+];
+
+function MetadataPage({ snapshot, onMissingChange }: { snapshot: Snapshot; onMissingChange: (missing: string[] | null) => void }) {
   const scope = useContext(CommitScope);
   const dcat = snapshot.dcat ?? {};
-  const [settings, setSettings] = useState({ dcat_title: dcat.title ?? 'My Dataset', dcat_description: dcat.description ?? '', dcat_access_rights: dcat.access_rights ?? 'PUBLIC', dcat_contact_point: dcat.contact_point ?? '', dcat_publisher_name: dcat.publisher_name ?? '', dcat_publisher_uri: dcat.publisher_uri ?? '', dcat_themes: dcat.themes ?? [], dcat_license: dcat.license ?? '', dcat_link_reference: dcat.link_reference ?? true });
-  const savedSettings = JSON.stringify({ dcat_title: dcat.title ?? 'My Dataset', dcat_description: dcat.description ?? '', dcat_access_rights: dcat.access_rights ?? 'PUBLIC', dcat_contact_point: dcat.contact_point ?? '', dcat_publisher_name: dcat.publisher_name ?? '', dcat_publisher_uri: dcat.publisher_uri ?? '', dcat_themes: dcat.themes ?? [], dcat_license: dcat.license ?? '', dcat_link_reference: dcat.link_reference ?? true });
-  useEffect(() => setSettings(JSON.parse(savedSettings)), [savedSettings]);
-  const dirty = JSON.stringify(settings) !== savedSettings;
-  useEffect(() => { onDirty(dirty); return () => onDirty(false); }, [dirty, onDirty]);
+  const ref = snapshot.reference ?? {};
+  // Every field saves on its own, like Configure RDF. Typed but unsaved text already counts, so
+  // Continue unlocks while typing (Continue saves pending text before it navigates).
+  const saved: Record<MetadataField, string> = { dcat_title: dcat.title ?? '', dcat_description: dcat.description ?? '', dcat_publisher_name: dcat.publisher_name ?? '' };
+  const [drafts, setDrafts] = useState(saved);
+  const [touched, setTouched] = useState<Partial<Record<MetadataField, boolean>>>({});
+  const missing = REQUIRED_METADATA.filter(({ key }) => !drafts[key].trim()).map(({ label }) => label);
+  const missingKey = missing.join('|');
+  useEffect(() => { onMissingChange(missingKey ? missingKey.split('|') : []); }, [missingKey, onMissingChange]);
+  useEffect(() => () => onMissingChange(null), [onMissingChange]);
+  const save = (settings: Record<string, unknown>) => { emit({ type: 'save_metadata', settings }); scope?.remember(document.activeElement); };
+  const required = (key: MetadataField, label: string, helper: string, extra: { multiline?: boolean; minRows?: number } = {}) => {
+    const empty = !drafts[key].trim();
+    return <Box onBlur={() => setTouched((previous) => ({ ...previous, [key]: true }))} sx={{ minWidth: 0 }}>
+      <CommitTextField fullWidth required label={label} {...extra} value={saved[key]} error={empty && Boolean(touched[key])} helperText={empty && touched[key] ? `${label} is required.` : helper} onDraftChange={(value) => setDrafts((previous) => ({ ...previous, [key]: value }))} onCommit={(value) => save({ [key]: value })} />
+    </Box>;
+  };
+  return <Stack spacing={3}>
+    <Section
+      title="Dataset metadata (DCAT)"
+      description="Fields marked * are required. Changes are saved as you go."
+      info={{ title: 'Dataset metadata', content: 'DCAT describes the dataset: title, description, publisher, license, access rights and themes. Title, description and publisher are mandatory in DCAT-AP. The catalog is generated together with the RDF and bundles data, SKOS vocabulary and metadata in one TriG file.' }}
+    >
+      <Stack spacing={2}>
+        {missing.length > 0 && <Alert severity="info">Still needed: {joinNames(missing)}.</Alert>}
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'repeat(2, minmax(0, 1fr))' }, gap: 2 }}>
+          {required('dcat_title', 'Dataset title', 'A short, specific name, e.g. "Salmonella in poultry, Germany 2024".')}
+          {required('dcat_publisher_name', 'Publisher name', 'The organisation that publishes the dataset.')}
+        </Box>
+        {required('dcat_description', 'Description', 'What the data contains and how, where and when it was collected.', { multiline: true, minRows: 3 })}
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'repeat(2, minmax(0, 1fr))' }, gap: 2 }}>
+          <CommitTextField fullWidth label="Publisher URI" placeholder="https://www.example.org" value={dcat.publisher_uri ?? ''} onCommit={(value) => save({ dcat_publisher_uri: value })} />
+          <CommitTextField fullWidth label="Contact point" placeholder="data@example.org" value={dcat.contact_point ?? ''} onCommit={(value) => save({ dcat_contact_point: value })} />
+          <LicenseField dcat={dcat} onChange={(value) => save({ dcat_license: value })} />
+          <SelectField label="Access rights" value={dcat.access_rights ?? 'PUBLIC'} options={accessRights} onChange={(value) => save({ dcat_access_rights: value })} />
+        </Box>
+        <TextField select fullWidth label="Themes" value={dcat.themes ?? []} SelectProps={{ multiple: true, renderValue: (selected) => (selected as string[]).join(', ') }} onChange={(e) => { const value = e.target.value as unknown as string | string[]; save({ dcat_themes: typeof value === 'string' ? value.split(',') : value }); }}>
+          {(dcat.theme_options ?? []).map((theme) => <MenuItem key={theme} value={theme}><Checkbox size="small" checked={(dcat.themes ?? []).includes(theme)} />{theme}</MenuItem>)}
+        </TextField>
+      </Stack>
+    </Section>
+    <Section title="Publication reference" description={ref.loaded ? ref.summary : 'Optional. The publication that describes this dataset, with or without a DOI.'} info={{ title: 'Publication reference', content: 'The publication is exported as its own file (SemOpenAlex RDF). Look it up by DOI, or enter it by hand when it has no DOI. It can be linked from the DCAT catalog.' }}>
+      <Stack spacing={2}>
+        <ReferencePage snapshot={snapshot} />
+        {ref.loaded && <SwitchField label="Link the publication in the DCAT catalog" checked={Boolean(dcat.link_reference ?? true)} onChange={(checked) => save({ dcat_link_reference: checked })} />}
+      </Stack>
+    </Section>
+  </Stack>;
+}
+
+function GeneratePage({ snapshot }: { snapshot: Snapshot }) {
+  const scope = useContext(CommitScope);
+  const dcat = snapshot.dcat ?? {};
   const out = snapshot.outputs ?? {}; const cfg = snapshot.config ?? {};
   const hasRdf = Boolean(out.has_rdf);
+  const [showIris, setShowIris] = useState(false);
   const files = outputFiles(out).filter((file) => Boolean(file.value));
   const generatedIds = cfg.id_option === GENERATED_IDS;
-  const usesGraph = cfg.graph_option !== NO_GRAPH;
   const hasClass = Boolean(cfg.use_class && cfg.class_uri);
   const summary: MetaItem[] = [
+    { label: 'Dataset', value: dcat.title },
+    { label: 'DCAT catalog', value: out.has_dcat_catalog ? 'Generated' : 'Built with the RDF' },
     { label: 'Generated files', value: files.length ? <Stack direction="row" useFlexGap flexWrap="wrap" gap={0.5}>{files.map((file) => <Chip key={file.label} size="small" variant="outlined" label={file.label} />)}</Stack> : null },
     { label: 'Subject IDs', value: generatedIds ? 'Generated IDs' : cfg.default_id_col, mono: !generatedIds },
     { label: 'Cross-file linking', value: cfg.use_shared_id ? cfg.shared_id_col : 'Off', mono: Boolean(cfg.use_shared_id) },
     { label: 'Subject class', value: hasClass ? cfg.class_uri : 'None', mono: hasClass },
-    { label: 'Term column', value: cfg.term_col, mono: true },
-    { label: 'URI column', value: cfg.uri_col, mono: true },
-    { label: 'SKOS predicate column', value: cfg.match_type_col, mono: true },
-    { label: 'Named graph', value: usesGraph ? cfg.named_graph_uri : 'None', mono: usesGraph },
+    { label: 'Mapping columns (detected)', value: [cfg.term_col, cfg.uri_col, cfg.match_type_col].filter(Boolean).join(', '), mono: true },
+    { label: 'Named graph', value: cfg.named_graph_uri, mono: true },
     { label: 'Schema template', value: !cfg.active_template || cfg.active_template === NO_TEMPLATE ? 'None' : cfg.active_template },
     { label: 'Grouping', value: cfg.group_active ? `On, ${plural(Object.keys(cfg.group_suggestions ?? {}).length, 'group')}` : 'Off' },
     { label: 'Publication reference', value: snapshot.reference?.loaded ? 'Added' : 'None' },
   ];
-  // DCAT needs generated RDF with a named graph. Until then the form is locked, so it cannot hold
-  // edits that could never be applied (they would block navigation).
-  const locked = !dcat.available;
-  const text = (key: keyof typeof settings, label: string) => <TextField label={label} disabled={locked} value={settings[key] as string} onChange={(e) => setSettings({ ...settings, [key]: e.target.value })} />;
   return <Stack spacing={3}>
     <KpiStrip ariaLabel="Generation summary" items={[
       { label: 'Data rows', value: snapshot.data?.has_table ? numberFormat.format(snapshot.data.rows ?? 0) : null },
@@ -599,35 +720,21 @@ function GeneratePage({ snapshot, onDirty }: { snapshot: Snapshot; onDirty: (dir
       { label: 'Files ready', value: numberFormat.format(files.length) },
     ]} />
     <Section
-      title="Data graph and SKOS"
-      info={{ title: 'Data graph and SKOS', content: 'Generating builds the data graph from your rows and a SKOS vocabulary from the mapped terms, using the current settings and templates. Regenerating replaces both and clears an existing DCAT catalog.' }}
+      title="Data graph, SKOS and DCAT"
+      info={{ title: 'Generating', content: 'Generating builds the data graph from your rows, a SKOS vocabulary from the terms the data uses and, with a named graph, the DCAT catalog from the dataset metadata. Regenerating replaces all three.' }}
       actions={<GenerateButton variant={hasRdf ? 'outlined' : 'contained'} disabled={!snapshot.ready?.can_generate} onClick={() => { scope?.flush(); emit({ type: 'generate_rdf' }); }}>{hasRdf ? 'Regenerate RDF' : 'Generate RDF'}</GenerateButton>}
     >
       <MetaList columns={2} items={summary} />
     </Section>
+    {hasRdf && out.overview && (out.overview.error
+      ? <Alert severity="warning">The result overview could not be built: {out.overview.error}</Alert>
+      : <Section
+        title="Result overview"
+        description="What was generated and how the parts are linked. Each line is checked in the generated RDF."
+        info={{ title: 'Result overview', content: <><p>The four parts of the output and the links between them. A solid line with ✓ means the link was found in the generated triples; a dashed line with ⚠ means it is missing; a grey dashed line means that part is not there yet.</p><p>Labels are shown by default; hover a value for its IRI, or switch on Show IRIs.</p></> }}
+        actions={<FormControlLabel sx={{ mr: 0 }} control={<Switch size="small" checked={showIris} onChange={(event) => setShowIris(event.target.checked)} />} label="Show IRIs" />}
+      ><ResultOverview overview={out.overview} showIris={showIris} /></Section>)}
     <Section title="Data graph preview"><CodePreview value={out.previews?.rdf} full={out.rdf_data} /></Section>
-    <Disclosure title="Dataset metadata (DCAT)" optional summary={dirty ? 'Unapplied edits' : out.has_dcat_catalog ? 'Catalog generated' : dcat.available ? 'Not generated yet' : 'Needs RDF with a named graph'}>
-      <Stack spacing={2} sx={{ pt: 1 }}>
-        {locked && <Alert severity="warning">Generate RDF with a named graph first to enable DCAT metadata.</Alert>}
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'repeat(2, minmax(0, 1fr))' }, gap: 2 }}>
-          {text('dcat_title', 'Dataset title')}
-          <SelectField label="Access rights" disabled={locked} value={settings.dcat_access_rights} options={accessRights} onChange={(value) => setSettings({ ...settings, dcat_access_rights: value })} />
-          {text('dcat_publisher_name', 'Publisher name')}
-          {text('dcat_publisher_uri', 'Publisher URI')}
-          {text('dcat_contact_point', 'Contact point')}
-          <SelectField label="License" disabled={locked} value={settings.dcat_license} options={(dcat.license_options ?? []).map((license) => ({ value: license, label: license }))} onChange={(value) => setSettings({ ...settings, dcat_license: value })} />
-        </Box>
-        <TextField label="Dataset description" disabled={locked} multiline minRows={3} value={settings.dcat_description} onChange={(e) => setSettings({ ...settings, dcat_description: e.target.value })} />
-        <TextField select fullWidth label="Themes" disabled={locked} value={settings.dcat_themes} SelectProps={{ multiple: true, renderValue: (selected) => (selected as string[]).join(', ') }} onChange={(e) => { const value = e.target.value as unknown as string | string[]; setSettings({ ...settings, dcat_themes: typeof value === 'string' ? value.split(',') : value }); }}>
-          {(dcat.theme_options ?? []).map((theme) => <MenuItem key={theme} value={theme}><Checkbox size="small" checked={settings.dcat_themes.includes(theme)} />{theme}</MenuItem>)}
-        </TextField>
-        <FormControlLabel disabled={locked} control={<Switch checked={settings.dcat_link_reference} onChange={(e) => setSettings({ ...settings, dcat_link_reference: e.target.checked })} />} label="Link the publication reference" />
-        <Stack direction="row" alignItems="center" spacing={0.5}>
-          <GenerateButton disabled={locked} onClick={() => emit({ type: 'generate_dcat', settings })}>{out.has_dcat_catalog ? 'Regenerate DCAT catalog' : 'Generate DCAT catalog'}</GenerateButton>
-          <InfoButton title="DCAT catalog">DCAT describes the dataset: title, publisher, license, access rights and themes. Generating it creates a metadata file and a full TriG catalog bundling data, SKOS and metadata, which the RDF inspector can load.</InfoButton>
-        </Stack>
-      </Stack>
-    </Disclosure>
   </Stack>;
 }
 
@@ -671,15 +778,16 @@ function ExportPage({ snapshot }: { snapshot: Snapshot }) {
 
 export function RDFGeneratorApp({ args, busy = false, onDraftChange }: AppProps) {
   const snapshot = args?.snapshot ?? {};
-  const rawStage = snapshot.active_stage ?? 'load';
-  // Legacy backend stages (enrich/templates/reference) open their section on Configure RDF.
-  const activeStage: Stage = ['enrich', 'templates', 'reference'].includes(rawStage) ? 'model' : mainStages.some(stage => stage.id === rawStage) ? rawStage : 'load';
-  const [drafts, setDrafts] = useState({ templates: false, reference: false, dcat: false });
+  const rawStage = snapshot.active_stage ?? 'metadata';
+  // Legacy backend stages: enrich/templates open their section on Configure RDF; the publication
+  // reference now lives on Describe dataset.
+  const activeStage: Stage = rawStage === 'reference' ? 'metadata' : ['enrich', 'templates'].includes(rawStage) ? 'model' : mainStages.some(stage => stage.id === rawStage) ? rawStage : 'metadata';
+  const [drafts, setDrafts] = useState({ templates: false });
+  // Mandatory metadata still empty on the Describe dataset page, including unsaved typing (null elsewhere).
+  const [draftMissing, setDraftMissing] = useState<string[] | null>(null);
   const [editVersion, setEditVersion] = useState(0);
   const hasDraft = Object.values(drafts).some(Boolean);
   const templatesDirty = useCallback((dirty: boolean) => setDrafts(previous => previous.templates === dirty ? previous : { ...previous, templates: dirty }), []);
-  const referenceDirty = useCallback((dirty: boolean) => setDrafts(previous => previous.reference === dirty ? previous : { ...previous, reference: dirty }), []);
-  const dcatDirty = useCallback((dirty: boolean) => setDrafts(previous => previous.dcat === dirty ? previous : { ...previous, dcat: dirty }), []);
   useEffect(() => { onDraftChange?.(hasDraft); return () => onDraftChange?.(false); }, [hasDraft, onDraftChange]);
   useEffect(() => { if (!hasDraft) return; const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; }; window.addEventListener('beforeunload', warn); return () => window.removeEventListener('beforeunload', warn); }, [hasDraft]);
   useEffect(() => { notifyLayoutChanged(); }, [snapshot, activeStage]);
@@ -717,7 +825,7 @@ export function RDFGeneratorApp({ args, busy = false, onDraftChange }: AppProps)
   }, [busy]);
 
   const tools = useToolNavigation();
-  const discard = () => { commitScope.flush(); setEditVersion(value => value + 1); setDrafts({ templates: false, reference: false, dcat: false }); };
+  const discard = () => { commitScope.flush(); setEditVersion(value => value + 1); setDrafts({ templates: false }); };
   const go = (stage: Stage) => { if (busy || hasDraft) return; commitScope.flush(); emit({ type: 'navigate', stage }); };
   // Last stage: hand the generated catalog to the RDF inspector in one step (DESIGN.md §3).
   const continueToInspector = () => { if (busy || hasDraft) return; commitScope.flush(); void tools?.continueWith?.({ type: 'load_catalog' }); };
@@ -735,12 +843,16 @@ export function RDFGeneratorApp({ args, busy = false, onDraftChange }: AppProps)
   const issues = snapshot.ready?.issues ?? [];
   // gates[k] is what Continue on stage k requires. The stepper reaches a later stage only when
   // Continue could get there step by step; earlier stages are always reachable (as with Back).
-  const gates = [loaded, canGenerate, hasRdf];
+  const metadataMissing = draftMissing ?? snapshot.dcat?.missing ?? [];
+  const metadataDone = metadataMissing.length === 0;
+  const gates = [metadataDone, loaded, canGenerate, hasRdf];
   const blocked = busy || hasDraft;
   const steps: WizardStep[] = mainStages.map((stage, position) => ({ id: stage.id, label: stage.label, completed: gates[position] ?? false, disabled: blocked || (position > index && !gates.slice(index, position).every(Boolean)) }));
-  const draftSections = joinNames([drafts.templates && 'Schema templates', drafts.reference && 'Publication reference', drafts.dcat && 'Dataset metadata'].filter((name): name is string => Boolean(name)));
+  const draftSections = joinNames([drafts.templates && 'Schema templates'].filter((name): name is string => Boolean(name)));
   // Backend issue texts stay in the status alert; the hint keeps the fixed patterns.
-  const stageHint = activeStage === 'load'
+  const stageHint = activeStage === 'metadata'
+    ? metadataDone ? 'Next: load your data and mapping tables.' : `Enter the ${joinNames(metadataMissing)} to continue.`
+    : activeStage === 'load'
     ? loaded ? 'Next: configure subject IDs, mapping columns and the named graph.' : 'Load a data table and a mapping table to continue.'
     : activeStage === 'model'
       ? canGenerate ? 'Next: generate the RDF and check the result.' : 'Complete the RDF settings to continue.'
@@ -748,20 +860,21 @@ export function RDFGeneratorApp({ args, busy = false, onDraftChange }: AppProps)
         ? hasRdf ? 'Next: download the generated files.' : 'Generate the RDF to continue.'
         : !hasRdf ? 'Create the RDF in the Generate RDF step first.'
           : hasCatalog ? 'Next: open the generated catalog in the RDF inspector.'
-            : 'Next: open the RDF inspector. Generate a DCAT catalog in Generate RDF › Dataset metadata to load it there.';
+            : 'Next: open the RDF inspector. Complete Describe dataset and regenerate to load the DCAT catalog there.';
   const hint = busy ? 'Saving changes…' : hasDraft ? `Apply or discard the edits in ${draftSections} to continue.` : stageHint;
 
   const templates = snapshot.templates?.items ?? [];
   const activeTemplate = snapshot.config?.active_template;
   const enriched = ENRICHMENT_COLUMNS.every((column) => snapshot.mapping?.column_names?.includes(column));
   let page: React.ReactNode;
-  if (activeStage === 'load') page = <LoadPage snapshot={snapshot} />;
-  else if (activeStage === 'model') page = <ModelPage snapshot={snapshot}>
-    <Disclosure title="URI enrichment" optional defaultExpanded={rawStage === 'enrich'} summary={!snapshot.mapping?.has_table ? 'Needs a mapping table' : enriched ? 'Labels and links added' : 'Not run yet'}><EnrichPage snapshot={snapshot} /></Disclosure>
-    <Disclosure title="Schema templates" optional defaultExpanded={rawStage === 'templates'} summary={drafts.templates ? 'Unapplied edits' : !templates.length ? 'None saved' : `${plural(templates.length, 'template')} saved, ${!activeTemplate || activeTemplate === NO_TEMPLATE ? 'none applied' : `applying “${activeTemplate}”`}`}><TemplatesPage key={'templates-' + editVersion} snapshot={snapshot} onDirty={templatesDirty} /></Disclosure>
-    <Disclosure title="Publication reference" optional defaultExpanded={rawStage === 'reference'} summary={drafts.reference ? 'Unapplied edits' : snapshot.reference?.loaded ? snapshot.reference.summary || 'Reference added' : 'Not added'}><ReferencePage key={'reference-' + editVersion} snapshot={snapshot} onDirty={referenceDirty} /></Disclosure>
+  if (activeStage === 'metadata') page = <MetadataPage key={'metadata-' + editVersion} snapshot={snapshot} onMissingChange={setDraftMissing} />;
+  else if (activeStage === 'load') page = <LoadPage snapshot={snapshot} />;
+  else if (activeStage === 'model') page = <ModelPage snapshot={snapshot} openOptions={rawStage === 'enrich' || rawStage === 'templates' || drafts.templates}
+    activeExtras={[enriched && 'URI enrichment', Boolean(activeTemplate && activeTemplate !== NO_TEMPLATE) && `template “${activeTemplate}”`].filter((name): name is string => Boolean(name))}>
+    <OptionBlock title="URI enrichment" description={!snapshot.mapping?.has_table ? 'Looks up every mapped URI in BioPortal, OLS and Ontobee and adds readable labels, sources and links to the mapping table. Needs a mapping table.' : enriched ? 'Labels, sources and links have been added to the mapping table. Run it again after changing the mappings.' : 'Looks up every mapped URI in BioPortal, OLS and Ontobee and adds readable labels, sources and links to the mapping table.'}><EnrichPage snapshot={snapshot} /></OptionBlock>
+    <OptionBlock title="Schema templates" description={`Explicit rules for the RDF structure: an rdf:type and predicates per subject, including nested nodes (for example SOSA/QUDT observations). ${!templates.length ? 'None saved yet.' : `${plural(templates.length, 'template')} saved, ${!activeTemplate || activeTemplate === NO_TEMPLATE ? 'none applied' : `applying “${activeTemplate}”`}.`}`}><TemplatesPage key={'templates-' + editVersion} snapshot={snapshot} onDirty={templatesDirty} /></OptionBlock>
   </ModelPage>;
-  else if (activeStage === 'generate') page = <GeneratePage key={editVersion} snapshot={snapshot} onDirty={dcatDirty} />;
+  else if (activeStage === 'generate') page = <GeneratePage snapshot={snapshot} />;
   else page = <ExportPage snapshot={snapshot} />;
 
   return <CommitScope.Provider value={commitScope}>
@@ -773,7 +886,7 @@ export function RDFGeneratorApp({ args, busy = false, onDraftChange }: AppProps)
         title={meta.title}
         lead={meta.lead}
         info={meta.info}
-        actions={<ToolMenu items={[{ label: 'Reset RDF generator', icon: <RestartAltIcon fontSize="small" />, disabled: busy, onSelect: () => emit({ type: 'reset_workflow' }), confirm: { title: 'Reset RDF generator?', message: 'This clears the loaded tables, the publication reference and all generated files. Schema templates and RDF settings are kept. You can undo this from History.', confirmLabel: 'Reset RDF generator' } }]} />}
+        actions={<ToolMenu items={[{ label: 'Reset RDF generator', icon: <RestartAltIcon fontSize="small" />, disabled: busy, onSelect: () => emit({ type: 'reset_workflow' }), confirm: { title: 'Reset RDF generator?', message: 'This clears the loaded tables, the publication reference and all generated files. Dataset metadata, schema templates and RDF settings are kept. You can undo this from History.', confirmLabel: 'Reset RDF generator' } }]} />}
         status={<>
           {hasDraft && <Alert severity="info" action={<Button color="inherit" size="small" disabled={busy} onClick={discard}>Discard edits</Button>}>Unapplied edits in {draftSections}. Apply them there, or discard them to continue.</Alert>}
           {snapshot.statusMessage?.text && <Alert severity={snapshot.statusMessage.severity ?? 'info'}>{snapshot.statusMessage.text}</Alert>}

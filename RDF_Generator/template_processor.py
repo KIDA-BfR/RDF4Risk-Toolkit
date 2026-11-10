@@ -26,7 +26,8 @@ def apply_template_properties(
     config, 
     _create_object_node_func,
     iri_column: str,
-    string_column: str
+    string_column: str,
+    term_to_concept_uri_map: dict = None,
 ):
     """
     Recursively applies properties from a schema template to a subject node.
@@ -67,7 +68,7 @@ def apply_template_properties(
                 continue
 
             if map_type == "Column Value (Literal)":
-                obj_node = _create_object_node_func(raw_cell_value, map_value_config, obj_mappings, ex_ns, graph_target, config)
+                obj_node = _create_object_node_func(raw_cell_value, map_value_config, obj_mappings, ex_ns, graph_target, config, term_to_concept_uri_map, iri_column=iri_column)
             else:
                 cleaned_uri_val = strip_angle_brackets(raw_cell_value)
                 if is_valid_uri_simple(cleaned_uri_val):
@@ -112,7 +113,8 @@ def apply_template_properties(
                 config=config,
                 _create_object_node_func=_create_object_node_func,
                 iri_column=iri_column,
-                string_column=string_column
+                string_column=string_column,
+                term_to_concept_uri_map=term_to_concept_uri_map,
             )
             continue
 

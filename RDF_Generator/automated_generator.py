@@ -10,7 +10,7 @@ import argparse
 from .rdf_processor import create_rdf_with_mappings
 from .rdf_serializer import serialize_rdf
 from .dcat_generator import create_dcat_catalog
-from .skos_generator import create_skos_graph_and_lookup_map
+from .skos_generator import create_skos_graph_and_lookup_map, collect_used_terms
 from .uri_utils import generate_hashed_graph_uri, process_iris_async
 from rdflib import URIRef
 
@@ -174,7 +174,8 @@ def main(
     skos_graph, term_to_uri_lookup = create_skos_graph_and_lookup_map(
         mapping_df=mapping_df,
         config=config,
-        data_graph_uri=data_graph_uri  # Pass the dynamic URI
+        data_graph_uri=data_graph_uri,  # Pass the dynamic URI
+        used_terms=collect_used_terms(df, exclude_columns=(id_column_name, config.get('subject_column'))),
     )
 
     # --- Generate Data Graph ---

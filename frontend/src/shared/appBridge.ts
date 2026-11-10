@@ -11,8 +11,14 @@ export function setAppEventHandler(handler: ((event: AppEvent) => void) | null):
   };
 }
 
+// Backends drop an event whose nonce equals the previous one (duplicate delivery). The nonce must
+// therefore be unique per event: Date.now() alone repeats when one action sends two events in the
+// same millisecond (e.g. Continue saving a typed field, then navigating), and the second was lost.
+let eventSequence = 0;
+
 export function emitAppEvent(event: AppEvent): void {
-  eventHandler?.({ ...event, nonce: Date.now() });
+  eventSequence += 1;
+  eventHandler?.({ ...event, nonce: `${Date.now()}-${eventSequence}` });
   window.setTimeout(notifyLayoutChanged, 0);
 }
 

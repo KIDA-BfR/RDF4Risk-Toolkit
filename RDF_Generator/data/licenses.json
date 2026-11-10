@@ -1,0 +1,16 @@
+{
+  "description": "Common data licences offered in the RDF generator. URIs from the DCAT-AP.de licence vocabulary; the catalog writes them as dct:license.",
+  "source": "http://dcat-ap.de/def/licenses",
+  "licenses": [
+    { "id": "cc-by/4.0", "label": "Creative Commons Attribution 4.0 International (CC BY 4.0)", "spdx": "CC-BY-4.0", "uri": "http://dcat-ap.de/def/licenses/cc-by/4.0" },
+    { "id": "cc-zero", "label": "Creative Commons Zero (CC0 1.0)", "spdx": "CC0-1.0", "uri": "http://dcat-ap.de/def/licenses/cc-zero" },
+    { "id": "cc-by-sa/4.0", "label": "Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)", "spdx": "CC-BY-SA-4.0", "uri": "http://dcat-ap.de/def/licenses/cc-by-sa/4.0" },
+    { "id": "cc-by-nc/4.0", "label": "Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)", "spdx": "CC-BY-NC-4.0", "uri": "http://dcat-ap.de/def/licenses/cc-by-nc/4.0" },
+    { "id": "cc-by-nd/4.0", "label": "Creative Commons Attribution-NoDerivatives 4.0 International (CC BY-ND 4.0)", "spdx": "CC-BY-ND-4.0", "uri": "http://dcat-ap.de/def/licenses/cc-by-nd/4.0" },
+    { "id": "dl-by-de/2.0", "label": "Datenlizenz Deutschland – Namensnennung – Version 2.0", "spdx": "DL-DE-BY-2.0", "uri": "http://dcat-ap.de/def/licenses/dl-by-de/2.0" },
+    { "id": "dl-zero-de/2.0", "label": "Datenlizenz Deutschland – Zero – Version 2.0", "spdx": "DL-DE-ZERO-2.0", "uri": "http://dcat-ap.de/def/licenses/dl-zero-de/2.0" },
+    { "id": "odbl", "label": "Open Data Commons Open Database License (ODbL)", "spdx": "ODbL-1.0", "uri": "http://dcat-ap.de/def/licenses/odbl" },
+    { "id": "odby", "label": "Open Data Commons Attribution License (ODC-By)", "spdx": "ODC-By-1.0", "uri": "http://dcat-ap.de/def/licenses/odby" },
+    { "id": "odcpddl", "label": "Open Data Commons Public Domain Dedication and License (PDDL)", "spdx": "PDDL-1.0", "uri": "http://dcat-ap.de/def/licenses/odcpddl" }
+  ]
+}

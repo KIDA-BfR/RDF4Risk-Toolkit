@@ -363,7 +363,7 @@ def _handoff_reconciliation_to_rdf(event: Dict[str, Any]) -> None:
     rdf_generator_service._load_shared_mapping()
     if not isinstance(current_data, pd.DataFrame) and isinstance(agent_runtime_state.get("shared_preprocessed_data"), pd.DataFrame):
         rdf_generator_service._load_shared_data()
-    agent_runtime_state["rdf_generator_active_stage"] = "model" if isinstance(agent_runtime_state.get("rdf_gen_data_df"), pd.DataFrame) else "load"
+    agent_runtime_state["rdf_generator_active_stage"] = rdf_generator_service.handoff_stage()
     state["rdf_handoff"] = {"status": "complete", "target": "rdf_generator"}
     state[semi_service.RECONCILIATION_MUI_STATUS_MESSAGE_KEY] = {"severity": "success", "text": "Current mappings transferred to RDF generation."}
 
@@ -408,7 +408,7 @@ def _handoff_agent_to_rdf(event: Dict[str, Any]) -> None:
         rdf_generator_service._load_shared_data()
     for key in ("rdf_data", "skos_data", "dcat_catalog_data", "dcat_metadata_data", "rdf_graph", "skos_graph", "rdf_preview", "last_named_graph_uri"):
         state[key] = None
-    state["rdf_generator_active_stage"] = "model" if isinstance(state.get("rdf_gen_data_df"), pd.DataFrame) else "load"
+    state["rdf_generator_active_stage"] = rdf_generator_service.handoff_stage()
     state["agent_rdf_handoff"] = {"status": "complete", "target": "rdf_generator"}
     state["agent_mui_status_message"] = {"severity": "success", "text": "Current agent mappings transferred to RDF generation."}
 
@@ -536,6 +536,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                           if "job_id=" in urlparse(self.path).query else "")
                 status = get_bioportal_registry_job_status(job_id) if job_id else latest_bioportal_registry_job()
                 self._send_json({"status": status})
+                return
+            if path == "api/services/rdf_generator/data-table":
+                # Read-only and on demand: the full table can be large, so it is not in the snapshot.
+                query = dict(part.split("=", 1) for part in urlparse(self.path).query.split("&") if "=" in part)
+                try:
+                    limit = max(1, min(int(query.get("limit", "") or 0) or 5000, 20000))
+                except ValueError:
+                    limit = 5000
+                self._send_json(rdf_generator_service.full_data_table(limit))
                 return
             if path == "api/agent/registry-job/preview":
                 self._send_json(_registry_job_preview())

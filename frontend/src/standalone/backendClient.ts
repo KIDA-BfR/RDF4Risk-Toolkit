@@ -138,3 +138,13 @@ export async function cancelRegistryJob(jobId: string): Promise<{ cancelled: boo
   if (!response.ok) throw await parseError(response);
   return response.json();
 }
+
+// ---- RDF generator: the whole data graph as a table (fetched on demand, not in snapshots) ----
+export type RdfTableCell = { text: string; iri: string | null };
+export type RdfDataTable = { columns: (RdfTableCell & { key: string })[]; rows: Record<string, RdfTableCell>[]; total: number; truncated: boolean };
+
+export async function fetchRdfDataTable(limit = 5000): Promise<RdfDataTable> {
+  const response = await fetch(`${API_BASE}/api/services/rdf_generator/data-table?limit=${limit}&_=${Date.now()}`, { cache: 'no-store' });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}

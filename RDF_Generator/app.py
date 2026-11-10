@@ -33,15 +33,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 try:
     from .rdf_processor import create_rdf_with_mappings
     from .rdf_serializer import serialize_rdf
-    from .skos_generator import create_skos_graph_and_lookup_map
+    from .skos_generator import create_skos_graph_and_lookup_map, collect_used_terms
     from .reference_handler import DOIToSemOpenAlexConverter
+    from . import license_registry
+    from .graph_overview import build_overview
     try:
-        from .dcat_generator import create_dcat_catalog, create_dcat_catalog_bundle, THEMES, LICENSES
+        from .dcat_generator import create_dcat_catalog, create_dcat_catalog_bundle, THEMES
     except ImportError:
         create_dcat_catalog = None
         create_dcat_catalog_bundle = None
         THEMES = {}
-        LICENSES = {}
 except ImportError as e:
     raise RuntimeError(f"Fatal Error: Could not import RDF Generator backend functions. {e}") from e
 # --- End Imports ---
@@ -224,6 +225,15 @@ RDF_DATA_FILE_BYTES_KEY = "rdf_generator_data_file_bytes"
 RDF_MAPPING_FILE_BYTES_KEY = "rdf_generator_mapping_file_bytes"
 RDF_DATA_FILE_NAME_KEY = "rdf_generator_data_file_name"
 RDF_MAPPING_FILE_NAME_KEY = "rdf_generator_mapping_file_name"
+# DCAT-AP mandatory properties: dataset title and description, catalog publisher.
+DCAT_REQUIRED_FIELDS = {
+    "rdf_gen_dcat_title": "dataset title",
+    "rdf_gen_dcat_description": "description",
+    "rdf_gen_dcat_publisher_name": "publisher name",
+}
+# Values older versions pre-filled; they count as not entered.
+DCAT_PLACEHOLDER_VALUES = {"My Dataset", "An example dataset.", "My Organization"}
+NO_REFERENCE = "None"
 
 RDF_FORMATS = ["Turtle", "N-Quads", "JSON-LD", "RDF/XML", "TriG"]
 TEMPLATE_MAP_TYPES = ["Column Value (Literal)", "Column Value (URI)", "Fixed URI", "Nested Template"]
@@ -262,9 +272,9 @@ def _init_rdf_mui_state() -> None:
         "schema_templates": [],
         "reference_data": None,
         "reference_rdf": None,
-        "rdf_gen_reference_method": "DOI",
+        "rdf_gen_reference_method": NO_REFERENCE,
         "rdf_gen_doi_input": "",
-        "rdf_gen_id_option": "Existing ID Column",
+        "rdf_gen_id_option": "Generated IDs",
         "rdf_gen_default_id_col": "",
         "rdf_gen_use_shared_id": False,
         "rdf_gen_shared_id_col": "",
@@ -278,14 +288,14 @@ def _init_rdf_mui_state() -> None:
         "rdf_gen_group_config": {},
         "rdf_gen_active_schema_template": "None (use default column mapping)",
         "rdf_gen_format": "Turtle",
-        "rdf_gen_dcat_title": "My Dataset",
-        "rdf_gen_dcat_description": "An example dataset.",
+        "rdf_gen_dcat_title": "",
+        "rdf_gen_dcat_description": "",
         "rdf_gen_dcat_access_rights": "PUBLIC",
         "rdf_gen_dcat_contact_point": "",
-        "rdf_gen_dcat_publisher_name": "My Organization",
+        "rdf_gen_dcat_publisher_name": "",
         "rdf_gen_dcat_publisher_uri": "",
         "rdf_gen_dcat_themes": [],
-        "rdf_gen_dcat_license": next(iter(LICENSES.keys()), "CC BY 4.0"),
+        "rdf_gen_dcat_license": license_registry.DEFAULT_LICENSE_ID,
         "rdf_gen_dcat_link_reference": True,
     }
     for key, value in defaults.items():
@@ -422,7 +432,10 @@ def _suggested_graph_uri() -> str:
     filename = str(runtime_state.get(RDF_DATA_FILE_NAME_KEY) or "graph_data")
     file_stem = os.path.splitext(unquote(filename))[0] or "graph_data"
     hash_id = hashlib.md5(file_stem.encode("utf-8")).hexdigest()
-    return f"{graph_base.rstrip('/dataset')}/dataset/da{hash_id}ta"
+    # removesuffix, not rstrip: rstrip('/dataset') strips any of those characters, so a base such
+    # as https://example.org/data lost its path.
+    base = graph_base.rstrip("/").removesuffix("/dataset")
+    return f"{base}/dataset/da{hash_id}ta"
 
 
 def _current_config_state() -> Dict[str, Any]:
@@ -433,14 +446,11 @@ def _current_config_state() -> Dict[str, Any]:
     default_term = get_preferred_term_column(mapping_df) if isinstance(mapping_df, pd.DataFrame) else ""
     default_uri = get_preferred_uri_column(mapping_df) if isinstance(mapping_df, pd.DataFrame) else ""
     default_match = get_preferred_match_type_column(mapping_df) if isinstance(mapping_df, pd.DataFrame) else ""
-    if not runtime_state.get("map_term_col") and default_term:
-        runtime_state["map_term_col"] = default_term
-    if not runtime_state.get("map_uri_col") and default_uri:
-        runtime_state["map_uri_col"] = default_uri
-    if not runtime_state.get("map_match_col") and default_match:
-        runtime_state["map_match_col"] = default_match
-    graph_option = runtime_state.get("rdf_gen_graph_option", "Use Named Graph")
-    named_graph = runtime_state.get("ng_full") or _suggested_graph_uri()
+    # Mapping columns are detected, not chosen: generation requires the SSSOM columns and the SKOS
+    # generator reads them directly, so a different choice would split data graph and vocabulary.
+    # The named graph is always used and always generated; only its base URI can be changed.
+    # (Older sessions may still hold "No Named Graph" or a typed full graph URI; both are ignored.)
+    named_graph = _suggested_graph_uri()
     return {
         "data_columns": data_cols,
         "mapping_columns": map_cols,
@@ -449,12 +459,13 @@ def _current_config_state() -> Dict[str, Any]:
         "use_shared_id": bool(runtime_state.get("rdf_gen_use_shared_id", False)),
         "shared_id_col": runtime_state.get("rdf_gen_shared_id_col", ""),
         "subject_base_uri": runtime_state.get("rdf_gen_subject_base_uri", ""),
-        "graph_option": graph_option,
+        "graph_option": "Use Named Graph",
         "graph_base_uri": runtime_state.get("rdf_gen_graph_base_uri", ""),
+        "graph_base_uri_default": (runtime_state.get("config", {}) or {}).get("default_namespace", ""),
         "named_graph_uri": named_graph,
-        "term_col": runtime_state.get("map_term_col", default_term),
-        "uri_col": runtime_state.get("map_uri_col", default_uri),
-        "match_type_col": runtime_state.get("map_match_col", default_match),
+        "term_col": default_term,
+        "uri_col": default_uri,
+        "match_type_col": default_match,
         "use_class": bool(runtime_state.get("rdf_gen_use_class", False)),
         "class_uri": runtime_state.get("rdf_gen_class_uri", ""),
         "rdf_format": runtime_state.get("rdf_gen_format", "Turtle"),
@@ -488,8 +499,8 @@ def _validate_ready() -> List[str]:
                 issues.append("Enter a valid Subject Base URI for cross-file linking.")
     if isinstance(mapping_df, pd.DataFrame) and (not cfg["term_col"] or not cfg["uri_col"]):
         issues.append("Select term and URI columns from the mapping table.")
-    if cfg["graph_option"] == "Use Named Graph" and not is_valid_uri_simple(str(cfg["named_graph_uri"])):
-        issues.append("Enter a valid Named Graph URI or select No Named Graph.")
+    if not is_valid_uri_simple(str(cfg["named_graph_uri"])):
+        issues.append("Enter a valid base URI for the named graph.")
     if cfg["use_class"] and cfg["class_uri"] and not is_valid_uri_simple(str(cfg["class_uri"])):
         issues.append("Class URI is not valid.")
     if cfg["group_active"]:
@@ -514,7 +525,7 @@ def _build_rdf_snapshot() -> Dict[str, Any]:
         "reference": (runtime_state.get("reference_rdf") or "")[:5000],
     }
     return {
-        "active_stage": runtime_state.get("rdf_generator_active_stage", "load"),
+        "active_stage": runtime_state.get("rdf_generator_active_stage", "metadata"),
         "statusMessage": runtime_state.get(RDF_STATUS_MESSAGE_KEY),
         "data": {
             "has_table": isinstance(df, pd.DataFrame),
@@ -554,9 +565,11 @@ def _build_rdf_snapshot() -> Dict[str, Any]:
         },
         "reference": {
             "loaded": runtime_state.get("reference_data") is not None,
-            "method": runtime_state.get("rdf_gen_reference_method", "DOI"),
+            "method": runtime_state.get("rdf_gen_reference_method") or ("DOI" if runtime_state.get("reference_data") is not None else NO_REFERENCE),
             "doi": runtime_state.get("rdf_gen_doi_input", ""),
             "summary": _reference_summary(),
+            "manual": _manual_reference(),
+            "manual_missing": [label for key, label in MANUAL_REFERENCE_REQUIRED.items() if not _manual_reference()[key].strip()],
             "preview": previews["reference"],
         },
         "config": cfg,
@@ -574,22 +587,106 @@ def _build_rdf_snapshot() -> Dict[str, Any]:
             "dcat_catalog_data": runtime_state.get("dcat_catalog_data") or "",
             "reference_rdf": runtime_state.get("reference_rdf") or "",
             "previews": previews,
+            "overview": _graph_overview(),
         },
         "dcat": {
             "available": bool(runtime_state.get("rdf_data") and runtime_state.get("last_named_graph_uri")),
-            "title": runtime_state.get("rdf_gen_dcat_title", "My Dataset"),
-            "description": runtime_state.get("rdf_gen_dcat_description", "An example dataset."),
+            # The metadata step is done once every mandatory field is filled in.
+            "missing": _metadata_missing(),
+            "confirmed": _metadata_confirmed(),
+            "title": _metadata_value("rdf_gen_dcat_title"),
+            "description": _metadata_value("rdf_gen_dcat_description"),
             "access_rights": runtime_state.get("rdf_gen_dcat_access_rights", "PUBLIC"),
             "contact_point": runtime_state.get("rdf_gen_dcat_contact_point", ""),
-            "publisher_name": runtime_state.get("rdf_gen_dcat_publisher_name", "My Organization"),
+            "publisher_name": _metadata_value("rdf_gen_dcat_publisher_name"),
             "publisher_uri": runtime_state.get("rdf_gen_dcat_publisher_uri", ""),
             "themes": runtime_state.get("rdf_gen_dcat_themes", []),
             "theme_options": list(THEMES.keys()),
-            "license": runtime_state.get("rdf_gen_dcat_license", next(iter(LICENSES.keys()), "CC BY 4.0")),
-            "license_options": list(LICENSES.keys()),
+            # Stored as SPDX ID; names saved by older versions map to their ID.
+            "license": license_registry.normalize_id(runtime_state.get("rdf_gen_dcat_license")),
+            "license_options": [{"id": lic["id"], "label": lic["label"], "uri": lic["uri"]} for lic in license_registry.list_licenses()],
             "link_reference": bool(runtime_state.get("rdf_gen_dcat_link_reference", True)),
         },
     }
+
+
+_OVERVIEW_CACHE: Dict[str, Any] = {"key": None, "value": None}
+
+
+def _graph_overview() -> Optional[Dict[str, Any]]:
+    """Result overview of the generated layers and their links; rebuilt only when an output changed."""
+    if not runtime_state.get("rdf_data"):
+        return None
+    reference = runtime_state.get("reference_data")
+    reference_graph = reference.get("graph") if isinstance(reference, dict) else None
+    linked = bool(reference and runtime_state.get("rdf_gen_dcat_link_reference", True))
+    # str hashes are cached by Python, so this key is cheap even for large outputs.
+    key = (hash(runtime_state.get("rdf_data")), hash(runtime_state.get("skos_data") or ""), hash(runtime_state.get("dcat_metadata_data") or ""),
+           hash(runtime_state.get("reference_rdf") or ""), linked, runtime_state.get("last_named_graph_uri"))
+    if _OVERVIEW_CACHE["key"] != key:
+        try:
+            value = build_overview(
+                data_graph=runtime_state.get("rdf_graph"),
+                named_graph_uri=runtime_state.get("last_named_graph_uri"),
+                skos_graph=runtime_state.get("skos_graph"),
+                metadata_ttl=runtime_state.get("dcat_metadata_data"),
+                reference_graph=reference_graph,
+                reference_linked=linked,
+            )
+        except Exception as exc:  # the overview must never break the snapshot
+            logging.exception("Could not build the result overview")
+            value = {"error": str(exc)}
+        _OVERVIEW_CACHE.update(key=key, value=value)
+    return _OVERVIEW_CACHE["value"]
+
+
+DATA_TABLE_LIMIT = 5000
+_TABLE_CONVERTER_CACHE: Dict[str, Any] = {"key": None, "value": None}
+
+
+def _generated_trig() -> Optional[str]:
+    """TriG of what was generated: the catalog if there is one, else data graph plus vocabulary."""
+    if runtime_state.get("dcat_catalog_data"):
+        return runtime_state["dcat_catalog_data"]
+    rdf_graph = runtime_state.get("rdf_graph")
+    if rdf_graph is None:
+        return None
+    from rdflib import Dataset
+    bundle = Dataset()
+    for source in (rdf_graph, runtime_state.get("skos_graph")):
+        if source is None:
+            continue
+        for s, p, o, g in source.quads((None, None, None, None)):
+            bundle.graph(g.identifier if hasattr(g, "identifier") else g).add((s, p, o))
+        for prefix, namespace in source.namespaces():
+            bundle.bind(prefix, namespace, override=False)
+    return bundle.serialize(format="trig")
+
+
+def full_data_table(limit: int = DATA_TABLE_LIMIT) -> Dict[str, Any]:
+    """The generated data graph as one table, fetched on demand (not part of every snapshot).
+
+    Reuses the RDF to Table converter, so the rows and labels match what the RDF inspector shows
+    after Continue. The parsed converter is cached until the output changes.
+    """
+    import contextlib
+    import io
+    from RDF_to_Table.Transform_Trig_to_Excel import TriGConverter
+    from RDF_to_Table.tablegenerator import labelled_table
+
+    trig = _generated_trig()
+    if not trig:
+        return {"columns": [], "rows": [], "total": 0, "truncated": False}
+    key = hash(trig)
+    if _TABLE_CONVERTER_CACHE["key"] != key:
+        converter = TriGConverter(data=trig)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):  # progress bars
+            if not converter.parse_trig():
+                return {"columns": [], "rows": [], "total": 0, "truncated": False, "error": "The generated RDF could not be parsed."}
+            converter.extract_all_data()
+        _TABLE_CONVERTER_CACHE.update(key=key, value=converter)
+    df = runtime_state.get("rdf_gen_data_df")
+    return labelled_table(_TABLE_CONVERTER_CACHE["value"], limit=limit, column_order=list(df.columns) if isinstance(df, pd.DataFrame) else None)
 
 
 def _reference_summary() -> str:
@@ -698,8 +795,10 @@ def _generate_reference(event: Dict[str, Any]) -> None:
         if not title or not authors_raw or not journal:
             _set_rdf_status("warning", "Title, Authors, and Journal are required for manual publication references.")
             return
-        year = int(metadata.get("year", 2023) or 2023)
-        manual_metadata = {"title": [title], "author": [], "container-title": [journal], "published-print": {"date-parts": [[year, 1, 1]]}}
+        manual_metadata = {"title": [title], "author": [], "container-title": [journal]}
+        year = str(metadata.get("year", "") or "").strip()
+        if year.isdigit():
+            manual_metadata["published-print"] = {"date-parts": [[int(year), 1, 1]]}
         for author in [part.strip() for part in authors_raw.split(";") if part.strip()]:
             if "," in author:
                 family, given = [p.strip() for p in author.split(",", 1)]
@@ -718,7 +817,7 @@ def _generate_reference(event: Dict[str, Any]) -> None:
         converter.add_open_access(work_uri, manual_metadata)
         runtime_state["reference_data"] = {"method": "Manual", "metadata": manual_metadata, "graph": converter.graph}
         runtime_state["reference_rdf"] = converter.serialize(format="turtle")
-        _set_rdf_status("success", "Manual publication reference RDF generated.")
+        _set_rdf_status("success", "Publication reference saved.")
     except Exception as exc:
         _set_rdf_status("error", f"Error generating publication reference: {exc}")
 
@@ -733,7 +832,7 @@ def _generate_rdf() -> None:
     runtime_state["rdf_gen_mapping_df"] = mapping_df
     cfg = _current_config_state()
     config = runtime_state.get("config", {}) or {}
-    named_graph_uri = str(cfg["named_graph_uri"]).strip() if cfg["graph_option"] == "Use Named Graph" else None
+    named_graph_uri = str(cfg["named_graph_uri"]).strip()
     try:
         df_for_rdf = df.copy()
         if cfg["use_shared_id"]:
@@ -755,7 +854,8 @@ def _generate_rdf() -> None:
                 _set_rdf_status("error", "`default_namespace` must be set in config.yaml for SKOS generation.")
                 return
             config["terms_graph_uri"] = f"{str(base_uri).rstrip('/')}/graph/skos-vocabulary"
-        skos_graph, term_to_uri_lookup = create_skos_graph_and_lookup_map(mapping_df=mapping_df, config=config, data_graph_uri=named_graph_uri)
+        used_terms = collect_used_terms(df_for_rdf, exclude_columns=(final_id_col_name_for_backend, final_subject_col_name))
+        skos_graph, term_to_uri_lookup = create_skos_graph_and_lookup_map(mapping_df=mapping_df, config=config, data_graph_uri=named_graph_uri, used_terms=used_terms)
         active_template = cfg["active_template"] if cfg["active_template"] != "None (use default column mapping)" else None
         rdf_graph = create_rdf_with_mappings(
             df=df_for_rdf,
@@ -784,28 +884,115 @@ def _generate_rdf() -> None:
         runtime_state["dcat_metadata_data"] = None
         runtime_state["last_named_graph_uri"] = named_graph_uri
         runtime_state["last_rdf_format_display"] = cfg["rdf_format"]
-        _set_rdf_status("success", "RDF data graph and SKOS vocabulary generated successfully.")
+        # Metadata is collected first, so the catalog is part of every generation run.
+        if not named_graph_uri:
+            _set_rdf_status("warning", "RDF data graph and SKOS vocabulary generated. The DCAT catalog was skipped: it needs a named graph (Configure RDF).")
+        elif not _metadata_confirmed():
+            _set_rdf_status("warning", "RDF data graph and SKOS vocabulary generated. The DCAT catalog was skipped: enter the " + ", ".join(_metadata_missing()) + " in Describe dataset.")
+        elif _generate_dcat(announce=False):
+            _set_rdf_status("success", "RDF data graph, SKOS vocabulary and DCAT catalog generated successfully.")
     except Exception as exc:
-        runtime_state["rdf_data"] = None
-        runtime_state["skos_data"] = None
+        # Drop every output of the previous run, so no file from an older generation is left behind.
+        for key in ("rdf_data", "skos_data", "rdf_graph", "skos_graph", "dcat_catalog_data", "dcat_metadata_data", "last_named_graph_uri"):
+            runtime_state[key] = None
         _set_rdf_status("error", f"Error during RDF generation: {exc}")
 
 
-def _generate_dcat() -> None:
+def _metadata_value(key: str) -> str:
+    value = str(runtime_state.get(key, "") or "").strip()
+    return "" if value in DCAT_PLACEHOLDER_VALUES else value
+
+
+def _metadata_missing() -> List[str]:
+    """Labels of the mandatory DCAT fields that are still empty."""
+    return [label for key, label in DCAT_REQUIRED_FIELDS.items() if not _metadata_value(key)]
+
+
+def _metadata_confirmed() -> bool:
+    return not _metadata_missing()
+
+
+def handoff_stage() -> str:
+    """Stage to open after another tool hands its results to the RDF generator."""
+    if not _metadata_confirmed():
+        return "metadata"
+    return "model" if isinstance(runtime_state.get("rdf_gen_data_df"), pd.DataFrame) else "load"
+
+
+def _save_metadata(settings: Dict[str, Any]) -> None:
+    """Metadata step: fields save as they are edited (no separate save button).
+
+    If a catalog was already generated, it is rebuilt so it never shows outdated metadata.
+    """
+    _apply_settings(settings)
+    if _metadata_confirmed() and runtime_state.get("dcat_catalog_data") and runtime_state.get("rdf_graph") is not None:
+        _generate_dcat(announce=False)
+
+
+MANUAL_REFERENCE_FIELDS = ("title", "authors", "journal", "year", "volume", "pages", "doi")
+MANUAL_REFERENCE_REQUIRED = {"title": "title", "journal": "journal or publisher", "authors": "authors"}
+
+
+def _manual_reference() -> Dict[str, str]:
+    stored = runtime_state.get("rdf_gen_manual_reference")
+    stored = stored if isinstance(stored, dict) else {}
+    return {key: str(stored.get(key, "") or "") for key in MANUAL_REFERENCE_FIELDS}
+
+
+def _save_manual_reference(fields: Dict[str, Any]) -> None:
+    """Manual entry saves as it is typed (no button): the reference follows the form.
+
+    Once title, journal and authors are filled in, the reference RDF is (re)built; if one of them
+    is emptied again, a manually entered reference is removed. The catalog follows either way.
+    """
+    stored = {**_manual_reference(), **{key: str(value or "") for key, value in fields.items() if key in MANUAL_REFERENCE_FIELDS}}
+    runtime_state["rdf_gen_manual_reference"] = stored
+    if all(stored[key].strip() for key in MANUAL_REFERENCE_REQUIRED):
+        _generate_reference({"method": "Manual Entry", "metadata": stored})
+    else:
+        reference = runtime_state.get("reference_data")
+        if isinstance(reference, dict) and reference.get("method") == "Manual":
+            runtime_state["reference_data"] = None
+            runtime_state["reference_rdf"] = None
+    _refresh_dcat_after_reference_change()
+
+
+def _set_reference_method(method: str) -> None:
+    """Choosing "No publication" removes a loaded reference (and its link in the catalog)."""
+    runtime_state["rdf_gen_reference_method"] = method
+    if method == NO_REFERENCE and runtime_state.get("reference_data") is not None:
+        runtime_state["reference_data"] = None
+        runtime_state["reference_rdf"] = None
+        _refresh_dcat_after_reference_change()
+        _set_rdf_status("info", "Publication reference removed.")
+
+
+def _refresh_dcat_after_reference_change() -> None:
+    """A changed publication reference changes the catalog's links; rebuild it if one exists."""
+    if runtime_state.get("dcat_catalog_data") and runtime_state.get("rdf_graph") is not None:
+        _generate_dcat(announce=False)
+
+
+def _generate_dcat(announce: bool = True) -> bool:
+    """Build the DCAT catalog from the stored metadata and the generated graphs.
+
+    Returns True on success. With ``announce=False`` a success leaves the current status message
+    alone (the caller reports the combined result); errors are always reported.
+    """
     if create_dcat_catalog_bundle is None:
         _set_rdf_status("error", "DCAT catalog generation is not available.")
-        return
+        return False
     rdf_graph = runtime_state.get("rdf_graph")
     skos_graph = runtime_state.get("skos_graph")
     named_graph_uri = runtime_state.get("last_named_graph_uri")
     if not rdf_graph or not named_graph_uri:
         _set_rdf_status("warning", "Generate RDF with a named graph before creating DCAT metadata.")
-        return
+        return False
     config = runtime_state.get("config", {}) or {}
     default_namespace = config.get("default_namespace")
     if not default_namespace:
         _set_rdf_status("error", "`default_namespace` not found in config.yaml.")
-        return
+        return False
     rdf_format_display = runtime_state.get("last_rdf_format_display", "Turtle")
     format_map = {"Turtle": "turtle", "N-Quads": "nquads", "JSON-LD": "json-ld", "RDF/XML": "pretty-xml", "TriG": "trig"}
     reference_data = runtime_state.get("reference_data")
@@ -820,7 +1007,7 @@ def _generate_dcat() -> None:
         "publisher_name": runtime_state.get("rdf_gen_dcat_publisher_name", "My Organization"),
         "publisher_uri": runtime_state.get("rdf_gen_dcat_publisher_uri", f"{str(default_namespace).rstrip('/')}/organization"),
         "themes": runtime_state.get("rdf_gen_dcat_themes", []),
-        "license": runtime_state.get("rdf_gen_dcat_license", next(iter(LICENSES.keys()), "CC BY 4.0")),
+        "license": license_registry.normalize_id(runtime_state.get("rdf_gen_dcat_license")),
         "link_reference": bool(reference_data and runtime_state.get("rdf_gen_dcat_link_reference", True)),
         "reference_data": reference_data if reference_data and runtime_state.get("rdf_gen_dcat_link_reference", True) else None,
     }
@@ -835,9 +1022,12 @@ def _generate_dcat() -> None:
         )
         runtime_state["dcat_catalog_data"] = catalog_trig
         runtime_state["dcat_metadata_data"] = metadata_ttl
-        _set_rdf_status("success", "DCAT catalog generated successfully.")
+        if announce:
+            _set_rdf_status("success", "DCAT catalog generated successfully.")
+        return True
     except Exception as exc:
         _set_rdf_status("error", f"Failed to generate DCAT catalog: {exc}")
+        return False
 
 
 def _handle_templates_event(event: Dict[str, Any]) -> None:
@@ -903,7 +1093,7 @@ def _handle_rdf_mui_event(event: Any) -> bool:
     event_type = str(event.get("type", "") or "")
     should_rerun = True
     if event_type == "navigate":
-        runtime_state["rdf_generator_active_stage"] = str(event.get("stage", "load") or "load")
+        runtime_state["rdf_generator_active_stage"] = str(event.get("stage", "metadata") or "metadata")
     elif event_type == "upload_data":
         _handle_upload("data", event)
     elif event_type == "upload_mapping":
@@ -929,20 +1119,28 @@ def _handle_rdf_mui_event(event: Any) -> bool:
             _set_rdf_status("warning", "Load a data table before detecting groups.")
     elif event_type == "templates":
         _handle_templates_event(event)
+    elif event_type == "save_manual_reference":
+        _save_manual_reference(event.get("fields", {}) if isinstance(event.get("fields"), dict) else {})
+    elif event_type == "set_reference_method":
+        _set_reference_method(str(event.get("method") or NO_REFERENCE))
+    elif event_type == "save_metadata":
+        _save_metadata(event.get("settings", {}) if isinstance(event.get("settings"), dict) else {})
     elif event_type == "generate_reference":
         _generate_reference(event)
+        _refresh_dcat_after_reference_change()
     elif event_type == "generate_rdf":
         _generate_rdf()
     elif event_type == "generate_dcat":
         _apply_settings(event.get("settings", {}) if isinstance(event.get("settings"), dict) else {})
         _generate_dcat()
     elif event_type == "reset_workflow":
-        for key in ["rdf_data", "skos_data", "dcat_catalog_data", "dcat_metadata_data", "rdf_graph", "skos_graph", "rdf_preview", "last_named_graph_uri", "rdf_gen_data_df", "rdf_gen_mapping_df", "rdf_gen_data_source_msg", "rdf_gen_mapping_source_msg", "rdf_gen_data_sheet", "rdf_gen_mapping_sheet", "reference_data", "reference_rdf", RDF_DATA_FILE_BYTES_KEY, RDF_MAPPING_FILE_BYTES_KEY, RDF_DATA_FILE_NAME_KEY, RDF_MAPPING_FILE_NAME_KEY]:
+        for key in ["rdf_data", "skos_data", "dcat_catalog_data", "dcat_metadata_data", "rdf_graph", "skos_graph", "rdf_preview", "last_named_graph_uri", "rdf_gen_data_df", "rdf_gen_mapping_df", "rdf_gen_data_source_msg", "rdf_gen_mapping_source_msg", "rdf_gen_data_sheet", "rdf_gen_mapping_sheet", "reference_data", "reference_rdf", "rdf_gen_manual_reference", RDF_DATA_FILE_BYTES_KEY, RDF_MAPPING_FILE_BYTES_KEY, RDF_DATA_FILE_NAME_KEY, RDF_MAPPING_FILE_NAME_KEY]:
             runtime_state[key] = None
         runtime_state["rdf_gen_data_sheets"] = []
         runtime_state["rdf_gen_mapping_sheets"] = []
         # Reset is reachable from every stage; without this the user stays on e.g. Export.
-        runtime_state["rdf_generator_active_stage"] = "load"
+        # Dataset metadata counts as a setting and is kept; the workflow restarts at its first step.
+        runtime_state["rdf_generator_active_stage"] = "metadata"
         _set_rdf_status("info", "RDF generator reset.")
     elif event_type == "download_ack":
         should_rerun = False
